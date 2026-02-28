@@ -1,0 +1,27 @@
+[project]
+name = "costing-calculate"
+version = "0.1.0"
+description = "金蝶 ERP 成本计算 ETL 工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+    "numpy>=1.24.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "C4", "W", "UP", "S", "T10"]
+ignore = ["S101", "S108"]
+
+[tool.ruff.format]
+quote-style = "single"

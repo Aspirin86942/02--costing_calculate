@@ -1,0 +1,17 @@
+# local/tooling
+.claude/
+.vscode/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.pyc
+
+# build metadata
+*.egg-info/
+
+# data files (ERP sensitive)
+data/raw/
+data/processed/
+
+# optional
+*.log

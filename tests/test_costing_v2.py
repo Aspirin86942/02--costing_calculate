@@ -204,3 +204,56 @@ class TestCostingETL:
         assert list(df_qty.columns) == expected_qty_cols
         assert len(df_detail) == 2
         assert len(df_qty) == 1
+
+
+def test_process_file_writes_analysis_sheets(tmp_path):
+    """测试 process_file 会输出三张分析表和 error_log。"""
+    etl = CostingETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+                '本期完工单位成本': 10,
+            },
+            {
+                '月份': '2025年02期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 60,
+                '本期完工单位成本': 5,
+            },
+            {
+                '月份': '2025年02期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': 40,
+                '本期完工单位成本': 3.3,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {'月份': '2025年01期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': 10},
+            {'月份': '2025年02期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': 12},
+        ]
+    )
+
+    with (
+        patch('src.etl.costing_v2.pd.read_excel', return_value=df_raw),
+        patch.object(CostingETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    xls = pd.ExcelFile(output_path, engine='openpyxl')
+    expected_sheets = {'成本明细', '产品数量统计', '直接材料_价量比', '直接人工_缝隙', '制造费用_价量比', 'error_log'}
+    assert expected_sheets.issubset(set(xls.sheet_names))

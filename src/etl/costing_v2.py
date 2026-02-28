@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 try:
+    from src.analytics.pq_analysis import build_fact_cost_pq, compute_pq_variance, render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 except ModuleNotFoundError:
@@ -15,6 +16,7 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
+    from src.analytics.pq_analysis import build_fact_cost_pq, compute_pq_variance, render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 
@@ -269,12 +271,22 @@ class CostingETL:
                 df_filled[COL_FILLED_COST_ITEM] = None
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
+            fact_df, prep_error_log = build_fact_cost_pq(df_detail, df_qty)
+            variance_df, variance_error_log = compute_pq_variance(fact_df, base_mode='prev_period')
+            analysis_tables = render_tables(variance_df)
+            error_log = pd.concat([prep_error_log, variance_error_log], ignore_index=True)
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 df_detail.to_excel(writer, sheet_name='成本明细', index=False)
                 df_qty.to_excel(writer, sheet_name='产品数量统计', index=False)
+                analysis_tables['直接材料_价量比'].to_excel(writer, sheet_name='直接材料_价量比', index=False)
+                analysis_tables['直接人工_缝隙'].to_excel(writer, sheet_name='直接人工_缝隙', index=False)
+                analysis_tables['制造费用_价量比'].to_excel(writer, sheet_name='制造费用_价量比', index=False)
+                error_log.to_excel(writer, sheet_name='error_log', index=False)
 
             logger.info('Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(df_qty))
+            if not error_log.empty:
+                logger.warning('Detected %s data quality issues, check sheet error_log', len(error_log))
             return True
         except Exception as exc:
             logger.error('Processing failed: %s', exc, exc_info=True)

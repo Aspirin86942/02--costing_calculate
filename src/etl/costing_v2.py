@@ -280,7 +280,7 @@ class CostingETL:
                 df_detail.to_excel(writer, sheet_name='成本明细', index=False)
                 df_qty.to_excel(writer, sheet_name='产品数量统计', index=False)
                 analysis_tables['直接材料_价量比'].to_excel(writer, sheet_name='直接材料_价量比', index=False)
-                analysis_tables['直接人工_缝隙'].to_excel(writer, sheet_name='直接人工_缝隙', index=False)
+                analysis_tables['直接人工_价量比'].to_excel(writer, sheet_name='直接人工_价量比', index=False)
                 analysis_tables['制造费用_价量比'].to_excel(writer, sheet_name='制造费用_价量比', index=False)
                 error_log.to_excel(writer, sheet_name='error_log', index=False)
 

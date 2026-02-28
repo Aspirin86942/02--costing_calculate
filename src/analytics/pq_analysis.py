@@ -533,28 +533,17 @@ def render_tables(variance_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         empty = pd.DataFrame(columns=['product_code', 'product_name'])
         return {
             '直接材料_价量比': empty.copy(),
-            '直接人工_缝隙': empty.copy(),
+            '直接人工_价量比': empty.copy(),
             '制造费用_价量比': empty.copy(),
         }
 
     source = variance_df.copy()
     source['period_display'] = source['period'].map(_period_to_display)
 
-    dm_metrics = ['qty', 'price', 'amount', 'Q0', 'P0', 'A0', 'PV', 'QV', 'IV', 'delta', 'recon_diff', 'no_base']
-    dl_metrics = [
-        'qty',
-        'price',
-        'amount',
-        'P0',
-        'expected_amount',
-        'gap',
-        'PV',
-        'QV',
-        'delta',
-        'recon_diff',
-        'no_base',
-    ]
-    moh_metrics = ['qty', 'price', 'amount', 'Q0', 'P0', 'A0', 'PV', 'QV', 'IV', 'delta', 'recon_diff', 'no_base']
+    # 三张业务表按需求仅展示当期 amount/price/qty。
+    dm_metrics = ['qty', 'price', 'amount']
+    dl_metrics = ['qty', 'price', 'amount']
+    moh_metrics = ['qty', 'price', 'amount']
 
     dm_df = _pivot_by_period(source[source['cost_bucket'] == 'direct_material'], dm_metrics)
     dl_df = _pivot_by_period(source[source['cost_bucket'] == 'direct_labor'], dl_metrics)
@@ -562,6 +551,6 @@ def render_tables(variance_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
     return {
         '直接材料_价量比': dm_df,
-        '直接人工_缝隙': dl_df,
+        '直接人工_价量比': dl_df,
         '制造费用_价量比': moh_df,
     }

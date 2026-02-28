@@ -7,7 +7,7 @@
 - 将成本计算单拆分为 `成本明细` 和 `产品数量统计` 两个工作表
 - 新增价量分解分析 (Price/Volume Decomposition)：
   - 直接材料价量比
-  - 直接人工缝隙
+  - 直接人工价量比
   - 制造费用价量比
 - 输出审计日志 `error_log`（未映射项目、缺失值、单价差异、勾稽异常）
 - 字段名提取和标准化
@@ -34,7 +34,7 @@ python -m src.etl.costing_v2
 - `成本明细`
 - `产品数量统计`
 - `直接材料_价量比`
-- `直接人工_缝隙`
+- `直接人工_价量比`
 - `制造费用_价量比`
 - `error_log`
 
@@ -48,6 +48,7 @@ python -m src.etl.costing_v2
 - 基准：默认环比上期 (`prev_period`)
 - 指标：`A/A0/PV/QV/IV/delta/recon_diff`
 - 勾稽：`delta = PV + QV + IV`
+- 三张业务分析表仅展示：`amount / price / qty`
 
 ## 目录结构
 - `src/analytics/` - 价量分解分析模块

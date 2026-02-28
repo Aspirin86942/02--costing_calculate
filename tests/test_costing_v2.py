@@ -255,5 +255,5 @@ def test_process_file_writes_analysis_sheets(tmp_path):
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    expected_sheets = {'成本明细', '产品数量统计', '直接材料_价量比', '直接人工_缝隙', '制造费用_价量比', 'error_log'}
+    expected_sheets = {'成本明细', '产品数量统计', '直接材料_价量比', '直接人工_价量比', '制造费用_价量比', 'error_log'}
     assert expected_sheets.issubset(set(xls.sheet_names))

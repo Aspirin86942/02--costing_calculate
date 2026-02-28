@@ -126,19 +126,16 @@ def test_compute_pq_variance_reconciliation_and_no_base() -> None:
     assert error_log.empty
 
 
-def test_render_tables_contains_labor_gap_and_gap_equals_pv() -> None:
+def test_render_tables_only_contains_amount_price_qty_metrics() -> None:
     fact_df, _ = build_fact_cost_pq(_sample_detail_df(), _sample_qty_df())
     variance_df, _ = compute_pq_variance(fact_df, base_mode='prev_period')
     tables = render_tables(variance_df)
 
-    labor_table = tables['直接人工_缝隙']
-    gap_cols = [column for column in labor_table.columns if column.endswith('_gap')]
-    pv_cols = [column for column in labor_table.columns if column.endswith('_PV')]
+    assert '直接人工_价量比' in tables
+    assert '直接人工_缝隙' not in tables
 
-    assert gap_cols
-    assert pv_cols
-
-    row = labor_table.iloc[0]
-    target_gap_col = [column for column in gap_cols if column.startswith('2025年02期_')][0]
-    target_pv_col = [column for column in pv_cols if column.startswith('2025年02期_')][0]
-    assert row[target_gap_col] == row[target_pv_col]
+    for table_name in ['直接材料_价量比', '直接人工_价量比', '制造费用_价量比']:
+        table = tables[table_name]
+        metric_cols = [column for column in table.columns if '年' in column and '期_' in column]
+        metric_suffixes = {column.rsplit('_', 1)[-1] for column in metric_cols}
+        assert metric_suffixes == {'qty', 'price', 'amount'}

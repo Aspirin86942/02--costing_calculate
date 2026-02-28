@@ -23,6 +23,34 @@ class SectionBlock:
     has_total_row: bool
 
 
+@dataclass
+class ProductAnomalySection:
+    """单个产品异常分析分段。"""
+
+    product_code: str
+    product_name: str
+    data: pd.DataFrame
+    column_types: dict[str, str]
+    amount_columns: list[str]
+    outlier_cells: set[tuple[int, str]]
+
+
+PRODUCT_ANALYSIS_FIELDS = [
+    ('total_cost', '总成本', 'amount', False),
+    ('completed_qty', '完工数量', 'qty', False),
+    ('unit_cost', '单位成本', 'price', True),
+    ('dm_cost', '直接材料成本', 'amount', False),
+    ('dm_unit_cost', '单位直接材料成本', 'price', True),
+    ('dm_contrib', '直接材料贡献率', 'pct', True),
+    ('dl_cost', '直接人工成本', 'amount', False),
+    ('dl_unit_cost', '单位直接人工成本', 'price', True),
+    ('dl_contrib', '直接人工贡献率', 'pct', True),
+    ('moh_cost', '制造费用成本', 'amount', False),
+    ('moh_unit_cost', '单位制造费用成本', 'price', True),
+    ('moh_contrib', '制造费用贡献率', 'pct', True),
+]
+
+
 def _to_decimal(value: object) -> Decimal | None:
     if value is None or pd.isna(value):
         return None
@@ -70,6 +98,14 @@ def _subtract_decimal(lhs: object, rhs: object) -> Decimal | None:
     if left is None or right is None:
         return None
     return left - right
+
+
+def _add_decimal(lhs: object, rhs: object) -> Decimal | None:
+    left = _to_decimal(lhs)
+    right = _to_decimal(rhs)
+    if left is None or right is None:
+        return None
+    return left + right
 
 
 def _decimal_abs(value: object) -> Decimal | None:
@@ -418,6 +454,156 @@ def _build_section_blocks(bucket_df: pd.DataFrame, title_prefix: str) -> list[Se
             has_total_row=False,
         ),
     ]
+
+
+def _build_product_metric_df(fact_df: pd.DataFrame) -> pd.DataFrame:
+    if fact_df.empty:
+        columns = [
+            'product_code',
+            'product_name',
+            'period',
+            'period_display',
+            *[field[0] for field in PRODUCT_ANALYSIS_FIELDS],
+        ]
+        return pd.DataFrame(columns=columns)
+
+    amount_by_bucket = (
+        fact_df.groupby(['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False)
+        .agg(amount=('amount', _sum_decimal_series))
+        .pivot_table(
+            index=['product_code', 'product_name', 'period'],
+            columns='cost_bucket',
+            values='amount',
+            aggfunc='first',
+            sort=True,
+        )
+        .reset_index()
+    )
+
+    for bucket in COST_BUCKETS:
+        if bucket not in amount_by_bucket.columns:
+            amount_by_bucket[bucket] = ZERO
+    amount_by_bucket['direct_material'] = (
+        amount_by_bucket['direct_material'].map(_to_decimal).map(lambda value: value if value is not None else ZERO)
+    )
+    amount_by_bucket['direct_labor'] = (
+        amount_by_bucket['direct_labor'].map(_to_decimal).map(lambda value: value if value is not None else ZERO)
+    )
+    amount_by_bucket['moh'] = (
+        amount_by_bucket['moh'].map(_to_decimal).map(lambda value: value if value is not None else ZERO)
+    )
+
+    qty_by_product = (
+        fact_df.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False)
+        .agg(completed_qty=('qty', _first_decimal))
+        .sort_values(['product_code', 'period'])
+    )
+
+    metric_df = amount_by_bucket.merge(
+        qty_by_product,
+        on=['product_code', 'product_name', 'period'],
+        how='left',
+    ).sort_values(['product_code', 'period'])
+
+    metric_df = metric_df.rename(
+        columns={
+            'direct_material': 'dm_cost',
+            'direct_labor': 'dl_cost',
+            'moh': 'moh_cost',
+        }
+    )
+
+    metric_df['total_cost'] = (
+        metric_df['dm_cost']
+        .combine(metric_df['dl_cost'], _add_decimal)
+        .combine(
+            metric_df['moh_cost'],
+            _add_decimal,
+        )
+    )
+    metric_df['unit_cost'] = metric_df['total_cost'].combine(metric_df['completed_qty'], _safe_divide)
+    metric_df['dm_unit_cost'] = metric_df['dm_cost'].combine(metric_df['completed_qty'], _safe_divide)
+    metric_df['dl_unit_cost'] = metric_df['dl_cost'].combine(metric_df['completed_qty'], _safe_divide)
+    metric_df['moh_unit_cost'] = metric_df['moh_cost'].combine(metric_df['completed_qty'], _safe_divide)
+    metric_df['dm_contrib'] = metric_df['dm_cost'].combine(metric_df['total_cost'], _safe_divide)
+    metric_df['dl_contrib'] = metric_df['dl_cost'].combine(metric_df['total_cost'], _safe_divide)
+    metric_df['moh_contrib'] = metric_df['moh_cost'].combine(metric_df['total_cost'], _safe_divide)
+    metric_df['period_display'] = metric_df['period'].map(_period_to_display)
+    return metric_df.reset_index(drop=True)
+
+
+def _detect_iqr_outliers(product_df: pd.DataFrame, metric_keys: list[str]) -> set[tuple[int, str]]:
+    outliers: set[tuple[int, str]] = set()
+
+    for key in metric_keys:
+        numeric_values = []
+        indexed_values: list[tuple[int, float]] = []
+        for idx, value in enumerate(product_df[key].tolist()):
+            decimal_value = _to_decimal(value)
+            if decimal_value is None:
+                continue
+            float_value = float(decimal_value)
+            numeric_values.append(float_value)
+            indexed_values.append((idx, float_value))
+
+        if len(numeric_values) < 4:
+            continue
+        numeric_series = pd.Series(numeric_values)
+        q1 = float(numeric_series.quantile(0.25))
+        q3 = float(numeric_series.quantile(0.75))
+        iqr = q3 - q1
+        if iqr == 0:
+            continue
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
+        for idx, float_value in indexed_values:
+            if float_value < lower or float_value > upper:
+                outliers.add((idx, key))
+
+    return outliers
+
+
+def build_product_anomaly_sections(fact_df: pd.DataFrame) -> list[ProductAnomalySection]:
+    """按产品构建异常分析分段。"""
+    metric_df = _build_product_metric_df(fact_df)
+    if metric_df.empty:
+        return []
+
+    outlier_metric_keys = [field for field, _, _, detect in PRODUCT_ANALYSIS_FIELDS if detect]
+    sections: list[ProductAnomalySection] = []
+
+    grouped = metric_df.groupby(['product_code', 'product_name'], dropna=False, sort=True)
+    for (product_code, product_name), product_frame in grouped:
+        product_frame = product_frame.sort_values('period').reset_index(drop=True)
+        outlier_cells_internal = _detect_iqr_outliers(product_frame, outlier_metric_keys)
+
+        display_data = pd.DataFrame({'月份': product_frame['period_display']})
+        column_types = {'月份': 'text'}
+        amount_columns: list[str] = []
+        outlier_cells_display: set[tuple[int, str]] = set()
+
+        for internal_key, display_name, metric_type, _detect in PRODUCT_ANALYSIS_FIELDS:
+            display_data[display_name] = product_frame[internal_key]
+            column_types[display_name] = metric_type
+            if metric_type == 'amount':
+                amount_columns.append(display_name)
+
+        field_map = {internal_key: display_name for internal_key, display_name, _, _ in PRODUCT_ANALYSIS_FIELDS}
+        for row_idx, internal_key in outlier_cells_internal:
+            outlier_cells_display.add((row_idx, field_map[internal_key]))
+
+        sections.append(
+            ProductAnomalySection(
+                product_code=str(product_code),
+                product_name=str(product_name),
+                data=display_data,
+                column_types=column_types,
+                amount_columns=amount_columns,
+                outlier_cells=outlier_cells_display,
+            )
+        )
+
+    return sections
 
 
 def render_tables(fact_df: pd.DataFrame) -> dict[str, list[SectionBlock]]:

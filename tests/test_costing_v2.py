@@ -256,7 +256,15 @@ def test_process_file_writes_analysis_sheets(tmp_path):
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    expected_sheets = {'成本明细', '产品数量统计', '直接材料_价量比', '直接人工_价量比', '制造费用_价量比', 'error_log'}
+    expected_sheets = {
+        '成本明细',
+        '产品数量统计',
+        '直接材料_价量比',
+        '直接人工_价量比',
+        '制造费用_价量比',
+        '按产品异常值分析',
+        'error_log',
+    }
     assert expected_sheets.issubset(set(xls.sheet_names))
 
     wb = load_workbook(output_path)
@@ -270,3 +278,11 @@ def test_process_file_writes_analysis_sheets(tmp_path):
     assert ws['C3'].number_format == '#,##0.00'
     assert ws['C8'].number_format == '#,##0'
     assert ws['C13'].number_format == '#,##0.00'
+
+    ws_product = wb['按产品异常值分析']
+    assert ws_product['A1'].value == '四、按单个产品异常值分析'
+    assert ws_product['A3'].value == '产品编码'
+    assert ws_product['A4'].value == 'P001'
+    assert ws_product.freeze_panes == 'A6'
+    assert ws_product.auto_filter.ref is not None
+    assert len(ws_product.merged_cells.ranges) == 0

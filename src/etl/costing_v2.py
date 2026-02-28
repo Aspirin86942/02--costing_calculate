@@ -5,12 +5,19 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 try:
-    from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
+    from src.analytics.pq_analysis import (
+        ProductAnomalySection,
+        SectionBlock,
+        build_fact_cost_pq,
+        build_product_anomaly_sections,
+        render_tables,
+    )
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 except ModuleNotFoundError:
@@ -19,7 +26,13 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
+    from src.analytics.pq_analysis import (
+        ProductAnomalySection,
+        SectionBlock,
+        build_fact_cost_pq,
+        build_product_anomaly_sections,
+        render_tables,
+    )
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 
@@ -362,6 +375,124 @@ class CostingETL:
             width = min(max(12, max_length + 2), 40)
             worksheet.column_dimensions[get_column_letter(col)].width = width
 
+    def _write_product_anomaly_sheet(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        sections: list[ProductAnomalySection],
+    ) -> None:
+        """写入按产品异常值分析页（不合并单元格）。"""
+        worksheet = writer.book.create_sheet(title=sheet_name)
+        writer.sheets[sheet_name] = worksheet
+
+        title_fill = PatternFill(fill_type='solid', fgColor='FFD966')
+        header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
+        meta_fill = PatternFill(fill_type='solid', fgColor='B4C6E7')
+        outlier_fill = PatternFill(fill_type='solid', fgColor='FFC7CE')
+        outlier_font = Font(color='9C0006')
+        border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9'),
+        )
+        align_left = Alignment(horizontal='left', vertical='center')
+        align_center = Alignment(horizontal='center', vertical='center')
+        align_right = Alignment(horizontal='right', vertical='center')
+
+        worksheet.cell(1, 1, '四、按单个产品异常值分析')
+        worksheet.cell(1, 1).fill = title_fill
+        worksheet.cell(1, 1).font = Font(bold=True)
+        worksheet.cell(1, 1).alignment = align_left
+
+        current_row = 3
+        max_col_overall = 1
+        filter_set = False
+
+        for section in sections:
+            meta_header_row = current_row
+            meta_value_row = current_row + 1
+            table_header_row = current_row + 2
+            data_start_row = current_row + 3
+            data_end_row = data_start_row + len(section.data) - 1
+            max_col = len(section.data.columns)
+            max_col_overall = max(max_col_overall, max_col)
+
+            worksheet.cell(meta_header_row, 1, '产品编码')
+            worksheet.cell(meta_header_row, 2, '产品名称')
+            worksheet.cell(meta_value_row, 1, section.product_code)
+            worksheet.cell(meta_value_row, 2, section.product_name)
+
+            for col in [1, 2]:
+                header_cell = worksheet.cell(meta_header_row, col)
+                header_cell.fill = header_fill
+                header_cell.font = Font(bold=True)
+                header_cell.alignment = align_center
+                header_cell.border = border
+
+                value_cell = worksheet.cell(meta_value_row, col)
+                value_cell.fill = meta_fill
+                value_cell.font = Font(bold=True)
+                value_cell.alignment = align_left
+                value_cell.border = border
+
+            for col_idx, column_name in enumerate(section.data.columns, start=1):
+                header_cell = worksheet.cell(table_header_row, col_idx, column_name)
+                header_cell.fill = header_fill
+                header_cell.font = Font(bold=True)
+                header_cell.alignment = align_center
+                header_cell.border = border
+
+            for row_idx, row_data in section.data.iterrows():
+                excel_row = data_start_row + row_idx
+                for col_idx, column_name in enumerate(section.data.columns, start=1):
+                    value = row_data[column_name]
+                    cell = worksheet.cell(excel_row, col_idx, value)
+                    cell.border = border
+                    cell.alignment = align_left if col_idx == 1 else align_right
+
+                    metric_type = section.column_types.get(column_name)
+                    if metric_type in {'amount', 'price'}:
+                        cell.number_format = '#,##0.00'
+                    elif metric_type == 'qty':
+                        cell.number_format = '#,##0'
+                    elif metric_type == 'pct':
+                        cell.number_format = '0.00%'
+
+                    if (row_idx, column_name) in section.outlier_cells:
+                        cell.fill = outlier_fill
+                        cell.font = outlier_font
+
+            for amount_column in section.amount_columns:
+                if amount_column not in section.data.columns:
+                    continue
+                amount_col_idx = section.data.columns.get_loc(amount_column) + 1
+                amount_col_letter = get_column_letter(amount_col_idx)
+                rule = DataBarRule(start_type='min', end_type='max', color='5B9BD5', showValue=True)
+                worksheet.conditional_formatting.add(
+                    f'{amount_col_letter}{data_start_row}:{amount_col_letter}{data_end_row}',
+                    rule,
+                )
+
+            if not filter_set:
+                worksheet.auto_filter.ref = (
+                    f'A{table_header_row}:{get_column_letter(max_col)}{max(data_end_row, table_header_row)}'
+                )
+                filter_set = True
+
+            current_row = data_end_row + 2
+
+        worksheet.freeze_panes = 'A6'
+        for col in range(1, max_col_overall + 1):
+            max_length = 0
+            for row in range(1, worksheet.max_row + 1):
+                value = worksheet.cell(row, col).value
+                if value is None:
+                    continue
+                max_length = max(max_length, len(str(value)))
+            width = min(max(12, max_length + 2), 40)
+            worksheet.column_dimensions[get_column_letter(col)].width = width
+
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""
         try:
@@ -396,6 +527,7 @@ class CostingETL:
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
             fact_df, prep_error_log = build_fact_cost_pq(df_detail, df_qty)
             analysis_tables = render_tables(fact_df)
+            product_anomaly_sections = build_product_anomaly_sections(fact_df)
             error_log = prep_error_log.copy()
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -403,6 +535,7 @@ class CostingETL:
                 df_qty.to_excel(writer, sheet_name='产品数量统计', index=False)
                 for sheet_name, sections in analysis_tables.items():
                     self._write_analysis_sheet(writer, sheet_name, sections)
+                self._write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
                 error_log.to_excel(writer, sheet_name='error_log', index=False)
 
             logger.info('Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(df_qty))

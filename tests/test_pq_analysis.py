@@ -6,7 +6,13 @@ from decimal import Decimal
 
 import pandas as pd
 
-from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
+from src.analytics.pq_analysis import (
+    ProductAnomalySection,
+    SectionBlock,
+    build_fact_cost_pq,
+    build_product_anomaly_sections,
+    render_tables,
+)
 
 
 def _sample_detail_df() -> pd.DataFrame:
@@ -149,3 +155,134 @@ def test_render_tables_amount_qty_total_and_weighted_price() -> None:
     qty_total = qty_df[qty_df['产品编码'] == '总计'].iloc[0]
     assert amount_total['总计'] == Decimal('250')
     assert qty_total['总计'] == Decimal('22')
+
+
+def test_build_product_anomaly_sections_detects_iqr_outlier() -> None:
+    detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '100',
+            },
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': '50',
+            },
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': '30',
+            },
+            {
+                '月份': '2025年02期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '105',
+            },
+            {
+                '月份': '2025年02期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': '52',
+            },
+            {
+                '月份': '2025年02期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': '31',
+            },
+            {
+                '月份': '2025年03期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '100',
+            },
+            {
+                '月份': '2025年03期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': '51',
+            },
+            {
+                '月份': '2025年03期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': '30',
+            },
+            {
+                '月份': '2025年04期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '100',
+            },
+            {
+                '月份': '2025年04期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': '50',
+            },
+            {
+                '月份': '2025年04期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': '30',
+            },
+            {
+                '月份': '2025年05期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '500',
+            },
+            {
+                '月份': '2025年05期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '直接人工',
+                '本期完工金额': '50',
+            },
+            {
+                '月份': '2025年05期',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': '30',
+            },
+        ]
+    )
+    qty = pd.DataFrame(
+        [
+            {'月份': '2025年01期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': '10'},
+            {'月份': '2025年02期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': '10'},
+            {'月份': '2025年03期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': '10'},
+            {'月份': '2025年04期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': '10'},
+            {'月份': '2025年05期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': '10'},
+        ]
+    )
+    fact_df, _ = build_fact_cost_pq(detail, qty)
+    sections = build_product_anomaly_sections(fact_df)
+
+    assert len(sections) == 1
+    section = sections[0]
+    assert isinstance(section, ProductAnomalySection)
+    assert section.product_code == 'P001'
+    assert '总成本' in section.data.columns
+    assert '直接材料成本' in section.amount_columns
+    assert any(col == '单位直接材料成本' for _row, col in section.outlier_cells)

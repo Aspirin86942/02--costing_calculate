@@ -1,22 +1,29 @@
-"""价量分解分析：构建标准长表、计算分解指标、渲染宽表。"""
+"""价量分析模块：构建标准长表并输出金额/数量/单价三段块数据。"""
 
 from __future__ import annotations
 
-import logging
 import re
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
 
-logger = logging.getLogger(__name__)
-
 ZERO = Decimal('0')
-RECON_TOLERANCE = Decimal('0.01')
+PRICE_DIFF_TOLERANCE = Decimal('0.01')
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 
 
+@dataclass
+class SectionBlock:
+    """单个报表分段。"""
+
+    title: str
+    data: pd.DataFrame
+    metric_type: str
+    has_total_row: bool
+
+
 def _to_decimal(value: object) -> Decimal | None:
-    """将输入值转换为 Decimal，无法解析时返回 None。"""
     if value is None or pd.isna(value):
         return None
     if isinstance(value, Decimal):
@@ -27,17 +34,18 @@ def _to_decimal(value: object) -> Decimal | None:
         return None
 
 
-def _sum_decimal(values: pd.Series) -> Decimal:
-    """聚合 Decimal 列时忽略空值，并保持 Decimal 精度。"""
+def _sum_decimal(values: list[object]) -> Decimal:
     total = ZERO
-    has_value = False
     for value in values:
         decimal_value = _to_decimal(value)
         if decimal_value is None:
             continue
         total += decimal_value
-        has_value = True
-    return total if has_value else ZERO
+    return total
+
+
+def _sum_decimal_series(series: pd.Series) -> Decimal:
+    return _sum_decimal(series.tolist())
 
 
 def _first_decimal(values: pd.Series) -> Decimal | None:
@@ -48,45 +56,7 @@ def _first_decimal(values: pd.Series) -> Decimal | None:
     return None
 
 
-def _mean_decimal(values: pd.Series) -> Decimal | None:
-    total = ZERO
-    count = 0
-    for value in values:
-        decimal_value = _to_decimal(value)
-        if decimal_value is None:
-            continue
-        total += decimal_value
-        count += 1
-    if count == 0:
-        return None
-    return total / Decimal(count)
-
-
-def _subtract_decimal(lhs: Decimal | None, rhs: Decimal | None) -> Decimal | None:
-    left = _to_decimal(lhs)
-    right = _to_decimal(rhs)
-    if left is None or right is None:
-        return None
-    return left - right
-
-
-def _add_decimal(lhs: Decimal | None, rhs: Decimal | None) -> Decimal | None:
-    left = _to_decimal(lhs)
-    right = _to_decimal(rhs)
-    if left is None or right is None:
-        return None
-    return left + right
-
-
-def _multiply_decimal(lhs: Decimal | None, rhs: Decimal | None) -> Decimal | None:
-    left = _to_decimal(lhs)
-    right = _to_decimal(rhs)
-    if left is None or right is None:
-        return None
-    return left * right
-
-
-def _safe_divide(numerator: Decimal | None, denominator: Decimal | None) -> Decimal | None:
+def _safe_divide(numerator: object, denominator: object) -> Decimal | None:
     num = _to_decimal(numerator)
     den = _to_decimal(denominator)
     if num is None or den in (None, ZERO):
@@ -94,14 +64,22 @@ def _safe_divide(numerator: Decimal | None, denominator: Decimal | None) -> Deci
     return num / den
 
 
-def _decimal_abs(value: Decimal | None) -> Decimal | None:
-    if value is None:
+def _subtract_decimal(lhs: object, rhs: object) -> Decimal | None:
+    left = _to_decimal(lhs)
+    right = _to_decimal(rhs)
+    if left is None or right is None:
         return None
-    return abs(value)
+    return left - right
+
+
+def _decimal_abs(value: object) -> Decimal | None:
+    decimal_value = _to_decimal(value)
+    if decimal_value is None:
+        return None
+    return abs(decimal_value)
 
 
 def _normalize_period(value: object) -> str | None:
-    """统一月份为 YYYY-MM 口径，后续排序与透视更稳定。"""
     if value is None or pd.isna(value):
         return None
     text = str(value).strip()
@@ -219,7 +197,7 @@ def _build_error_frame(
 
 
 def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """构建标准长表 fact_cost_pq，并输出准备阶段的 error_log。"""
+    """构建标准长表 fact_cost_pq，并输出准备阶段 error_log。"""
     detail_period_col = _resolve_period_column(df_detail)
     qty_period_col = _resolve_period_column(df_qty)
 
@@ -235,21 +213,18 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
         missing = ', '.join(sorted(missing_qty_cols))
         raise ValueError(f'产品数量统计缺少必要字段: {missing}')
 
-    detail = df_detail.copy()
-    detail = detail.rename(
+    detail = df_detail.copy().rename(
         columns={'产品编码': 'product_code', '产品名称': 'product_name', '成本项目名称': 'cost_item'}
     )
     detail['period'] = detail[detail_period_col].map(_normalize_period)
     detail['cost_bucket'] = detail['cost_item'].map(_map_cost_bucket)
     detail['amount'] = detail['本期完工金额'].map(_to_decimal)
-
     if '本期完工单位成本' in detail.columns:
         detail['source_price'] = detail['本期完工单位成本'].map(_to_decimal)
     else:
         detail['source_price'] = None
 
-    qty = df_qty.copy()
-    qty = qty.rename(columns={'产品编码': 'product_code', '产品名称': 'product_name'})
+    qty = df_qty.copy().rename(columns={'产品编码': 'product_code', '产品名称': 'product_name'})
     qty['period'] = qty[qty_period_col].map(_normalize_period)
     qty['qty'] = qty['本期完工数量'].map(_to_decimal)
 
@@ -265,7 +240,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
                 field_name='成本项目名称',
                 original_column='cost_item',
                 reason='成本项目未映射到 direct_material/direct_labor/moh',
-                action='该行已从三大类价量分析中排除',
+                action='该行已从三大类报表中排除',
             )
         )
 
@@ -274,7 +249,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
     amount_grouped = (
         detail_mapped.groupby(['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False)
         .agg(
-            amount=('amount', _sum_decimal),
+            amount=('amount', _sum_decimal_series),
             source_price=('source_price', _first_decimal),
         )
         .sort_values(['product_code', 'period', 'cost_bucket'])
@@ -282,7 +257,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
 
     qty_grouped = (
         qty.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False)
-        .agg(qty=('qty', _sum_decimal))
+        .agg(qty=('qty', _sum_decimal_series))
         .sort_values(['product_code', 'period'])
     )
 
@@ -304,7 +279,6 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
     keys = keys.assign(_join_key=1)
     bucket_df = bucket_df.assign(_join_key=1)
     fact = keys.merge(bucket_df, on='_join_key', how='inner').drop(columns=['_join_key'])
-
     fact = fact.merge(amount_grouped, on=['product_code', 'product_name', 'period', 'cost_bucket'], how='left')
     fact = fact.merge(qty_grouped, on=['product_code', 'product_name', 'period'], how='left')
 
@@ -329,7 +303,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
                 issue_type='MISSING_QTY',
                 field_name='本期完工数量',
                 reason='该产品+月份缺少数量信息',
-                action='保留空值并在分析层输出空结果',
+                action='保留空值并在单价展示为空',
             )
         )
 
@@ -342,7 +316,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
                 field_name='本期完工数量',
                 original_column='qty',
                 reason='数量为 0 时单价不可计算',
-                action='price 置空，后续指标按空处理',
+                action='price 置空',
             )
         )
 
@@ -351,7 +325,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
     source_price_comparable = fact['source_price'].notna() & fact['price'].notna()
     source_diff = fact['price'].combine(fact['source_price'], _subtract_decimal).map(_decimal_abs)
     source_mismatch = source_price_comparable & source_diff.map(
-        lambda value: value is not None and value > RECON_TOLERANCE
+        lambda value: value is not None and value > PRICE_DIFF_TOLERANCE
     )
     if source_mismatch.any():
         mismatched = fact.loc[
@@ -365,7 +339,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
                 issue_type='PRICE_MISMATCH',
                 field_name='本期完工单位成本',
                 reason='amount/qty 重算单价与源单价偏差超阈值',
-                action='保留重算单价并记录审计差异',
+                action='保留重算单价并记录差异',
                 lhs_column='price',
                 rhs_column='source_price',
                 diff_column='price_diff',
@@ -379,178 +353,97 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
     return fact, error_log
 
 
-def compute_pq_variance(fact_df: pd.DataFrame, base_mode: str = 'prev_period') -> tuple[pd.DataFrame, pd.DataFrame]:
-    """根据标准长表计算价量分解指标。"""
-    if base_mode not in {'prev_period', 'year_avg'}:
-        raise ValueError("base_mode 仅支持 'prev_period' 或 'year_avg'")
-
-    if fact_df.empty:
-        variance_empty = pd.DataFrame(
-            columns=[
-                'period',
-                'product_code',
-                'product_name',
-                'cost_bucket',
-                'qty',
-                'price',
-                'amount',
-                'Q0',
-                'P0',
-                'A0',
-                'PV',
-                'QV',
-                'IV',
-                'delta',
-                'recon_diff',
-                'expected_amount',
-                'gap',
-                'no_base',
-            ]
-        )
-        return variance_empty, _empty_error_log()
-
-    variance = fact_df.copy()
-    variance = variance.sort_values(['product_code', 'cost_bucket', 'period']).reset_index(drop=True)
-    grouped = variance.groupby(['product_code', 'cost_bucket'], dropna=False)
-
-    if base_mode == 'prev_period':
-        variance['P0'] = grouped['price'].shift(1)
-        variance['Q0'] = grouped['qty'].shift(1)
-    else:
-        variance['P0'] = grouped['price'].transform(lambda series: _mean_decimal(series))
-        variance['Q0'] = grouped['qty'].transform(lambda series: _mean_decimal(series))
-
-    no_base_mask = variance['P0'].isna() | variance['Q0'].isna()
-    variance['no_base'] = no_base_mask.astype(int)
-    variance.loc[no_base_mask, 'P0'] = ZERO
-    variance.loc[no_base_mask, 'Q0'] = ZERO
-
-    price_diff = variance['price'].combine(variance['P0'], _subtract_decimal)
-    qty_diff = variance['qty'].combine(variance['Q0'], _subtract_decimal)
-
-    variance['A0'] = variance['P0'].combine(variance['Q0'], _multiply_decimal)
-    variance['PV'] = price_diff.combine(variance['qty'], _multiply_decimal)
-    variance['QV'] = qty_diff.combine(variance['P0'], _multiply_decimal)
-    variance['delta'] = variance['amount'].combine(variance['A0'], _subtract_decimal)
-    # 这里用残差定义交叉项，保证 delta 可被 PV/QV/IV 严格勾稽，避免报表解释出现“对不上”的争议。
-    variance['IV'] = variance['delta'].combine(
-        variance['PV'].combine(variance['QV'], _add_decimal),
-        _subtract_decimal,
-    )
-
-    pq_sum = variance['PV'].combine(variance['QV'], _add_decimal).combine(variance['IV'], _add_decimal)
-    variance['recon_diff'] = variance['delta'].combine(pq_sum, _subtract_decimal)
-    variance['expected_amount'] = variance['P0'].combine(variance['qty'], _multiply_decimal)
-    variance['gap'] = variance['amount'].combine(variance['expected_amount'], _subtract_decimal)
-
-    error_frames: list[pd.DataFrame] = []
-
-    missing_actual_mask = variance['qty'].isna() | variance['amount'].isna()
-    if missing_actual_mask.any():
-        error_frames.append(
-            _build_error_frame(
-                variance.loc[missing_actual_mask, ['product_code', 'product_name', 'period', 'cost_bucket']],
-                issue_type='MISSING_ACTUAL',
-                field_name='qty/amount',
-                reason='缺少实际数量或金额，部分分解指标为空',
-                action='保留该行并输出空指标',
-            )
-        )
-
-    recon_issue_mask = variance['recon_diff'].map(lambda value: value is not None and abs(value) > RECON_TOLERANCE)
-    if recon_issue_mask.any():
-        recon_issue_frame = variance.loc[
-            recon_issue_mask,
-            ['product_code', 'product_name', 'period', 'cost_bucket', 'delta', 'PV', 'QV', 'IV', 'recon_diff'],
-        ].copy()
-        recon_issue_frame['rhs'] = (
-            recon_issue_frame['PV']
-            .combine(recon_issue_frame['QV'], _add_decimal)
-            .combine(recon_issue_frame['IV'], _add_decimal)
-        )
-        error_frames.append(
-            _build_error_frame(
-                recon_issue_frame,
-                issue_type='RECON_MISMATCH',
-                field_name='delta_vs_components',
-                reason='delta 与 PV/QV/IV 勾稽差异超阈值',
-                action='保留结果并输出审计差异',
-                lhs_column='delta',
-                rhs_column='rhs',
-                diff_column='recon_diff',
-            )
-        )
-
-    variance = variance[
-        [
-            'period',
-            'product_code',
-            'product_name',
-            'cost_bucket',
-            'qty',
-            'price',
-            'amount',
-            'Q0',
-            'P0',
-            'A0',
-            'PV',
-            'QV',
-            'IV',
-            'delta',
-            'recon_diff',
-            'expected_amount',
-            'gap',
-            'no_base',
-        ]
-    ]
-
-    error_log = pd.concat(error_frames, ignore_index=True) if error_frames else _empty_error_log()
-    return variance, error_log
-
-
-def _pivot_by_period(source_df: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
-    if source_df.empty:
-        return pd.DataFrame(columns=['product_code', 'product_name'])
-
-    available_metrics = [metric for metric in metrics if metric in source_df.columns]
-    data = source_df[['product_code', 'product_name', 'period_display', *available_metrics]].copy()
-    wide = data.pivot_table(
+def _build_pivot(bucket_df: pd.DataFrame, value_col: str, period_columns: list[str]) -> pd.DataFrame:
+    pivot = bucket_df.pivot_table(
         index=['product_code', 'product_name'],
         columns='period_display',
-        values=available_metrics,
+        values=value_col,
         aggfunc='first',
         sort=True,
     )
-
-    wide = wide.swaplevel(0, 1, axis=1).sort_index(axis=1, level=[0, 1])
-    wide.columns = [f'{period}_{metric}' for period, metric in wide.columns]
-    return wide.reset_index()
+    pivot = pivot.reindex(columns=period_columns).reset_index()
+    return pivot
 
 
-def render_tables(variance_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """将分析结果渲染为三张宽表。"""
-    if variance_df.empty:
-        empty = pd.DataFrame(columns=['product_code', 'product_name'])
+def _append_total_row(df: pd.DataFrame, value_columns: list[str], summary_col: str) -> pd.DataFrame:
+    total_row: dict[str, object] = {'产品编码': '总计', '产品名称': ''}
+    for col in value_columns + [summary_col]:
+        total_row[col] = _sum_decimal_series(df[col])
+    return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+
+
+def _build_section_blocks(bucket_df: pd.DataFrame, title_prefix: str) -> list[SectionBlock]:
+    period_keys = sorted(bucket_df['period'].dropna().unique().tolist())
+    period_columns = [_period_to_display(period) for period in period_keys]
+
+    amount_pivot = _build_pivot(bucket_df, 'amount', period_columns).rename(
+        columns={'product_code': '产品编码', 'product_name': '产品名称'}
+    )
+    qty_pivot = _build_pivot(bucket_df, 'qty', period_columns).rename(
+        columns={'product_code': '产品编码', 'product_name': '产品名称'}
+    )
+
+    for col in period_columns:
+        amount_pivot[col] = amount_pivot[col].map(_to_decimal).map(lambda value: value if value is not None else ZERO)
+        qty_pivot[col] = qty_pivot[col].map(_to_decimal)
+
+    amount_pivot['总计'] = amount_pivot[period_columns].apply(lambda row: _sum_decimal(row.tolist()), axis=1)
+    qty_pivot['总计'] = qty_pivot[period_columns].apply(lambda row: _sum_decimal(row.tolist()), axis=1)
+
+    price_pivot = amount_pivot[['产品编码', '产品名称']].copy()
+    for col in period_columns:
+        price_pivot[col] = amount_pivot[col].combine(qty_pivot[col], _safe_divide)
+    price_pivot['均值'] = amount_pivot['总计'].combine(qty_pivot['总计'], _safe_divide)
+
+    amount_with_total = _append_total_row(amount_pivot, period_columns, '总计')
+    qty_with_total = _append_total_row(qty_pivot, period_columns, '总计')
+
+    return [
+        SectionBlock(
+            title=f'{title_prefix}完工金额',
+            data=amount_with_total,
+            metric_type='amount',
+            has_total_row=True,
+        ),
+        SectionBlock(
+            title=f'{title_prefix}完工数量',
+            data=qty_with_total,
+            metric_type='qty',
+            has_total_row=True,
+        ),
+        SectionBlock(
+            title=f'{title_prefix}完工单价',
+            data=price_pivot,
+            metric_type='price',
+            has_total_row=False,
+        ),
+    ]
+
+
+def render_tables(fact_df: pd.DataFrame) -> dict[str, list[SectionBlock]]:
+    """按成本类别输出三段块数据（金额/数量/单价）。"""
+    if fact_df.empty:
+        empty = pd.DataFrame(columns=['产品编码', '产品名称'])
+        empty_sections = [
+            SectionBlock('完工金额', empty.copy(), 'amount', True),
+            SectionBlock('完工数量', empty.copy(), 'qty', True),
+            SectionBlock('完工单价', empty.copy(), 'price', False),
+        ]
         return {
-            '直接材料_价量比': empty.copy(),
-            '直接人工_价量比': empty.copy(),
-            '制造费用_价量比': empty.copy(),
+            '直接材料_价量比': empty_sections,
+            '直接人工_价量比': empty_sections,
+            '制造费用_价量比': empty_sections,
         }
 
-    source = variance_df.copy()
+    source = fact_df.copy()
     source['period_display'] = source['period'].map(_period_to_display)
 
-    # 三张业务表按需求仅展示当期 amount/price/qty。
-    dm_metrics = ['qty', 'price', 'amount']
-    dl_metrics = ['qty', 'price', 'amount']
-    moh_metrics = ['qty', 'price', 'amount']
-
-    dm_df = _pivot_by_period(source[source['cost_bucket'] == 'direct_material'], dm_metrics)
-    dl_df = _pivot_by_period(source[source['cost_bucket'] == 'direct_labor'], dl_metrics)
-    moh_df = _pivot_by_period(source[source['cost_bucket'] == 'moh'], moh_metrics)
+    dm_sections = _build_section_blocks(source[source['cost_bucket'] == 'direct_material'], '直接材料')
+    dl_sections = _build_section_blocks(source[source['cost_bucket'] == 'direct_labor'], '直接人工')
+    moh_sections = _build_section_blocks(source[source['cost_bucket'] == 'moh'], '制造费用')
 
     return {
-        '直接材料_价量比': dm_df,
-        '直接人工_价量比': dl_df,
-        '制造费用_价量比': moh_df,
+        '直接材料_价量比': dm_sections,
+        '直接人工_价量比': dl_sections,
+        '制造费用_价量比': moh_sections,
     }

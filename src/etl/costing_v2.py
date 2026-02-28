@@ -5,9 +5,12 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 
 try:
-    from src.analytics.pq_analysis import build_fact_cost_pq, compute_pq_variance, render_tables
+    from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 except ModuleNotFoundError:
@@ -16,7 +19,7 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.pq_analysis import build_fact_cost_pq, compute_pq_variance, render_tables
+    from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 
@@ -239,6 +242,126 @@ class CostingETL:
 
         return df_detail, df_qty
 
+    def _write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
+        """写入三段分析块并应用样式；禁止合并单元格。"""
+        start_row = 0
+        section_meta: list[dict[str, int | str | bool]] = []
+
+        for section in sections:
+            title_frame = pd.DataFrame([[section.title]])
+            title_frame.to_excel(
+                writer,
+                sheet_name=sheet_name,
+                index=False,
+                header=False,
+                startrow=start_row,
+            )
+            section.data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row + 1)
+
+            title_row = start_row + 1
+            header_row = start_row + 2
+            data_start = start_row + 3
+            data_end = data_start + len(section.data) - 1
+            max_col = max(1, section.data.shape[1])
+
+            section_meta.append(
+                {
+                    'title_row': title_row,
+                    'header_row': header_row,
+                    'data_start': data_start,
+                    'data_end': data_end,
+                    'max_col': max_col,
+                    'metric_type': section.metric_type,
+                    'has_total_row': section.has_total_row,
+                }
+            )
+            start_row += len(section.data) + 3
+
+        worksheet = writer.sheets[sheet_name]
+        self._style_analysis_sheet(worksheet, section_meta)
+
+    def _style_analysis_sheet(self, worksheet: Worksheet, section_meta: list[dict[str, int | str | bool]]) -> None:
+        if not section_meta:
+            return
+
+        title_fill = PatternFill(fill_type='solid', fgColor='FFD966')
+        header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
+        total_fill = PatternFill(fill_type='solid', fgColor='BDD7EE')
+        border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9'),
+        )
+        align_left = Alignment(horizontal='left', vertical='center')
+        align_center = Alignment(horizontal='center', vertical='center')
+        align_right = Alignment(horizontal='right', vertical='center')
+
+        max_col_overall = max(int(meta['max_col']) for meta in section_meta)
+
+        for meta in section_meta:
+            title_row = int(meta['title_row'])
+            header_row = int(meta['header_row'])
+            data_start = int(meta['data_start'])
+            data_end = int(meta['data_end'])
+            max_col = int(meta['max_col'])
+            metric_type = str(meta['metric_type'])
+            has_total_row = bool(meta['has_total_row'])
+
+            title_cell = worksheet.cell(title_row, 1)
+            title_cell.fill = title_fill
+            title_cell.font = Font(bold=True)
+            title_cell.alignment = align_left
+
+            for col in range(1, max_col + 1):
+                header_cell = worksheet.cell(header_row, col)
+                header_cell.fill = header_fill
+                header_cell.font = Font(bold=True)
+                header_cell.alignment = align_center
+                header_cell.border = border
+
+            if data_end < data_start:
+                continue
+
+            for row in range(data_start, data_end + 1):
+                for col in range(1, max_col + 1):
+                    cell = worksheet.cell(row, col)
+                    cell.border = border
+                    if col <= 2:
+                        cell.alignment = align_left
+                    else:
+                        cell.alignment = align_right
+                        if metric_type in {'amount', 'price'}:
+                            cell.number_format = '#,##0.00'
+                        elif metric_type == 'qty':
+                            cell.number_format = '#,##0'
+
+            if has_total_row:
+                total_row = data_end
+                for col in range(1, max_col + 1):
+                    total_cell = worksheet.cell(total_row, col)
+                    total_cell.fill = total_fill
+                    total_cell.font = Font(bold=True)
+
+        first_meta = section_meta[0]
+        worksheet.freeze_panes = 'C3'
+        filter_end = int(first_meta['data_end'])
+        if filter_end < int(first_meta['header_row']):
+            filter_end = int(first_meta['header_row'])
+        worksheet.auto_filter.ref = (
+            f'A{int(first_meta["header_row"])}:{get_column_letter(int(first_meta["max_col"]))}{filter_end}'
+        )
+
+        for col in range(1, max_col_overall + 1):
+            max_length = 0
+            for row in range(1, worksheet.max_row + 1):
+                value = worksheet.cell(row, col).value
+                if value is None:
+                    continue
+                max_length = max(max_length, len(str(value)))
+            width = min(max(12, max_length + 2), 40)
+            worksheet.column_dimensions[get_column_letter(col)].width = width
+
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""
         try:
@@ -272,16 +395,14 @@ class CostingETL:
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
             fact_df, prep_error_log = build_fact_cost_pq(df_detail, df_qty)
-            variance_df, variance_error_log = compute_pq_variance(fact_df, base_mode='prev_period')
-            analysis_tables = render_tables(variance_df)
-            error_log = pd.concat([prep_error_log, variance_error_log], ignore_index=True)
+            analysis_tables = render_tables(fact_df)
+            error_log = prep_error_log.copy()
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 df_detail.to_excel(writer, sheet_name='成本明细', index=False)
                 df_qty.to_excel(writer, sheet_name='产品数量统计', index=False)
-                analysis_tables['直接材料_价量比'].to_excel(writer, sheet_name='直接材料_价量比', index=False)
-                analysis_tables['直接人工_价量比'].to_excel(writer, sheet_name='直接人工_价量比', index=False)
-                analysis_tables['制造费用_价量比'].to_excel(writer, sheet_name='制造费用_价量比', index=False)
+                for sheet_name, sections in analysis_tables.items():
+                    self._write_analysis_sheet(writer, sheet_name, sections)
                 error_log.to_excel(writer, sheet_name='error_log', index=False)
 
             logger.info('Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(df_qty))

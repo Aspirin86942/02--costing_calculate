@@ -1,4 +1,4 @@
-"""价量分解模块测试。"""
+"""价量分析模块测试。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pandas as pd
 
-from src.analytics.pq_analysis import build_fact_cost_pq, compute_pq_variance, render_tables
+from src.analytics.pq_analysis import SectionBlock, build_fact_cost_pq, render_tables
 
 
 def _sample_detail_df() -> pd.DataFrame:
@@ -109,33 +109,43 @@ def test_build_fact_cost_pq_logs_missing_qty() -> None:
     assert fact_df[(fact_df['period'] == '2025-02') & fact_df['qty'].isna()].shape[0] == 3
 
 
-def test_compute_pq_variance_reconciliation_and_no_base() -> None:
+def test_render_tables_returns_three_sections_per_sheet() -> None:
     fact_df, _ = build_fact_cost_pq(_sample_detail_df(), _sample_qty_df())
-    variance_df, error_log = compute_pq_variance(fact_df, base_mode='prev_period')
+    tables = render_tables(fact_df)
 
-    direct_material = variance_df[variance_df['cost_bucket'] == 'direct_material'].sort_values('period')
-    first = direct_material.iloc[0]
-    second = direct_material.iloc[1]
-
-    assert first['no_base'] == 1
-    assert first['P0'] == Decimal('0')
-    assert first['Q0'] == Decimal('0')
-
-    assert second['delta'] == second['PV'] + second['QV'] + second['IV']
-    assert second['recon_diff'] == Decimal('0')
-    assert error_log.empty
+    assert set(tables.keys()) == {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}
+    for sections in tables.values():
+        assert len(sections) == 3
+        assert all(isinstance(section, SectionBlock) for section in sections)
+        assert [section.metric_type for section in sections] == ['amount', 'qty', 'price']
 
 
-def test_render_tables_only_contains_amount_price_qty_metrics() -> None:
+def test_render_tables_amount_qty_total_and_weighted_price() -> None:
     fact_df, _ = build_fact_cost_pq(_sample_detail_df(), _sample_qty_df())
-    variance_df, _ = compute_pq_variance(fact_df, base_mode='prev_period')
-    tables = render_tables(variance_df)
+    tables = render_tables(fact_df)
+    dm_sections = tables['直接材料_价量比']
 
-    assert '直接人工_价量比' in tables
-    assert '直接人工_缝隙' not in tables
+    amount_df = dm_sections[0].data
+    qty_df = dm_sections[1].data
+    price_df = dm_sections[2].data
 
-    for table_name in ['直接材料_价量比', '直接人工_价量比', '制造费用_价量比']:
-        table = tables[table_name]
-        metric_cols = [column for column in table.columns if '年' in column and '期_' in column]
-        metric_suffixes = {column.rsplit('_', 1)[-1] for column in metric_cols}
-        assert metric_suffixes == {'qty', 'price', 'amount'}
+    amount_product = amount_df[amount_df['产品编码'] == 'P001'].iloc[0]
+    qty_product = qty_df[qty_df['产品编码'] == 'P001'].iloc[0]
+    price_product = price_df[price_df['产品编码'] == 'P001'].iloc[0]
+
+    assert amount_product['2025年01期'] == Decimal('100')
+    assert amount_product['2025年02期'] == Decimal('150')
+    assert amount_product['总计'] == Decimal('250')
+
+    assert qty_product['2025年01期'] == Decimal('10')
+    assert qty_product['2025年02期'] == Decimal('12')
+    assert qty_product['总计'] == Decimal('22')
+
+    assert price_product['2025年01期'] == Decimal('10')
+    assert price_product['2025年02期'] == Decimal('12.5')
+    assert price_product['均值'].quantize(Decimal('0.01')) == Decimal('11.36')
+
+    amount_total = amount_df[amount_df['产品编码'] == '总计'].iloc[0]
+    qty_total = qty_df[qty_df['产品编码'] == '总计'].iloc[0]
+    assert amount_total['总计'] == Decimal('250')
+    assert qty_total['总计'] == Decimal('22')

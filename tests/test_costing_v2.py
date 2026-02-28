@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from src.etl.costing_v2 import CostingETL
 
@@ -207,7 +208,7 @@ class TestCostingETL:
 
 
 def test_process_file_writes_analysis_sheets(tmp_path):
-    """测试 process_file 会输出三张分析表和 error_log。"""
+    """测试 process_file 会输出三段分析表、样式、筛选与冻结窗格。"""
     etl = CostingETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -257,3 +258,15 @@ def test_process_file_writes_analysis_sheets(tmp_path):
     xls = pd.ExcelFile(output_path, engine='openpyxl')
     expected_sheets = {'成本明细', '产品数量统计', '直接材料_价量比', '直接人工_价量比', '制造费用_价量比', 'error_log'}
     assert expected_sheets.issubset(set(xls.sheet_names))
+
+    wb = load_workbook(output_path)
+    ws = wb['直接材料_价量比']
+    assert ws['A1'].value == '直接材料完工金额'
+    assert ws['A6'].value == '直接材料完工数量'
+    assert ws['A11'].value == '直接材料完工单价'
+    assert ws.freeze_panes == 'C3'
+    assert ws.auto_filter.ref is not None
+    assert len(ws.merged_cells.ranges) == 0
+    assert ws['C3'].number_format == '#,##0.00'
+    assert ws['C8'].number_format == '#,##0'
+    assert ws['C13'].number_format == '#,##0.00'

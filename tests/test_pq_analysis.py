@@ -157,7 +157,7 @@ def test_render_tables_amount_qty_total_and_weighted_price() -> None:
     assert qty_total['总计'] == Decimal('22')
 
 
-def test_build_product_anomaly_sections_detects_iqr_outlier() -> None:
+def test_build_product_anomaly_sections_disables_outlier_detection() -> None:
     detail = pd.DataFrame(
         [
             {
@@ -285,4 +285,69 @@ def test_build_product_anomaly_sections_detects_iqr_outlier() -> None:
     assert section.product_code == 'P001'
     assert '总成本' in section.data.columns
     assert '直接材料成本' in section.amount_columns
-    assert any(col == '单位直接材料成本' for _row, col in section.outlier_cells)
+    assert section.outlier_cells == set()
+
+
+def test_render_tables_keeps_input_product_order() -> None:
+    fact_df = pd.DataFrame(
+        [
+            {
+                'period': '2025-01',
+                'product_code': 'GB_C.D.B0041AA',
+                'product_name': 'BMS-1100W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('220'),
+                'qty': Decimal('20'),
+                'price': Decimal('11'),
+                'source_price': Decimal('11'),
+            },
+            {
+                'period': '2025-01',
+                'product_code': 'GB_C.D.B0040AA',
+                'product_name': 'BMS-750W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('100'),
+                'qty': Decimal('10'),
+                'price': Decimal('10'),
+                'source_price': Decimal('10'),
+            },
+        ]
+    )
+
+    tables = render_tables(fact_df)
+    amount_df = tables['直接材料_价量比'][0].data
+    product_codes = amount_df[amount_df['产品编码'] != '总计']['产品编码'].tolist()
+
+    assert product_codes == ['GB_C.D.B0041AA', 'GB_C.D.B0040AA']
+
+
+def test_build_product_anomaly_sections_keeps_input_product_order() -> None:
+    fact_df = pd.DataFrame(
+        [
+            {
+                'period': '2025-01',
+                'product_code': 'GB_C.D.B0041AA',
+                'product_name': 'BMS-1100W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('220'),
+                'qty': Decimal('20'),
+                'price': Decimal('11'),
+                'source_price': Decimal('11'),
+            },
+            {
+                'period': '2025-01',
+                'product_code': 'GB_C.D.B0040AA',
+                'product_name': 'BMS-750W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('100'),
+                'qty': Decimal('10'),
+                'price': Decimal('10'),
+                'source_price': Decimal('10'),
+            },
+        ]
+    )
+
+    sections = build_product_anomaly_sections(fact_df)
+    product_codes = [section.product_code for section in sections]
+
+    assert product_codes == ['GB_C.D.B0041AA', 'GB_C.D.B0040AA']

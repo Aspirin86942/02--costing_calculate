@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -76,6 +75,18 @@ COL_CUMULATIVE_COMPLETED_QTY_1_11 = '累计完工1-11数量'
 COL_CUMULATIVE_COMPLETED_CONSUMPTION = '累计完工单耗'
 COL_CUMULATIVE_COMPLETED_UNIT_COST = '累计完工单位成本'
 COL_CUMULATIVE_COMPLETED_AMOUNT = '累计完工金额'
+INTEGRATED_WORKSHOP_NAME = '集成车间'
+ANALYSIS_PRODUCT_ORDER: tuple[tuple[str, str], ...] = (
+    ('GB_C.D.B0048AA', 'BMS-400W驱动器'),
+    ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+    ('GB_C.D.B0041AA', 'BMS-1100W驱动器'),
+    ('GB_C.D.B0042AA', 'BMS-1700W驱动器'),
+    ('GB_C.D.B0043AA', 'BMS-2400W驱动器'),
+    ('GB_C.D.B0044AA', 'BMS-3900W驱动器'),
+    ('GB_C.D.B0045AA', 'BMS-5900W驱动器'),
+    ('GB_C.D.B0046AA', 'BMS-7500W驱动器'),
+)
+ANALYSIS_PRODUCT_WHITELIST: set[tuple[str, str]] = set(ANALYSIS_PRODUCT_ORDER)
 
 
 class CostingETL:
@@ -206,6 +217,58 @@ class CostingETL:
         if removed > 0:
             logger.info('Removed total rows: %s', removed)
         return result
+
+    def _forward_fill_with_rules(self, df_raw: pd.DataFrame) -> pd.DataFrame:
+        """按业务规则执行向下填充。"""
+        df_filled = df_raw.copy()
+        cols_to_fill = [c for c in df_filled.columns if c in self.FILL_COLS]
+        if not cols_to_fill:
+            return df_filled
+
+        vendor_cols = [c for c in [COL_VENDOR_CODE, COL_VENDOR_NAME] if c in cols_to_fill]
+        normal_fill_cols = [c for c in cols_to_fill if c not in vendor_cols]
+        if normal_fill_cols:
+            df_filled[normal_fill_cols] = df_filled[normal_fill_cols].ffill()
+
+        if not vendor_cols:
+            return df_filled
+        if COL_COST_CENTER not in df_filled.columns:
+            df_filled[vendor_cols] = df_filled[vendor_cols].ffill()
+            return df_filled
+
+        vendor_filled = df_filled[vendor_cols].ffill()
+        # 集成车间供应商字段必须保留原值，避免把上方工单供应商错误继承到当前行。
+        integrated_mask = df_filled[COL_COST_CENTER].astype(str).str.strip().eq(INTEGRATED_WORKSHOP_NAME)
+        df_filled.loc[~integrated_mask, vendor_cols] = vendor_filled.loc[~integrated_mask, vendor_cols]
+        return df_filled
+
+    def _filter_fact_df_for_analysis(self, fact_df: pd.DataFrame) -> pd.DataFrame:
+        """按白名单过滤分析数据，仅输出目标产品。"""
+        required_cols = {'product_code', 'product_name'}
+        if not required_cols.issubset(fact_df.columns):
+            missing_cols = sorted(required_cols - set(fact_df.columns))
+            logger.warning('Skip analysis whitelist filter: missing columns=%s', missing_cols)
+            return fact_df
+
+        if fact_df.empty:
+            return fact_df
+
+        product_pairs = pd.MultiIndex.from_frame(fact_df[['product_code', 'product_name']].astype(str))
+        matched_mask = product_pairs.isin(ANALYSIS_PRODUCT_WHITELIST)
+        filtered_df = fact_df.loc[matched_mask].copy()
+        order_map = {pair: idx for idx, pair in enumerate(ANALYSIS_PRODUCT_ORDER)}
+        filtered_pairs = pd.MultiIndex.from_frame(filtered_df[['product_code', 'product_name']].astype(str))
+        filtered_df['_order_idx'] = filtered_pairs.map(order_map)
+        filtered_df = filtered_df.sort_values(['_order_idx', 'period', 'cost_bucket']).drop(columns=['_order_idx'])
+
+        logger.info(
+            'Analysis product whitelist filter applied: rows %s -> %s, products %s -> %s',
+            len(fact_df),
+            len(filtered_df),
+            fact_df[['product_code', 'product_name']].drop_duplicates().shape[0],
+            filtered_df[['product_code', 'product_name']].drop_duplicates().shape[0],
+        )
+        return filtered_df
 
     def _split_sheets(
         self,
@@ -388,8 +451,6 @@ class CostingETL:
         title_fill = PatternFill(fill_type='solid', fgColor='FFD966')
         header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
         meta_fill = PatternFill(fill_type='solid', fgColor='B4C6E7')
-        outlier_fill = PatternFill(fill_type='solid', fgColor='FFC7CE')
-        outlier_font = Font(color='9C0006')
         border = Border(
             left=Side(style='thin', color='D9D9D9'),
             right=Side(style='thin', color='D9D9D9'),
@@ -459,21 +520,6 @@ class CostingETL:
                     elif metric_type == 'pct':
                         cell.number_format = '0.00%'
 
-                    if (row_idx, column_name) in section.outlier_cells:
-                        cell.fill = outlier_fill
-                        cell.font = outlier_font
-
-            for amount_column in section.amount_columns:
-                if amount_column not in section.data.columns:
-                    continue
-                amount_col_idx = section.data.columns.get_loc(amount_column) + 1
-                amount_col_letter = get_column_letter(amount_col_idx)
-                rule = DataBarRule(start_type='min', end_type='max', color='5B9BD5', showValue=True)
-                worksheet.conditional_formatting.add(
-                    f'{amount_col_letter}{data_start_row}:{amount_col_letter}{data_end_row}',
-                    rule,
-                )
-
             if not filter_set:
                 worksheet.auto_filter.ref = (
                     f'A{table_header_row}:{get_column_letter(max_col)}{max(data_end_row, table_header_row)}'
@@ -490,7 +536,7 @@ class CostingETL:
                 if value is None:
                     continue
                 max_length = max(max_length, len(str(value)))
-            width = min(max(12, max_length + 2), 40)
+            width = 15
             worksheet.column_dimensions[get_column_letter(col)].width = width
 
     def process_file(self, input_path: Path, output_path: Path) -> bool:
@@ -513,11 +559,7 @@ class CostingETL:
                 return False
 
             df_raw = self._remove_total_rows(df_raw)
-            df_filled = df_raw.copy()
-
-            cols_to_fill = [c for c in df_filled.columns if c in self.FILL_COLS]
-            if cols_to_fill:
-                df_filled[cols_to_fill] = df_filled[cols_to_fill].ffill()
+            df_filled = self._forward_fill_with_rules(df_raw)
 
             if target_item in df_filled.columns:
                 df_filled[COL_FILLED_COST_ITEM] = df_filled[target_item].ffill()
@@ -526,8 +568,9 @@ class CostingETL:
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
             fact_df, prep_error_log = build_fact_cost_pq(df_detail, df_qty)
-            analysis_tables = render_tables(fact_df)
-            product_anomaly_sections = build_product_anomaly_sections(fact_df)
+            analysis_fact_df = self._filter_fact_df_for_analysis(fact_df)
+            analysis_tables = render_tables(analysis_fact_df)
+            product_anomaly_sections = build_product_anomaly_sections(analysis_fact_df)
             error_log = prep_error_log.copy()
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:

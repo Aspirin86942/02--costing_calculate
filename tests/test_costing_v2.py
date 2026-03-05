@@ -206,6 +206,110 @@ class TestCostingETL:
         assert len(df_detail) == 2
         assert len(df_qty) == 1
 
+    def test_forward_fill_with_rules_skip_vendor_for_integrated_workshop(self):
+        """测试集成车间下供应商字段不向下填充。"""
+        etl = CostingETL(skip_rows=2)
+        df_raw = pd.DataFrame(
+            {
+                '成本中心名称': ['集成车间', None],
+                '产品编码': ['P001', None],
+                '供应商编码': ['V001', None],
+                '供应商名称': ['供应商A', None],
+            }
+        )
+
+        result = etl._forward_fill_with_rules(df_raw)
+
+        assert result.loc[1, '成本中心名称'] == '集成车间'
+        assert result.loc[1, '产品编码'] == 'P001'
+        assert pd.isna(result.loc[1, '供应商编码'])
+        assert pd.isna(result.loc[1, '供应商名称'])
+
+    def test_forward_fill_with_rules_fill_vendor_for_non_integrated_workshop(self):
+        """测试非集成车间下供应商字段仍向下填充。"""
+        etl = CostingETL(skip_rows=2)
+        df_raw = pd.DataFrame(
+            {
+                '成本中心名称': ['机加车间', None],
+                '产品编码': ['P001', None],
+                '供应商编码': ['V001', None],
+                '供应商名称': ['供应商A', None],
+            }
+        )
+
+        result = etl._forward_fill_with_rules(df_raw)
+
+        assert result.loc[1, '成本中心名称'] == '机加车间'
+        assert result.loc[1, '产品编码'] == 'P001'
+        assert result.loc[1, '供应商编码'] == 'V001'
+        assert result.loc[1, '供应商名称'] == '供应商A'
+
+    def test_filter_fact_df_for_analysis_keeps_only_whitelisted_products(self):
+        """测试分析数据仅保留白名单产品。"""
+        etl = CostingETL(skip_rows=2)
+        fact_df = pd.DataFrame(
+            [
+                {
+                    'period': '2025-01',
+                    'product_code': 'GB_C.D.B0040AA',
+                    'product_name': 'BMS-750W驱动器',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100,
+                    'qty': 10,
+                    'price': 10,
+                    'source_price': 10,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'P001',
+                    'product_name': '产品A',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100,
+                    'qty': 10,
+                    'price': 10,
+                    'source_price': 10,
+                },
+            ]
+        )
+
+        result = etl._filter_fact_df_for_analysis(fact_df)
+
+        assert len(result) == 1
+        assert result.iloc[0]['product_code'] == 'GB_C.D.B0040AA'
+        assert result.iloc[0]['product_name'] == 'BMS-750W驱动器'
+
+    def test_filter_fact_df_for_analysis_uses_whitelist_order(self):
+        """测试分析数据按白名单顺序输出产品。"""
+        etl = CostingETL(skip_rows=2)
+        fact_df = pd.DataFrame(
+            [
+                {
+                    'period': '2025-01',
+                    'product_code': 'GB_C.D.B0041AA',
+                    'product_name': 'BMS-1100W驱动器',
+                    'cost_bucket': 'direct_material',
+                    'amount': 220,
+                    'qty': 20,
+                    'price': 11,
+                    'source_price': 11,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'GB_C.D.B0040AA',
+                    'product_name': 'BMS-750W驱动器',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100,
+                    'qty': 10,
+                    'price': 10,
+                    'source_price': 10,
+                },
+            ]
+        )
+
+        result = etl._filter_fact_df_for_analysis(fact_df)
+
+        assert result['product_code'].tolist() == ['GB_C.D.B0040AA', 'GB_C.D.B0041AA']
+
 
 def test_process_file_writes_analysis_sheets(tmp_path):
     """测试 process_file 会输出三段分析表、样式、筛选与冻结窗格。"""
@@ -218,24 +322,24 @@ def test_process_file_writes_analysis_sheets(tmp_path):
         [
             {
                 '月份': '2025年01期',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
                 '成本项目名称': '直接材料',
                 '本期完工金额': 100,
                 '本期完工单位成本': 10,
             },
             {
                 '月份': '2025年02期',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
                 '成本项目名称': '直接人工',
                 '本期完工金额': 60,
                 '本期完工单位成本': 5,
             },
             {
                 '月份': '2025年02期',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
                 '成本项目名称': '制造费用-人工',
                 '本期完工金额': 40,
                 '本期完工单位成本': 3.3,
@@ -244,8 +348,8 @@ def test_process_file_writes_analysis_sheets(tmp_path):
     )
     df_qty = pd.DataFrame(
         [
-            {'月份': '2025年01期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': 10},
-            {'月份': '2025年02期', '产品编码': 'P001', '产品名称': '产品A', '本期完工数量': 12},
+            {'月份': '2025年01期', '产品编码': 'GB_C.D.B0040AA', '产品名称': 'BMS-750W驱动器', '本期完工数量': 10},
+            {'月份': '2025年02期', '产品编码': 'GB_C.D.B0040AA', '产品名称': 'BMS-750W驱动器', '本期完工数量': 12},
         ]
     )
 
@@ -282,7 +386,7 @@ def test_process_file_writes_analysis_sheets(tmp_path):
     ws_product = wb['按产品异常值分析']
     assert ws_product['A1'].value == '四、按单个产品异常值分析'
     assert ws_product['A3'].value == '产品编码'
-    assert ws_product['A4'].value == 'P001'
+    assert ws_product['A4'].value == 'GB_C.D.B0040AA'
     assert ws_product.freeze_panes == 'A6'
     assert ws_product.auto_filter.ref is not None
     assert len(ws_product.merged_cells.ranges) == 0

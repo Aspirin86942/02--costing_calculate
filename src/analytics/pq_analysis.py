@@ -282,19 +282,15 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
 
     detail_mapped = detail.loc[~unmapped_mask].copy()
 
-    amount_grouped = (
-        detail_mapped.groupby(['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False)
-        .agg(
-            amount=('amount', _sum_decimal_series),
-            source_price=('source_price', _first_decimal),
-        )
-        .sort_values(['product_code', 'period', 'cost_bucket'])
+    amount_grouped = detail_mapped.groupby(
+        ['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False, sort=False
+    ).agg(
+        amount=('amount', _sum_decimal_series),
+        source_price=('source_price', _first_decimal),
     )
 
-    qty_grouped = (
-        qty.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False)
-        .agg(qty=('qty', _sum_decimal_series))
-        .sort_values(['product_code', 'period'])
+    qty_grouped = qty.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False, sort=False).agg(
+        qty=('qty', _sum_decimal_series)
     )
 
     keys = pd.concat(
@@ -382,8 +378,8 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
             )
         )
 
-    fact = fact.sort_values(['product_code', 'cost_bucket', 'period']).reset_index(drop=True)
     fact = fact[['period', 'product_code', 'product_name', 'cost_bucket', 'amount', 'qty', 'price', 'source_price']]
+    fact = fact.reset_index(drop=True)
 
     error_log = pd.concat(prep_errors, ignore_index=True) if prep_errors else _empty_error_log()
     return fact, error_log
@@ -395,7 +391,7 @@ def _build_pivot(bucket_df: pd.DataFrame, value_col: str, period_columns: list[s
         columns='period_display',
         values=value_col,
         aggfunc='first',
-        sort=True,
+        sort=False,
     )
     pivot = pivot.reindex(columns=period_columns).reset_index()
     return pivot
@@ -468,14 +464,16 @@ def _build_product_metric_df(fact_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=columns)
 
     amount_by_bucket = (
-        fact_df.groupby(['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False)
+        fact_df.groupby(
+            ['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False, sort=False
+        )
         .agg(amount=('amount', _sum_decimal_series))
         .pivot_table(
             index=['product_code', 'product_name', 'period'],
             columns='cost_bucket',
             values='amount',
             aggfunc='first',
-            sort=True,
+            sort=False,
         )
         .reset_index()
     )
@@ -493,17 +491,15 @@ def _build_product_metric_df(fact_df: pd.DataFrame) -> pd.DataFrame:
         amount_by_bucket['moh'].map(_to_decimal).map(lambda value: value if value is not None else ZERO)
     )
 
-    qty_by_product = (
-        fact_df.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False)
-        .agg(completed_qty=('qty', _first_decimal))
-        .sort_values(['product_code', 'period'])
-    )
+    qty_by_product = fact_df.groupby(
+        ['product_code', 'product_name', 'period'], dropna=False, as_index=False, sort=False
+    ).agg(completed_qty=('qty', _first_decimal))
 
     metric_df = amount_by_bucket.merge(
         qty_by_product,
         on=['product_code', 'product_name', 'period'],
         how='left',
-    ).sort_values(['product_code', 'period'])
+    )
 
     metric_df = metric_df.rename(
         columns={
@@ -532,65 +528,27 @@ def _build_product_metric_df(fact_df: pd.DataFrame) -> pd.DataFrame:
     return metric_df.reset_index(drop=True)
 
 
-def _detect_iqr_outliers(product_df: pd.DataFrame, metric_keys: list[str]) -> set[tuple[int, str]]:
-    outliers: set[tuple[int, str]] = set()
-
-    for key in metric_keys:
-        numeric_values = []
-        indexed_values: list[tuple[int, float]] = []
-        for idx, value in enumerate(product_df[key].tolist()):
-            decimal_value = _to_decimal(value)
-            if decimal_value is None:
-                continue
-            float_value = float(decimal_value)
-            numeric_values.append(float_value)
-            indexed_values.append((idx, float_value))
-
-        if len(numeric_values) < 4:
-            continue
-        numeric_series = pd.Series(numeric_values)
-        q1 = float(numeric_series.quantile(0.25))
-        q3 = float(numeric_series.quantile(0.75))
-        iqr = q3 - q1
-        if iqr == 0:
-            continue
-        lower = q1 - 1.5 * iqr
-        upper = q3 + 1.5 * iqr
-        for idx, float_value in indexed_values:
-            if float_value < lower or float_value > upper:
-                outliers.add((idx, key))
-
-    return outliers
-
-
 def build_product_anomaly_sections(fact_df: pd.DataFrame) -> list[ProductAnomalySection]:
     """按产品构建异常分析分段。"""
     metric_df = _build_product_metric_df(fact_df)
     if metric_df.empty:
         return []
 
-    outlier_metric_keys = [field for field, _, _, detect in PRODUCT_ANALYSIS_FIELDS if detect]
     sections: list[ProductAnomalySection] = []
 
-    grouped = metric_df.groupby(['product_code', 'product_name'], dropna=False, sort=True)
+    grouped = metric_df.groupby(['product_code', 'product_name'], dropna=False, sort=False)
     for (product_code, product_name), product_frame in grouped:
         product_frame = product_frame.sort_values('period').reset_index(drop=True)
-        outlier_cells_internal = _detect_iqr_outliers(product_frame, outlier_metric_keys)
 
         display_data = pd.DataFrame({'月份': product_frame['period_display']})
         column_types = {'月份': 'text'}
         amount_columns: list[str] = []
-        outlier_cells_display: set[tuple[int, str]] = set()
 
         for internal_key, display_name, metric_type, _detect in PRODUCT_ANALYSIS_FIELDS:
             display_data[display_name] = product_frame[internal_key]
             column_types[display_name] = metric_type
             if metric_type == 'amount':
                 amount_columns.append(display_name)
-
-        field_map = {internal_key: display_name for internal_key, display_name, _, _ in PRODUCT_ANALYSIS_FIELDS}
-        for row_idx, internal_key in outlier_cells_internal:
-            outlier_cells_display.add((row_idx, field_map[internal_key]))
 
         sections.append(
             ProductAnomalySection(
@@ -599,7 +557,7 @@ def build_product_anomaly_sections(fact_df: pd.DataFrame) -> list[ProductAnomaly
                 data=display_data,
                 column_types=column_types,
                 amount_columns=amount_columns,
-                outlier_cells=outlier_cells_display,
+                outlier_cells=set(),
             )
         )
 

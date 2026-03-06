@@ -115,6 +115,33 @@ def test_build_fact_cost_pq_logs_missing_qty() -> None:
     assert fact_df[(fact_df['period'] == '2025-02') & fact_df['qty'].isna()].shape[0] == 3
 
 
+def test_build_fact_cost_pq_ignores_source_price_mismatch() -> None:
+    detail_df = _sample_detail_df().copy()
+    direct_material_mask = (detail_df['月份'] == '2025年1月') & (detail_df['成本项目名称'] == '直接材料')
+    detail_df.loc[direct_material_mask, '本期完工单位成本'] = '999.99'
+
+    fact_df, error_log = build_fact_cost_pq(detail_df, _sample_qty_df())
+
+    jan_dm_row = fact_df[(fact_df['period'] == '2025-01') & (fact_df['cost_bucket'] == 'direct_material')].iloc[0]
+    assert jan_dm_row['price'] == Decimal('10')
+    assert (error_log['issue_type'] == 'PRICE_MISMATCH').sum() == 0
+
+
+def test_build_fact_cost_pq_drops_source_price_column() -> None:
+    fact_df, _ = build_fact_cost_pq(_sample_detail_df(), _sample_qty_df())
+
+    assert 'source_price' not in fact_df.columns
+    assert fact_df.columns.tolist() == [
+        'period',
+        'product_code',
+        'product_name',
+        'cost_bucket',
+        'amount',
+        'qty',
+        'price',
+    ]
+
+
 def test_render_tables_returns_three_sections_per_sheet() -> None:
     fact_df, _ = build_fact_cost_pq(_sample_detail_df(), _sample_qty_df())
     tables = render_tables(fact_df)

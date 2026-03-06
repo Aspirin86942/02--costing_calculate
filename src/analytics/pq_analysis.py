@@ -9,7 +9,6 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 
 ZERO = Decimal('0')
-PRICE_DIFF_TOLERANCE = Decimal('0.01')
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 
 
@@ -92,27 +91,12 @@ def _safe_divide(numerator: object, denominator: object) -> Decimal | None:
     return num / den
 
 
-def _subtract_decimal(lhs: object, rhs: object) -> Decimal | None:
-    left = _to_decimal(lhs)
-    right = _to_decimal(rhs)
-    if left is None or right is None:
-        return None
-    return left - right
-
-
 def _add_decimal(lhs: object, rhs: object) -> Decimal | None:
     left = _to_decimal(lhs)
     right = _to_decimal(rhs)
     if left is None or right is None:
         return None
     return left + right
-
-
-def _decimal_abs(value: object) -> Decimal | None:
-    decimal_value = _to_decimal(value)
-    if decimal_value is None:
-        return None
-    return abs(decimal_value)
 
 
 def _normalize_period(value: object) -> str | None:
@@ -255,10 +239,6 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
     detail['period'] = detail[detail_period_col].map(_normalize_period)
     detail['cost_bucket'] = detail['cost_item'].map(_map_cost_bucket)
     detail['amount'] = detail['本期完工金额'].map(_to_decimal)
-    if '本期完工单位成本' in detail.columns:
-        detail['source_price'] = detail['本期完工单位成本'].map(_to_decimal)
-    else:
-        detail['source_price'] = None
 
     qty = df_qty.copy().rename(columns={'产品编码': 'product_code', '产品名称': 'product_name'})
     qty['period'] = qty[qty_period_col].map(_normalize_period)
@@ -284,10 +264,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
 
     amount_grouped = detail_mapped.groupby(
         ['product_code', 'product_name', 'period', 'cost_bucket'], dropna=False, as_index=False, sort=False
-    ).agg(
-        amount=('amount', _sum_decimal_series),
-        source_price=('source_price', _first_decimal),
-    )
+    ).agg(amount=('amount', _sum_decimal_series))
 
     qty_grouped = qty.groupby(['product_code', 'product_name', 'period'], dropna=False, as_index=False, sort=False).agg(
         qty=('qty', _sum_decimal_series)
@@ -303,7 +280,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
 
     if keys.empty:
         fact_empty = pd.DataFrame(
-            columns=['period', 'product_code', 'product_name', 'cost_bucket', 'amount', 'qty', 'price', 'source_price']
+            columns=['period', 'product_code', 'product_name', 'cost_bucket', 'amount', 'qty', 'price']
         )
         return fact_empty, pd.concat(prep_errors, ignore_index=True) if prep_errors else _empty_error_log()
 
@@ -353,32 +330,7 @@ def build_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[p
         )
 
     fact['price'] = fact['amount'].combine(fact['qty'], _safe_divide)
-
-    source_price_comparable = fact['source_price'].notna() & fact['price'].notna()
-    source_diff = fact['price'].combine(fact['source_price'], _subtract_decimal).map(_decimal_abs)
-    source_mismatch = source_price_comparable & source_diff.map(
-        lambda value: value is not None and value > PRICE_DIFF_TOLERANCE
-    )
-    if source_mismatch.any():
-        mismatched = fact.loc[
-            source_mismatch,
-            ['product_code', 'product_name', 'period', 'cost_bucket', 'price', 'source_price'],
-        ].copy()
-        mismatched['price_diff'] = source_diff[source_mismatch]
-        prep_errors.append(
-            _build_error_frame(
-                mismatched,
-                issue_type='PRICE_MISMATCH',
-                field_name='本期完工单位成本',
-                reason='amount/qty 重算单价与源单价偏差超阈值',
-                action='保留重算单价并记录差异',
-                lhs_column='price',
-                rhs_column='source_price',
-                diff_column='price_diff',
-            )
-        )
-
-    fact = fact[['period', 'product_code', 'product_name', 'cost_bucket', 'amount', 'qty', 'price', 'source_price']]
+    fact = fact[['period', 'product_code', 'product_name', 'cost_bucket', 'amount', 'qty', 'price']]
     fact = fact.reset_index(drop=True)
 
     error_log = pd.concat(prep_errors, ignore_index=True) if prep_errors else _empty_error_log()

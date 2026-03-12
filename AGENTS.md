@@ -179,9 +179,10 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Python ETL 工具：
+- `src/analytics/`: 分析与异常检测（`pq_analysis.py`，含价量分析、工单异常分析、数据质量校验）
 - `src/etl/`: ETL 主逻辑（`costing_v2.py` 主流程，`utils.py` 工具函数）
 - `src/config/`: 路径与目录配置（`settings.py`）
-- `tests/`: 单元测试（`test_costing_v2.py`）
+- `tests/`: 单元测试（`test_costing_v2.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`）
 - `data/raw/{gb,shukong}/`: 原始 Excel 输入
 - `data/processed/{gb,shukong}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
@@ -210,6 +211,8 @@
   - 列标准化与自动重命名
   - 汇总行过滤
   - 文件处理成功/失败路径
+  - `产品数量统计` 的金额补强、单位成本与勾稽字段
+  - `按工单按产品异常值分析` 的 Modified Z-score 分级与白名单过滤
 - 优先用小型 DataFrame fixture，避免依赖大体量真实 Excel。
 
 ### Commit / PR Guidelines
@@ -231,5 +234,13 @@
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
 - 分析页仅展示白名单产品，匹配规则为`产品编码 + 产品名称`双字段精确匹配。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
-- `按产品异常值分析`sheet保留，但已关闭异常值计算（不再执行 IQR 检测）。
+- `产品数量统计`sheet保留现有行粒度，并新增三大类/制造费用细项金额、单位成本、勾稽状态与异常原因说明。
+- 新增`按工单按产品异常值分析`sheet：
+  - 一行定义为`月份 + 产品编码 + 工单编号 + 工单行`
+  - 异常分析按`产品`在整个统计期间内建总体，月份仅作标签与汇总字段
+  - 仅对大于 0 的单位成本计算对数与 Modified Z-score
+  - 异常阈值：`|score| <= 2.5`为正常，`2.5 < |score| <= 3.5`为关注，`|score| > 3.5`为高度可疑
+- 新增`数据质量校验`sheet，至少输出行数勾稽、空值率、工单主键唯一性和分析覆盖率。
+- `委外加工费`不纳入三大类价量分析与工单异常分析，必须写入`error_log`。
+- `按产品异常值分析`sheet保留，但已改为兼容摘要页，不再执行 IQR 检测。
 - `按产品异常值分析`sheet列宽固定为`15`，并去除该 sheet 的条件格式数据条与异常值红底红字高亮。

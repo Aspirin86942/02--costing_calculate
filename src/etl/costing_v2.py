@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -11,10 +12,10 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 try:
     from src.analytics.pq_analysis import (
+        FlatSheet,
         ProductAnomalySection,
         SectionBlock,
-        build_fact_cost_pq,
-        build_product_anomaly_sections,
+        build_report_artifacts,
         render_tables,
     )
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
@@ -26,10 +27,10 @@ except ModuleNotFoundError:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
     from src.analytics.pq_analysis import (
+        FlatSheet,
         ProductAnomalySection,
         SectionBlock,
-        build_fact_cost_pq,
-        build_product_anomaly_sections,
+        build_report_artifacts,
         render_tables,
     )
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
@@ -242,31 +243,66 @@ class CostingETL:
 
     def _filter_fact_df_for_analysis(self, fact_df: pd.DataFrame) -> pd.DataFrame:
         """按白名单过滤分析数据，仅输出目标产品。"""
-        required_cols = {'product_code', 'product_name'}
-        if not required_cols.issubset(fact_df.columns):
-            missing_cols = sorted(required_cols - set(fact_df.columns))
+        return self._filter_dataframe_by_whitelist(
+            fact_df,
+            code_col='product_code',
+            name_col='product_name',
+            sort_cols=['period', 'cost_bucket'],
+        )
+
+    def _filter_dataframe_by_whitelist(
+        self,
+        df: pd.DataFrame,
+        *,
+        code_col: str,
+        name_col: str,
+        sort_cols: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """按产品白名单过滤任意分析 DataFrame。"""
+        actual_required_cols = {code_col, name_col}
+        if not actual_required_cols.issubset(df.columns):
+            missing_cols = sorted(actual_required_cols - set(df.columns))
             logger.warning('Skip analysis whitelist filter: missing columns=%s', missing_cols)
-            return fact_df
+            return df
 
-        if fact_df.empty:
-            return fact_df
+        if df.empty:
+            return df
 
-        product_pairs = pd.MultiIndex.from_frame(fact_df[['product_code', 'product_name']].astype(str))
+        product_pairs = pd.MultiIndex.from_frame(df[[code_col, name_col]].astype(str))
         matched_mask = product_pairs.isin(ANALYSIS_PRODUCT_WHITELIST)
-        filtered_df = fact_df.loc[matched_mask].copy()
+        filtered_df = df.loc[matched_mask].copy()
         order_map = {pair: idx for idx, pair in enumerate(ANALYSIS_PRODUCT_ORDER)}
-        filtered_pairs = pd.MultiIndex.from_frame(filtered_df[['product_code', 'product_name']].astype(str))
+        filtered_pairs = pd.MultiIndex.from_frame(filtered_df[[code_col, name_col]].astype(str))
         filtered_df['_order_idx'] = filtered_pairs.map(order_map)
-        filtered_df = filtered_df.sort_values(['_order_idx', 'period', 'cost_bucket']).drop(columns=['_order_idx'])
+        order_cols = ['_order_idx']
+        if sort_cols:
+            order_cols.extend([col for col in sort_cols if col in filtered_df.columns])
+        filtered_df = filtered_df.sort_values(order_cols).drop(columns=['_order_idx'])
 
         logger.info(
             'Analysis product whitelist filter applied: rows %s -> %s, products %s -> %s',
-            len(fact_df),
+            len(df),
             len(filtered_df),
-            fact_df[['product_code', 'product_name']].drop_duplicates().shape[0],
-            filtered_df[['product_code', 'product_name']].drop_duplicates().shape[0],
+            df[[code_col, name_col]].drop_duplicates().shape[0],
+            filtered_df[[code_col, name_col]].drop_duplicates().shape[0],
         )
         return filtered_df
+
+    def _filter_product_anomaly_sections(
+        self,
+        sections: list[ProductAnomalySection],
+    ) -> list[ProductAnomalySection]:
+        """按白名单和既定顺序过滤兼容摘要分段。"""
+        order_map = {pair: idx for idx, pair in enumerate(ANALYSIS_PRODUCT_ORDER)}
+        filtered_sections = [
+            section
+            for section in sections
+            if (str(section.product_code), str(section.product_name)) in ANALYSIS_PRODUCT_WHITELIST
+        ]
+        return sorted(
+            filtered_sections,
+            key=lambda section: order_map[(str(section.product_code), str(section.product_name))],
+        )
 
     def _split_sheets(
         self,
@@ -436,6 +472,79 @@ class CostingETL:
             width = min(max(12, max_length + 2), 40)
             worksheet.column_dimensions[get_column_letter(col)].width = width
 
+    def _write_flat_sheet(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        table: FlatSheet,
+        *,
+        freeze_panes: str = 'A2',
+        fixed_width: int | None = None,
+    ) -> None:
+        """写入平铺数据 sheet 并应用基础样式。"""
+        write_df = table.data.copy()
+        for column_name, metric_type in table.column_types.items():
+            if column_name not in write_df.columns:
+                continue
+            if metric_type in {'amount', 'price', 'qty', 'score', 'pct'}:
+                write_df[column_name] = write_df[column_name].map(
+                    lambda value: float(value) if isinstance(value, Decimal) else value
+                )
+
+        write_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        worksheet = writer.sheets[sheet_name]
+
+        header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
+        border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9'),
+        )
+        align_left = Alignment(horizontal='left', vertical='center')
+        align_center = Alignment(horizontal='center', vertical='center')
+        align_right = Alignment(horizontal='right', vertical='center')
+
+        for col_idx, column_name in enumerate(table.data.columns, start=1):
+            header_cell = worksheet.cell(1, col_idx)
+            header_cell.fill = header_fill
+            header_cell.font = Font(bold=True)
+            header_cell.alignment = align_center
+            header_cell.border = border
+
+            metric_type = table.column_types.get(column_name, 'text')
+            for row_idx in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row_idx, col_idx)
+                cell.border = border
+                if metric_type == 'text':
+                    cell.alignment = align_left
+                else:
+                    cell.alignment = align_right
+                if metric_type in {'amount', 'price'}:
+                    cell.number_format = '#,##0.00'
+                elif metric_type == 'qty':
+                    cell.number_format = '#,##0'
+                elif metric_type == 'score':
+                    cell.number_format = '0.0000'
+                elif metric_type == 'pct':
+                    cell.number_format = '0.00%'
+
+        worksheet.freeze_panes = freeze_panes
+        if worksheet.max_column > 0:
+            worksheet.auto_filter.ref = f'A1:{get_column_letter(worksheet.max_column)}{max(worksheet.max_row, 1)}'
+
+        for col in range(1, worksheet.max_column + 1):
+            if fixed_width is not None:
+                worksheet.column_dimensions[get_column_letter(col)].width = fixed_width
+                continue
+            max_length = 0
+            for row in range(1, worksheet.max_row + 1):
+                value = worksheet.cell(row, col).value
+                if value is None:
+                    continue
+                max_length = max(max_length, len(str(value)))
+            worksheet.column_dimensions[get_column_letter(col)].width = min(max(12, max_length + 2), 24)
+
     def _write_product_anomaly_sheet(
         self,
         writer: pd.ExcelWriter,
@@ -565,21 +674,34 @@ class CostingETL:
                 df_filled[COL_FILLED_COST_ITEM] = None
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
-            fact_df, prep_error_log = build_fact_cost_pq(df_detail, df_qty)
-            analysis_fact_df = self._filter_fact_df_for_analysis(fact_df)
+            artifacts = build_report_artifacts(df_detail, df_qty)
+            analysis_fact_df = self._filter_fact_df_for_analysis(artifacts.fact_df)
             analysis_tables = render_tables(analysis_fact_df)
-            product_anomaly_sections = build_product_anomaly_sections(analysis_fact_df)
-            error_log = prep_error_log.copy()
+            filtered_work_order_sheet = FlatSheet(
+                data=self._filter_dataframe_by_whitelist(
+                    artifacts.work_order_sheet.data,
+                    code_col='产品编码',
+                    name_col='产品名称',
+                    sort_cols=['月份', '工单编号', '工单行'],
+                ),
+                column_types=artifacts.work_order_sheet.column_types,
+            )
+            product_anomaly_sections = self._filter_product_anomaly_sections(artifacts.product_anomaly_sections)
+            error_log = artifacts.error_log.copy()
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 df_detail.to_excel(writer, sheet_name='成本明细', index=False)
-                df_qty.to_excel(writer, sheet_name='产品数量统计', index=False)
+                artifacts.qty_sheet_df.to_excel(writer, sheet_name='产品数量统计', index=False)
                 for sheet_name, sections in analysis_tables.items():
                     self._write_analysis_sheet(writer, sheet_name, sections)
+                self._write_flat_sheet(writer, '按工单按产品异常值分析', filtered_work_order_sheet, freeze_panes='A2')
                 self._write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
+                self._write_flat_sheet(writer, '数据质量校验', artifacts.quality_sheet, freeze_panes='A2')
                 error_log.to_excel(writer, sheet_name='error_log', index=False)
 
-            logger.info('Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(df_qty))
+            logger.info(
+                'Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(artifacts.qty_sheet_df)
+            )
             if not error_log.empty:
                 logger.warning('Detected %s data quality issues, check sheet error_log', len(error_log))
             return True

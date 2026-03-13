@@ -3,6 +3,7 @@
 import logging
 import sys
 from decimal import Decimal
+from numbers import Real
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,22 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 try:
     from src.analytics.pq_analysis import (
+        QTY_DL_AMOUNT,
+        QTY_DL_UNIT_COST,
+        QTY_DM_AMOUNT,
+        QTY_DM_UNIT_COST,
+        QTY_MOH_AMOUNT,
+        QTY_MOH_CONSUMABLES_AMOUNT,
+        QTY_MOH_CONSUMABLES_UNIT_COST,
+        QTY_MOH_DEPRECIATION_AMOUNT,
+        QTY_MOH_DEPRECIATION_UNIT_COST,
+        QTY_MOH_LABOR_AMOUNT,
+        QTY_MOH_LABOR_UNIT_COST,
+        QTY_MOH_OTHER_AMOUNT,
+        QTY_MOH_OTHER_UNIT_COST,
+        QTY_MOH_UNIT_COST,
+        QTY_MOH_UTILITIES_AMOUNT,
+        QTY_MOH_UTILITIES_UNIT_COST,
         FlatSheet,
         ProductAnomalySection,
         SectionBlock,
@@ -27,6 +44,22 @@ except ModuleNotFoundError:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
     from src.analytics.pq_analysis import (
+        QTY_DL_AMOUNT,
+        QTY_DL_UNIT_COST,
+        QTY_DM_AMOUNT,
+        QTY_DM_UNIT_COST,
+        QTY_MOH_AMOUNT,
+        QTY_MOH_CONSUMABLES_AMOUNT,
+        QTY_MOH_CONSUMABLES_UNIT_COST,
+        QTY_MOH_DEPRECIATION_AMOUNT,
+        QTY_MOH_DEPRECIATION_UNIT_COST,
+        QTY_MOH_LABOR_AMOUNT,
+        QTY_MOH_LABOR_UNIT_COST,
+        QTY_MOH_OTHER_AMOUNT,
+        QTY_MOH_OTHER_UNIT_COST,
+        QTY_MOH_UNIT_COST,
+        QTY_MOH_UTILITIES_AMOUNT,
+        QTY_MOH_UTILITIES_UNIT_COST,
         FlatSheet,
         ProductAnomalySection,
         SectionBlock,
@@ -87,6 +120,44 @@ ANALYSIS_PRODUCT_ORDER: tuple[tuple[str, str], ...] = (
     ('GB_C.D.B0046AA', 'BMS-7500W驱动器'),
 )
 ANALYSIS_PRODUCT_WHITELIST: set[tuple[str, str]] = set(ANALYSIS_PRODUCT_ORDER)
+EXCEL_TWO_DECIMAL_FORMAT = '#,##0.00'
+EXCEL_INTEGER_FORMAT = '#,##0'
+EXCEL_SCORE_FORMAT = '0.0000'
+EXCEL_PERCENT_FORMAT = '0.00%'
+DETAIL_TWO_DECIMAL_COLUMNS = {
+    COL_CURRENT_COMPLETED_UNIT_COST,
+    COL_CURRENT_COMPLETED_AMOUNT,
+}
+QTY_TWO_DECIMAL_COLUMNS = {
+    COL_CURRENT_COMPLETED_UNIT_COST,
+    COL_CURRENT_COMPLETED_AMOUNT,
+    QTY_DM_AMOUNT,
+    QTY_DL_AMOUNT,
+    QTY_MOH_AMOUNT,
+    QTY_MOH_OTHER_AMOUNT,
+    QTY_MOH_LABOR_AMOUNT,
+    QTY_MOH_CONSUMABLES_AMOUNT,
+    QTY_MOH_DEPRECIATION_AMOUNT,
+    QTY_MOH_UTILITIES_AMOUNT,
+    QTY_DM_UNIT_COST,
+    QTY_DL_UNIT_COST,
+    QTY_MOH_UNIT_COST,
+    QTY_MOH_OTHER_UNIT_COST,
+    QTY_MOH_LABOR_UNIT_COST,
+    QTY_MOH_CONSUMABLES_UNIT_COST,
+    QTY_MOH_DEPRECIATION_UNIT_COST,
+    QTY_MOH_UTILITIES_UNIT_COST,
+}
+WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ('直接材料单位完工成本', '直接材料异常标记'),
+    ('直接人工单位完工成本', '直接人工异常标记'),
+    ('制造费用单位完工成本', '制造费用异常标记'),
+    ('制造费用_其他单位完工成本', '制造费用_其他异常标记'),
+    ('制造费用_人工单位完工成本', '制造费用_人工异常标记'),
+    ('制造费用_机物料及低耗单位完工成本', '制造费用_机物料及低耗异常标记'),
+    ('制造费用_折旧单位完工成本', '制造费用_折旧异常标记'),
+    ('制造费用_水电费单位完工成本', '制造费用_水电费异常标记'),
+)
 
 
 class CostingETL:
@@ -180,6 +251,160 @@ class CostingETL:
     def __init__(self, skip_rows: int = 2):
         self.skip_rows = skip_rows
         ensure_directories()
+
+    @staticmethod
+    def _to_excel_number(value: object) -> object:
+        """把 Decimal/数值对象转成 Excel 可稳定识别的 number 类型。"""
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, Real):
+            return value if pd.isna(value) else float(value)
+        return value
+
+    @staticmethod
+    def _resolve_metric_number_format(metric_type: str, *, qty_format: str = EXCEL_INTEGER_FORMAT) -> str | None:
+        if metric_type in {'amount', 'price'}:
+            return EXCEL_TWO_DECIMAL_FORMAT
+        if metric_type == 'qty':
+            return qty_format
+        if metric_type == 'score':
+            return EXCEL_SCORE_FORMAT
+        if metric_type == 'pct':
+            return EXCEL_PERCENT_FORMAT
+        return None
+
+    def _coerce_excel_numeric_columns(self, df: pd.DataFrame, numeric_columns: set[str]) -> pd.DataFrame:
+        """写出前统一转成数值单元格，避免 Decimal 被 Excel 当作文本。"""
+        write_df = df.copy()
+        for column_name in numeric_columns:
+            if column_name in write_df.columns:
+                write_df[column_name] = write_df[column_name].map(self._to_excel_number)
+        return write_df
+
+    def _apply_basic_sheet_styles(
+        self,
+        worksheet: Worksheet,
+        columns: list[str],
+        *,
+        column_formats: dict[str, str],
+        freeze_panes: str,
+        fixed_width: int | None = None,
+    ) -> None:
+        header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
+        border = Border(
+            left=Side(style='thin', color='D9D9D9'),
+            right=Side(style='thin', color='D9D9D9'),
+            top=Side(style='thin', color='D9D9D9'),
+            bottom=Side(style='thin', color='D9D9D9'),
+        )
+        align_left = Alignment(horizontal='left', vertical='center')
+        align_center = Alignment(horizontal='center', vertical='center')
+        align_right = Alignment(horizontal='right', vertical='center')
+
+        for col_idx, column_name in enumerate(columns, start=1):
+            header_cell = worksheet.cell(1, col_idx)
+            header_cell.fill = header_fill
+            header_cell.font = Font(bold=True)
+            header_cell.alignment = align_center
+            header_cell.border = border
+
+            number_format = column_formats.get(column_name)
+            for row_idx in range(2, worksheet.max_row + 1):
+                cell = worksheet.cell(row_idx, col_idx)
+                cell.border = border
+                if number_format is None:
+                    cell.alignment = align_left
+                    continue
+
+                cell.alignment = align_right
+                cell.number_format = number_format
+
+        worksheet.freeze_panes = freeze_panes
+        if worksheet.max_column > 0:
+            worksheet.auto_filter.ref = f'A1:{get_column_letter(worksheet.max_column)}{max(worksheet.max_row, 1)}'
+
+        for col_idx in range(1, worksheet.max_column + 1):
+            if fixed_width is not None:
+                worksheet.column_dimensions[get_column_letter(col_idx)].width = fixed_width
+                continue
+
+            max_length = 0
+            for row_idx in range(1, worksheet.max_row + 1):
+                value = worksheet.cell(row_idx, col_idx).value
+                if value is None:
+                    continue
+                max_length = max(max_length, len(str(value)))
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max(12, max_length + 2), 24)
+
+    def _write_dataframe_sheet(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        df: pd.DataFrame,
+        *,
+        numeric_columns: set[str],
+        freeze_panes: str = 'A2',
+        fixed_width: int | None = None,
+    ) -> Worksheet:
+        """写入普通 DataFrame sheet，并按列名套用数值格式。"""
+        column_formats = {
+            column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns
+        }
+        write_df = self._coerce_excel_numeric_columns(df, set(column_formats))
+        write_df.to_excel(writer, sheet_name=sheet_name, index=False)
+        worksheet = writer.sheets[sheet_name]
+        self._apply_basic_sheet_styles(
+            worksheet,
+            write_df.columns.tolist(),
+            column_formats=column_formats,
+            freeze_panes=freeze_panes,
+            fixed_width=fixed_width,
+        )
+        return worksheet
+
+    def _apply_work_order_highlights(self, worksheet: Worksheet) -> None:
+        """把异常颜色挂在“值列+标记列”上，降低业务人员定位异常字段的成本。"""
+        header_map = {
+            worksheet.cell(1, col_idx).value: col_idx
+            for col_idx in range(1, worksheet.max_column + 1)
+            if worksheet.cell(1, col_idx).value is not None
+        }
+        highlight_styles = {
+            '关注': {
+                'fill': PatternFill(fill_type='solid', fgColor='DDEBF7'),
+                'font': None,
+            },
+            '高度可疑': {
+                'fill': PatternFill(fill_type='solid', fgColor='4472C4'),
+                'font': Font(color='FFFFFF'),
+            },
+        }
+
+        for value_column, flag_column in WORK_ORDER_HIGHLIGHT_COLUMNS:
+            value_idx = header_map.get(value_column)
+            flag_idx = header_map.get(flag_column)
+            if value_idx is None or flag_idx is None:
+                logger.warning(
+                    'Skip work-order highlight: missing columns sheet=%s value=%s flag=%s',
+                    worksheet.title,
+                    value_column,
+                    flag_column,
+                )
+                continue
+
+            for row_idx in range(2, worksheet.max_row + 1):
+                flag_value = worksheet.cell(row_idx, flag_idx).value
+                style = highlight_styles.get(str(flag_value).strip()) if flag_value is not None else None
+                if style is None:
+                    continue
+
+                for col_idx in (value_idx, flag_idx):
+                    cell = worksheet.cell(row_idx, col_idx)
+                    cell.fill = style['fill']
+                    if style['font'] is not None:
+                        cell.font = style['font']
 
     def _auto_rename_columns(self, df: pd.DataFrame) -> dict[str, str]:
         """Infer key columns when source headers vary."""
@@ -358,6 +583,16 @@ class CostingETL:
         section_meta: list[dict[str, int | str | bool]] = []
 
         for section in sections:
+            write_section_df = section.data.copy()
+            if section.metric_type in {'amount', 'price', 'qty'}:
+                numeric_columns = [
+                    column_name
+                    for column_name in write_section_df.columns
+                    if column_name not in {'产品编码', '产品名称'}
+                ]
+                for column_name in numeric_columns:
+                    write_section_df[column_name] = write_section_df[column_name].map(self._to_excel_number)
+
             title_frame = pd.DataFrame([[section.title]])
             title_frame.to_excel(
                 writer,
@@ -366,13 +601,13 @@ class CostingETL:
                 header=False,
                 startrow=start_row,
             )
-            section.data.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row + 1)
+            write_section_df.to_excel(writer, sheet_name=sheet_name, index=False, startrow=start_row + 1)
 
             title_row = start_row + 1
             header_row = start_row + 2
             data_start = start_row + 3
-            data_end = data_start + len(section.data) - 1
-            max_col = max(1, section.data.shape[1])
+            data_end = data_start + len(write_section_df) - 1
+            max_col = max(1, write_section_df.shape[1])
 
             section_meta.append(
                 {
@@ -385,7 +620,7 @@ class CostingETL:
                     'has_total_row': section.has_total_row,
                 }
             )
-            start_row += len(section.data) + 3
+            start_row += len(write_section_df) + 3
 
         worksheet = writer.sheets[sheet_name]
         self._style_analysis_sheet(worksheet, section_meta)
@@ -441,10 +676,12 @@ class CostingETL:
                         cell.alignment = align_left
                     else:
                         cell.alignment = align_right
-                        if metric_type in {'amount', 'price'}:
-                            cell.number_format = '#,##0.00'
-                        elif metric_type == 'qty':
-                            cell.number_format = '#,##0'
+                        number_format = self._resolve_metric_number_format(
+                            metric_type,
+                            qty_format=EXCEL_TWO_DECIMAL_FORMAT,
+                        )
+                        if number_format is not None:
+                            cell.number_format = number_format
 
             if has_total_row:
                 total_row = data_end
@@ -480,70 +717,29 @@ class CostingETL:
         *,
         freeze_panes: str = 'A2',
         fixed_width: int | None = None,
-    ) -> None:
+    ) -> Worksheet:
         """写入平铺数据 sheet 并应用基础样式。"""
         write_df = table.data.copy()
+        column_formats: dict[str, str] = {}
         for column_name, metric_type in table.column_types.items():
             if column_name not in write_df.columns:
                 continue
             if metric_type in {'amount', 'price', 'qty', 'score', 'pct'}:
-                write_df[column_name] = write_df[column_name].map(
-                    lambda value: float(value) if isinstance(value, Decimal) else value
-                )
+                write_df[column_name] = write_df[column_name].map(self._to_excel_number)
+            number_format = self._resolve_metric_number_format(metric_type)
+            if number_format is not None:
+                column_formats[column_name] = number_format
 
         write_df.to_excel(writer, sheet_name=sheet_name, index=False)
         worksheet = writer.sheets[sheet_name]
-
-        header_fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
-        border = Border(
-            left=Side(style='thin', color='D9D9D9'),
-            right=Side(style='thin', color='D9D9D9'),
-            top=Side(style='thin', color='D9D9D9'),
-            bottom=Side(style='thin', color='D9D9D9'),
+        self._apply_basic_sheet_styles(
+            worksheet,
+            write_df.columns.tolist(),
+            column_formats=column_formats,
+            freeze_panes=freeze_panes,
+            fixed_width=fixed_width,
         )
-        align_left = Alignment(horizontal='left', vertical='center')
-        align_center = Alignment(horizontal='center', vertical='center')
-        align_right = Alignment(horizontal='right', vertical='center')
-
-        for col_idx, column_name in enumerate(table.data.columns, start=1):
-            header_cell = worksheet.cell(1, col_idx)
-            header_cell.fill = header_fill
-            header_cell.font = Font(bold=True)
-            header_cell.alignment = align_center
-            header_cell.border = border
-
-            metric_type = table.column_types.get(column_name, 'text')
-            for row_idx in range(2, worksheet.max_row + 1):
-                cell = worksheet.cell(row_idx, col_idx)
-                cell.border = border
-                if metric_type == 'text':
-                    cell.alignment = align_left
-                else:
-                    cell.alignment = align_right
-                if metric_type in {'amount', 'price'}:
-                    cell.number_format = '#,##0.00'
-                elif metric_type == 'qty':
-                    cell.number_format = '#,##0'
-                elif metric_type == 'score':
-                    cell.number_format = '0.0000'
-                elif metric_type == 'pct':
-                    cell.number_format = '0.00%'
-
-        worksheet.freeze_panes = freeze_panes
-        if worksheet.max_column > 0:
-            worksheet.auto_filter.ref = f'A1:{get_column_letter(worksheet.max_column)}{max(worksheet.max_row, 1)}'
-
-        for col in range(1, worksheet.max_column + 1):
-            if fixed_width is not None:
-                worksheet.column_dimensions[get_column_letter(col)].width = fixed_width
-                continue
-            max_length = 0
-            for row in range(1, worksheet.max_row + 1):
-                value = worksheet.cell(row, col).value
-                if value is None:
-                    continue
-                max_length = max(max_length, len(str(value)))
-            worksheet.column_dimensions[get_column_letter(col)].width = min(max(12, max_length + 2), 24)
+        return worksheet
 
     def _write_product_anomaly_sheet(
         self,
@@ -620,12 +816,9 @@ class CostingETL:
                     cell.alignment = align_left if col_idx == 1 else align_right
 
                     metric_type = section.column_types.get(column_name)
-                    if metric_type in {'amount', 'price'}:
-                        cell.number_format = '#,##0.00'
-                    elif metric_type == 'qty':
-                        cell.number_format = '#,##0'
-                    elif metric_type == 'pct':
-                        cell.number_format = '0.00%'
+                    number_format = self._resolve_metric_number_format(metric_type or '')
+                    if number_format is not None:
+                        cell.number_format = number_format
 
             if not filter_set:
                 worksheet.auto_filter.ref = (
@@ -690,11 +883,29 @@ class CostingETL:
             error_log = artifacts.error_log.copy()
 
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                df_detail.to_excel(writer, sheet_name='成本明细', index=False)
-                artifacts.qty_sheet_df.to_excel(writer, sheet_name='产品数量统计', index=False)
+                self._write_dataframe_sheet(
+                    writer,
+                    '成本明细',
+                    df_detail,
+                    numeric_columns=DETAIL_TWO_DECIMAL_COLUMNS,
+                    freeze_panes='A2',
+                )
+                self._write_dataframe_sheet(
+                    writer,
+                    '产品数量统计',
+                    artifacts.qty_sheet_df,
+                    numeric_columns=QTY_TWO_DECIMAL_COLUMNS,
+                    freeze_panes='A2',
+                )
                 for sheet_name, sections in analysis_tables.items():
                     self._write_analysis_sheet(writer, sheet_name, sections)
-                self._write_flat_sheet(writer, '按工单按产品异常值分析', filtered_work_order_sheet, freeze_panes='A2')
+                work_order_worksheet = self._write_flat_sheet(
+                    writer,
+                    '按工单按产品异常值分析',
+                    filtered_work_order_sheet,
+                    freeze_panes='A2',
+                )
+                self._apply_work_order_highlights(work_order_worksheet)
                 self._write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
                 self._write_flat_sheet(writer, '数据质量校验', artifacts.quality_sheet, freeze_panes='A2')
                 error_log.to_excel(writer, sheet_name='error_log', index=False)

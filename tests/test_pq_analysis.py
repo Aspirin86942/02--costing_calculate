@@ -378,3 +378,34 @@ def test_build_product_anomaly_sections_keeps_input_product_order() -> None:
     product_codes = [section.product_code for section in sections]
 
     assert product_codes == ['GB_C.D.B0041AA', 'GB_C.D.B0040AA']
+
+
+def test_build_product_anomaly_sections_keeps_only_existing_periods() -> None:
+    """测试兼容摘要页只展示源数据实际存在的月份，不补空白月份。"""
+    fact_df = pd.DataFrame(
+        [
+            {
+                'period': '2025-03',
+                'product_code': 'GB_C.D.B0046AA',
+                'product_name': 'BMS-7500W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('300'),
+                'qty': Decimal('10'),
+                'price': Decimal('30'),
+            },
+            {
+                'period': '2025-04',
+                'product_code': 'GB_C.D.B0046AA',
+                'product_name': 'BMS-7500W驱动器',
+                'cost_bucket': 'direct_material',
+                'amount': Decimal('330'),
+                'qty': Decimal('11'),
+                'price': Decimal('30'),
+            },
+        ]
+    )
+
+    sections = build_product_anomaly_sections(fact_df)
+
+    assert len(sections) == 1
+    assert sections[0].data['月份'].tolist() == ['2025年03期', '2025年04期']

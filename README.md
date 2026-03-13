@@ -24,7 +24,7 @@ pip install -e .
 #    - 数控系列文件 → data/raw/shukong/
 
 # 2. 运行主 ETL
-python -m src.etl.costing_v2
+python -m src.etl.costing_etl
 
 # 3. 处理结果保存在对应 data/processed/ 目录
 ```
@@ -76,7 +76,7 @@ python -m src.etl.costing_v2
 - `src/analytics/` - 价量分解分析模块
   - `pq_analysis.py` - 长表构建、分解计算、宽表渲染
 - `src/etl/` - ETL 处理模块
-  - `costing_v2.py` - 主 ETL 脚本
+  - `costing_etl.py` - 主 ETL 脚本
   - `utils.py` - 工具函数
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
@@ -118,7 +118,7 @@ conda run -n test ruff format .
 ## 归档脚本
 以下脚本已归档到 `scripts/` 目录，不再主动维护：
 - `Costing_Calculate.py` - 原始清洗脚本
-- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_v2.py）
+- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
 - `抓取所有字段脚本.py` - 字段提取脚本
 
 ## 已移除

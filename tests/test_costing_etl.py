@@ -7,7 +7,7 @@ import pandas as pd
 from openpyxl import load_workbook
 
 from src.analytics.pq_analysis import AnalysisArtifacts, FlatSheet, ProductAnomalySection
-from src.etl.costing_v2 import CostingETL
+from src.etl.costing_etl import CostingWorkbookETL
 
 
 def _build_header_map(worksheet, header_row: int = 1) -> dict[str, int]:
@@ -32,12 +32,12 @@ def _rgb_suffix(color) -> str | None:
     return rgb[-6:]
 
 
-class TestCostingETL:
-    """测试 CostingETL 类。"""
+class TestCostingWorkbookETL:
+    """测试 CostingWorkbookETL 类。"""
 
     def test_etl_initialization(self) -> None:
         """测试 ETL 初始化。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         assert etl.skip_rows == 2
         assert hasattr(etl, 'process_file')
         assert hasattr(etl, 'FILL_COLS')
@@ -46,12 +46,12 @@ class TestCostingETL:
 
     def test_process_file_not_found(self) -> None:
         """测试文件不存在时返回 False。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         assert etl.process_file(Path('missing.xlsx'), Path('output.xlsx')) is False
 
     def test_auto_rename_columns(self) -> None:
         """测试列名自动识别。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame(columns=['物料编码', '成本项目', '其他列'])
 
         col_map = etl._auto_rename_columns(df)
@@ -61,7 +61,7 @@ class TestCostingETL:
 
     def test_remove_total_rows(self) -> None:
         """测试剔除合计行。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame({'年期': ['2024年01期', '合计', '2024年03期'], '数据': [1, 2, 3]})
 
         result = etl._remove_total_rows(df)
@@ -71,7 +71,7 @@ class TestCostingETL:
 
     def test_forward_fill_with_rules_skip_vendor_for_integrated_workshop(self) -> None:
         """测试集成车间下供应商字段不向下填充。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         df_raw = pd.DataFrame(
             {
                 '成本中心名称': ['集成车间', None],
@@ -90,7 +90,7 @@ class TestCostingETL:
 
     def test_filter_fact_df_for_analysis_uses_whitelist_order(self) -> None:
         """测试分析白名单过滤和顺序。"""
-        etl = CostingETL(skip_rows=2)
+        etl = CostingWorkbookETL(skip_rows=2)
         fact_df = pd.DataFrame(
             [
                 {
@@ -130,7 +130,7 @@ class TestCostingETL:
 
 def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     """测试 process_file 会输出 v3 相关 sheet 与基础样式。"""
-    etl = CostingETL(skip_rows=2)
+    etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
 
@@ -196,8 +196,8 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     )
 
     with (
-        patch('src.etl.costing_v2.pd.read_excel', return_value=df_raw),
-        patch.object(CostingETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
     ):
         assert etl.process_file(input_path, output_path) is True
 
@@ -282,7 +282,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
 
 def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
     """测试工单异常页会同步高亮值列和标记列。"""
-    etl = CostingETL(skip_rows=2)
+    etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
 
@@ -411,9 +411,9 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
     )
 
     with (
-        patch('src.etl.costing_v2.pd.read_excel', return_value=df_raw),
-        patch.object(CostingETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        patch('src.etl.costing_v2.build_report_artifacts', return_value=artifacts),
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        patch('src.etl.costing_etl.build_report_artifacts', return_value=artifacts),
     ):
         assert etl.process_file(input_path, output_path) is True
 

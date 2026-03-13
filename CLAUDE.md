@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 costing_calculate/
 ├── src/etl/              # ETL 处理模块
-│   └── costing_v2.py     # 主 ETL 脚本
+│   └── costing_etl.py    # 主 ETL 脚本
 ├── src/config/           # 配置管理
 │   └── settings.py       # 路径配置
 ├── data/raw/             # 原始数据
@@ -66,7 +66,7 @@ pip install -e .
 ### 运行 ETL
 ```bash
 # 将原始 Excel 文件放入 data/raw/gb/ 或 data/raw/shukong/
-python -m src.etl.costing_v2
+python -m src.etl.costing_etl
 ```
 
 ### 测试
@@ -84,7 +84,7 @@ ruff format src/ tests/
 
 以下脚本已归档到 `scripts/` 目录，不再维护：
 - `Costing_Calculate.py` - 原始清洗脚本
-- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_v2.py）
+- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
 - `抓取所有字段脚本.py` - 字段提取脚本
 
 ## 已移除 (Removed)

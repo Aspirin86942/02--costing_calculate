@@ -1,4 +1,4 @@
-"""Entrypoint compatibility tests for costing_v2."""
+"""Entrypoint compatibility tests for costing_etl."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = PROJECT_ROOT / 'src' / 'etl' / 'costing_v2.py'
+SCRIPT_PATH = PROJECT_ROOT / 'src' / 'etl' / 'costing_etl.py'
 
 
 def _run_inline_python(code: str) -> subprocess.CompletedProcess[str]:
@@ -34,16 +34,16 @@ project_root = pathlib.Path(r'{PROJECT_ROOT}')
 script_path = pathlib.Path(r'{SCRIPT_PATH}')
 sys.path = [p for p in sys.path if pathlib.Path(p).resolve() != project_root.resolve()]
 
-spec = importlib.util.spec_from_file_location('costing_v2_script_mode', script_path)
+spec = importlib.util.spec_from_file_location('costing_etl_script_mode', script_path)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(module)
-print(module.CostingETL.__name__)
+print(module.CostingWorkbookETL.__name__)
 """
     result = _run_inline_python(code)
 
     assert result.returncode == 0, result.stderr
-    assert 'CostingETL' in result.stdout
+    assert 'CostingWorkbookETL' in result.stdout
 
 
 def test_script_mode_bootstrap_only_inserts_project_root_once() -> None:
@@ -57,7 +57,7 @@ project_root = pathlib.Path(r'{PROJECT_ROOT}').resolve()
 script_path = pathlib.Path(r'{SCRIPT_PATH}')
 sys.path = [p for p in sys.path if pathlib.Path(p).resolve() != project_root]
 
-spec = importlib.util.spec_from_file_location('costing_v2_script_mode_2', script_path)
+spec = importlib.util.spec_from_file_location('costing_etl_script_mode_2', script_path)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(module)

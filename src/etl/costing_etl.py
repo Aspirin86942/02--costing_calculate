@@ -38,7 +38,7 @@ try:
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 except ModuleNotFoundError:
-    # 直接执行 src/etl/costing_v2.py 时，解释器搜索路径不含项目根目录，补齐后重试导入。
+    # 直接执行 src/etl/costing_etl.py 时，解释器搜索路径不含项目根目录，补齐后重试导入。
     project_root = Path(__file__).resolve().parents[2]
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
@@ -160,7 +160,7 @@ WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 
-class CostingETL:
+class CostingWorkbookETL:
     """Process a costing workbook into detail/quantity sheets."""
 
     FILL_COLS = [
@@ -943,7 +943,7 @@ def main() -> None:
     """Entry point for GB costing ETL."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-    etl = CostingETL(skip_rows=2)
+    etl = CostingWorkbookETL(skip_rows=2)
     input_files = _find_input_files()
 
     if not input_files:

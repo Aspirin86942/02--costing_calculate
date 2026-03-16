@@ -104,7 +104,7 @@ def test_build_fact_cost_pq_excludes_outsource_and_builds_three_buckets() -> Non
 
     assert len(fact_df) == 6
     assert set(fact_df['cost_bucket'].unique()) == {'direct_material', 'direct_labor', 'moh'}
-    assert ((error_log['issue_type'] == 'UNMAPPED_COST_ITEM') & (error_log['original_value'] == '委外加工费')).any()
+    assert not ((error_log['issue_type'] == 'UNMAPPED_COST_ITEM') & (error_log['original_value'] == '委外加工费')).any()
 
 
 def test_build_fact_cost_pq_logs_missing_qty() -> None:

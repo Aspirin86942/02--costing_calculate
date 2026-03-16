@@ -10,6 +10,8 @@ from src.analytics.pq_analysis import (
     QTY_DM_UNIT_COST,
     QTY_MOH_LABOR_AMOUNT,
     QTY_MOH_MATCH,
+    QTY_OUTSOURCE_AMOUNT,
+    QTY_OUTSOURCE_UNIT_COST,
     QTY_TOTAL_MATCH,
     build_report_artifacts,
 )
@@ -54,6 +56,18 @@ def _build_base_detail_df() -> pd.DataFrame:
                 '成本项目名称': '制造费用-人工',
                 '本期完工金额': 30,
             },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '委外加工费',
+                '本期完工金额': 15,
+            },
         ]
     )
 
@@ -73,24 +87,36 @@ def test_build_report_artifacts_enriches_qty_sheet() -> None:
                 '工单行号': 1,
                 '基本单位': 'PCS',
                 '本期完工数量': 10,
-                '本期完工金额': 150,
+                '本期完工金额': 165,
             }
         ]
     )
 
     artifacts = build_report_artifacts(df_detail, df_qty)
     row = artifacts.qty_sheet_df.iloc[0]
+    work_order_row = artifacts.work_order_sheet.data.iloc[0]
 
     assert row[QTY_DM_AMOUNT] == Decimal('100')
     assert row[QTY_MOH_LABOR_AMOUNT] == Decimal('30')
+    assert row[QTY_OUTSOURCE_AMOUNT] == Decimal('15')
     assert row[QTY_DM_UNIT_COST] == Decimal('10')
+    assert row[QTY_OUTSOURCE_UNIT_COST] == Decimal('1.5')
     assert row[QTY_MOH_MATCH] == '是'
     assert row[QTY_TOTAL_MATCH] == '是'
     assert row[QTY_CHECK_STATUS] == '通过'
+    assert work_order_row['委外加工费合计完工金额'] == Decimal('15')
+    assert work_order_row['委外加工费单位完工成本'] == Decimal('1.5')
+    assert '委外加工费异常标记' not in artifacts.work_order_sheet.data.columns
+    assert 'log_委外加工费单位完工成本' not in artifacts.work_order_sheet.data.columns
+    assert 'Modified Z-score_委外加工费' not in artifacts.work_order_sheet.data.columns
+    assert not artifacts.error_log['issue_type'].isin(['EXCLUDED_COST_ITEM', 'UNMAPPED_COST_ITEM']).any()
+    assert '完工数量是否有效' not in artifacts.qty_sheet_df.columns
+    assert '完工数量是否小于等于0' not in artifacts.qty_sheet_df.columns
+    assert '是否存在空值' not in artifacts.qty_sheet_df.columns
 
 
-def test_build_report_artifacts_flags_mismatch_and_non_positive_qty() -> None:
-    """测试金额勾稽失败和数量无效会进入 error_log。"""
+def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:
+    """测试数量无效的工单不会出现在数量页与工单异常页。"""
     df_detail = _build_base_detail_df()
     df_qty = pd.DataFrame(
         [
@@ -110,11 +136,75 @@ def test_build_report_artifacts_flags_mismatch_and_non_positive_qty() -> None:
     )
 
     artifacts = build_report_artifacts(df_detail, df_qty)
+    quality_metrics = artifacts.quality_sheet.data.set_index('指标')['数值']
+
+    assert artifacts.qty_sheet_df.empty
+    assert artifacts.work_order_sheet.data.empty
+    assert artifacts.error_log.empty
+    assert quality_metrics['产品数量统计输出行数'] == '0'
+    assert quality_metrics['因完工数量无效被过滤行数'] == '1'
+    assert quality_metrics['因总完工成本为空被过滤行数'] == '0'
+
+
+def test_build_report_artifacts_filters_out_missing_total_amount_rows() -> None:
+    """测试总完工成本为空的工单不会出现在数量页与工单异常页。"""
+    df_detail = _build_base_detail_df()
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10,
+                '本期完工金额': None,
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    quality_metrics = artifacts.quality_sheet.data.set_index('指标')['数值']
+
+    assert artifacts.qty_sheet_df.empty
+    assert artifacts.work_order_sheet.data.empty
+    assert artifacts.error_log.empty
+    assert quality_metrics['产品数量统计输出行数'] == '0'
+    assert quality_metrics['因完工数量无效被过滤行数'] == '0'
+    assert quality_metrics['因总完工成本为空被过滤行数'] == '1'
+
+
+def test_build_report_artifacts_keeps_total_cost_mismatch_for_retained_rows() -> None:
+    """测试保留行上的总成本勾稽失败仍进入 error_log。"""
+    df_detail = _build_base_detail_df()
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10,
+                '本期完工金额': 999,
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
     row = artifacts.qty_sheet_df.iloc[0]
 
     assert row[QTY_TOTAL_MATCH] == '否'
     assert row[QTY_CHECK_STATUS] == '需复核'
-    assert {'INVALID_COMPLETED_QTY', 'TOTAL_COST_MISMATCH'}.issubset(set(artifacts.error_log['issue_type']))
+    assert 'TOTAL_COST_MISMATCH' in set(artifacts.error_log['issue_type'])
+    assert 'INVALID_COMPLETED_QTY' not in set(artifacts.error_log['issue_type'])
+    assert 'MISSING_REQUIRED_VALUE' not in set(artifacts.error_log['issue_type'])
 
 
 def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:

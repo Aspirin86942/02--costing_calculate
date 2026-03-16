@@ -1,4 +1,8 @@
-"""ETL pipeline for costing workbooks."""
+"""
+ETL pipeline for costing workbooks.
+Excel原始成本计算单 -> 清洗双层表头 -> 规则填充 -> 拆成成本明细/数量页
+-> 生成价量分析/异常分析/校验表 -> 写回一个新Excel
+"""
 
 import logging
 import sys
@@ -29,6 +33,8 @@ try:
         QTY_MOH_UNIT_COST,
         QTY_MOH_UTILITIES_AMOUNT,
         QTY_MOH_UTILITIES_UNIT_COST,
+        QTY_OUTSOURCE_AMOUNT,
+        QTY_OUTSOURCE_UNIT_COST,
         FlatSheet,
         ProductAnomalySection,
         SectionBlock,
@@ -60,6 +66,8 @@ except ModuleNotFoundError:
         QTY_MOH_UNIT_COST,
         QTY_MOH_UTILITIES_AMOUNT,
         QTY_MOH_UTILITIES_UNIT_COST,
+        QTY_OUTSOURCE_AMOUNT,
+        QTY_OUTSOURCE_UNIT_COST,
         FlatSheet,
         ProductAnomalySection,
         SectionBlock,
@@ -69,9 +77,11 @@ except ModuleNotFoundError:
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.utils import clean_column_name, format_period_col
 
+# 当前模块创建一个 logger, 后面所有日志都走这个 logger
 logger = logging.getLogger(__name__)
 
 
+# 预定义列名常量
 COL_PERIOD = '年期'
 COL_MONTH = '月份'
 COL_COST_CENTER = '成本中心名称'
@@ -89,7 +99,7 @@ COL_DOC_TYPE = '单据类型'
 COL_COST_ITEM = '成本项目名称'
 COL_CHILD_MATERIAL = '子项物料编码'
 COL_CHILD_MATERIAL_NAME = '子项物料名称'
-COL_FILLED_COST_ITEM = 'Filled_成本项目'
+COL_FILLED_COST_ITEM = 'Filled_成本项目'  # 填充后的成本项目列，因为成本项目原始生成的项目可能是空值
 COL_OPENING_WIP_QTY = '期初在产品数量'
 COL_OPENING_WIP_AMOUNT = '期初在产品金额'
 COL_OPENING_ADJUST_QTY = '期初调整数量'
@@ -108,7 +118,8 @@ COL_CUMULATIVE_COMPLETED_QTY = '累计完工数量'
 COL_CUMULATIVE_COMPLETED_CONSUMPTION = '累计完工单耗'
 COL_CUMULATIVE_COMPLETED_UNIT_COST = '累计完工单位成本'
 COL_CUMULATIVE_COMPLETED_AMOUNT = '累计完工金额'
-INTEGRATED_WORKSHOP_NAME = '集成车间'
+INTEGRATED_WORKSHOP_NAME = '集成车间'  # 供应商字段不再向下填充
+# 分析用的产品白名单和顺序，其他产品会被过滤掉
 ANALYSIS_PRODUCT_ORDER: tuple[tuple[str, str], ...] = (
     ('GB_C.D.B0048AA', 'BMS-400W驱动器'),
     ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
@@ -120,6 +131,7 @@ ANALYSIS_PRODUCT_ORDER: tuple[tuple[str, str], ...] = (
     ('GB_C.D.B0046AA', 'BMS-7500W驱动器'),
 )
 ANALYSIS_PRODUCT_WHITELIST: set[tuple[str, str]] = set(ANALYSIS_PRODUCT_ORDER)
+# Excel单元格格式, 注意Excel的number_format并不影响单元格的实际值
 EXCEL_TWO_DECIMAL_FORMAT = '#,##0.00'
 EXCEL_INTEGER_FORMAT = '#,##0'
 EXCEL_SCORE_FORMAT = '0.0000'
@@ -139,6 +151,7 @@ QTY_TWO_DECIMAL_COLUMNS = {
     QTY_MOH_CONSUMABLES_AMOUNT,
     QTY_MOH_DEPRECIATION_AMOUNT,
     QTY_MOH_UTILITIES_AMOUNT,
+    QTY_OUTSOURCE_AMOUNT,
     QTY_DM_UNIT_COST,
     QTY_DL_UNIT_COST,
     QTY_MOH_UNIT_COST,
@@ -147,7 +160,9 @@ QTY_TWO_DECIMAL_COLUMNS = {
     QTY_MOH_CONSUMABLES_UNIT_COST,
     QTY_MOH_DEPRECIATION_UNIT_COST,
     QTY_MOH_UTILITIES_UNIT_COST,
+    QTY_OUTSOURCE_UNIT_COST,
 }
+# 标记文本高亮参数
 WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
     ('直接材料单位完工成本', '直接材料异常标记'),
     ('直接人工单位完工成本', '直接人工异常标记'),
@@ -161,8 +176,12 @@ WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
 
 
 class CostingWorkbookETL:
-    """Process a costing workbook into detail/quantity sheets."""
+    """
+    Process a costing workbook into detail/quantity sheets.
+    负责读 Excel->清洗->拆表->调分析模块->写 Excel
+    """
 
+    # 类变量:允许向下填充, 供应商编码和供应商名称在后面处理
     FILL_COLS = [
         COL_PERIOD,
         COL_COST_CENTER,
@@ -179,6 +198,7 @@ class CostingWorkbookETL:
         COL_DOC_TYPE,
     ]
 
+    # 类变量:成本明细表保留物料相关列和成本项目列
     DETAIL_COLS = [
         COL_PERIOD,
         COL_MONTH,
@@ -217,6 +237,7 @@ class CostingWorkbookETL:
         COL_CUMULATIVE_COMPLETED_AMOUNT,
     ]
 
+    # 类变量:产品数量统计表保留工单层级的列，物料相关列和成本项目列都不保留
     QTY_COLS = [
         COL_PERIOD,
         COL_MONTH,
@@ -249,12 +270,13 @@ class CostingWorkbookETL:
     ]
 
     def __init__(self, skip_rows: int = 2):
+        # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
         ensure_directories()
 
     @staticmethod
     def _to_excel_number(value: object) -> object:
-        """把 Decimal/数值对象转成 Excel 可稳定识别的 number 类型。"""
+        # 把 Decimal/数值对象转成 Excel 可稳定识别的 number 类型
         if value is None or isinstance(value, bool):
             return value
         if isinstance(value, Decimal):

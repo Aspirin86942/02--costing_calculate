@@ -176,6 +176,19 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
                 '本期完工单位成本': 3,
                 '本期完工金额': 30,
             },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '委外加工费',
+                '本期完工单位成本': 1.5,
+                '本期完工金额': 15,
+            },
         ]
     )
     df_qty = pd.DataFrame(
@@ -190,8 +203,32 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
                 '工单行号': 1,
                 '基本单位': 'PCS',
                 '本期完工数量': 10,
-                '本期完工金额': 150,
-            }
+                '本期完工金额': 165,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-02',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 0,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-03',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 5,
+                '本期完工金额': None,
+            },
         ]
     )
 
@@ -235,6 +272,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         '本期完工制造费用_机物料及低耗合计完工金额',
         '本期完工制造费用_折旧合计完工金额',
         '本期完工制造费用_水电费合计完工金额',
+        '本期完工委外加工费合计完工金额',
         '直接材料单位完工金额',
         '直接人工单位完工金额',
         '制造费用单位完工金额',
@@ -243,8 +281,13 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         '制造费用_机物料及低耗单位完工成本',
         '制造费用_折旧单位完工成本',
         '制造费用_水电费单位完工成本',
+        '委外加工费单位完工成本',
     ]
     assert ws_qty.freeze_panes == 'A2'
+    assert ws_qty.max_row == 2
+    assert '完工数量是否有效' not in qty_headers
+    assert '完工数量是否小于等于0' not in qty_headers
+    assert '是否存在空值' not in qty_headers
     for column_name in qty_decimal_columns:
         cell = ws_qty.cell(2, qty_headers[column_name])
         assert cell.number_format == '#,##0.00'
@@ -266,6 +309,11 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     ws_work_order = wb['按工单按产品异常值分析']
     assert ws_work_order['A1'].value == '月份'
     assert ws_work_order['I2'].value == 10
+    work_order_headers = _build_header_map(ws_work_order)
+    assert '委外加工费合计完工金额' in work_order_headers
+    assert '委外加工费单位完工成本' in work_order_headers
+    assert '委外加工费异常标记' not in work_order_headers
+    assert ws_work_order.max_row == 2
     assert ws_work_order.freeze_panes == 'A2'
     assert ws_work_order.auto_filter.ref is not None
 
@@ -276,8 +324,19 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_product.freeze_panes == 'A6'
 
     ws_quality = wb['数据质量校验']
+    quality_metrics = {
+        ws_quality.cell(row_idx, 2).value: ws_quality.cell(row_idx, 3).value
+        for row_idx in range(2, ws_quality.max_row + 1)
+    }
     assert ws_quality['A1'].value == '检查类别'
     assert ws_quality.freeze_panes == 'A2'
+    assert '本期完工数量缺失率' not in quality_metrics
+    assert '本期完工金额缺失率' not in quality_metrics
+    assert '完工数量小于等于0行数' not in quality_metrics
+    assert str(quality_metrics['产品数量统计输出行数']) == '1'
+    assert str(quality_metrics['工单异常分析输出行数']) == '1'
+    assert str(quality_metrics['因完工数量无效被过滤行数']) == '1'
+    assert str(quality_metrics['因总完工成本为空被过滤行数']) == '1'
 
 
 def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:

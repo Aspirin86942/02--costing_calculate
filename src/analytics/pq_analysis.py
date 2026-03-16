@@ -21,6 +21,7 @@ QTY_MOH_LABOR_AMOUNT = '本期完工制造费用_人工合计完工金额'
 QTY_MOH_CONSUMABLES_AMOUNT = '本期完工制造费用_机物料及低耗合计完工金额'
 QTY_MOH_DEPRECIATION_AMOUNT = '本期完工制造费用_折旧合计完工金额'
 QTY_MOH_UTILITIES_AMOUNT = '本期完工制造费用_水电费合计完工金额'
+QTY_OUTSOURCE_AMOUNT = '本期完工委外加工费合计完工金额'
 QTY_DM_UNIT_COST = '直接材料单位完工金额'
 QTY_DL_UNIT_COST = '直接人工单位完工金额'
 QTY_MOH_UNIT_COST = '制造费用单位完工金额'
@@ -29,11 +30,9 @@ QTY_MOH_LABOR_UNIT_COST = '制造费用_人工单位完工成本'
 QTY_MOH_CONSUMABLES_UNIT_COST = '制造费用_机物料及低耗单位完工成本'
 QTY_MOH_DEPRECIATION_UNIT_COST = '制造费用_折旧单位完工成本'
 QTY_MOH_UTILITIES_UNIT_COST = '制造费用_水电费单位完工成本'
-QTY_VALID_QTY = '完工数量是否有效'
-QTY_QTY_NON_POSITIVE = '完工数量是否小于等于0'
-QTY_HAS_NULL = '是否存在空值'
+QTY_OUTSOURCE_UNIT_COST = '委外加工费单位完工成本'
 QTY_MOH_MATCH = '制造费用明细项合计是否等于制造费用合计'
-QTY_TOTAL_MATCH = '直接材料+直接人工+制造费用是否等于总完工成本'
+QTY_TOTAL_MATCH = '直接材料+直接人工+制造费用+委外加工费是否等于总完工成本'
 QTY_CHECK_STATUS = '数据校验状态'
 QTY_CHECK_REASON = '异常原因说明'
 
@@ -101,6 +100,7 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_机物料及低耗合计完工金额',
     '制造费用_折旧合计完工金额',
     '制造费用_水电费合计完工金额',
+    '委外加工费合计完工金额',
     '总单位完工成本',
     '直接材料单位完工成本',
     '直接人工单位完工成本',
@@ -110,6 +110,7 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_机物料及低耗单位完工成本',
     '制造费用_折旧单位完工成本',
     '制造费用_水电费单位完工成本',
+    '委外加工费单位完工成本',
     'log_总单位完工成本',
     'log_直接材料单位完工成本',
     'log_直接人工单位完工成本',
@@ -162,6 +163,7 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_机物料及低耗合计完工金额': 'amount',
     '制造费用_折旧合计完工金额': 'amount',
     '制造费用_水电费合计完工金额': 'amount',
+    '委外加工费合计完工金额': 'amount',
     '总单位完工成本': 'price',
     '直接材料单位完工成本': 'price',
     '直接人工单位完工成本': 'price',
@@ -171,6 +173,7 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_机物料及低耗单位完工成本': 'price',
     '制造费用_折旧单位完工成本': 'price',
     '制造费用_水电费单位完工成本': 'price',
+    '委外加工费单位完工成本': 'price',
     'log_总单位完工成本': 'score',
     'log_直接材料单位完工成本': 'score',
     'log_直接人工单位完工成本': 'score',
@@ -286,6 +289,11 @@ def _safe_divide(numerator: object, denominator: object) -> Decimal | None:
     if num is None or den in (None, ZERO):
         return None
     return num / den
+
+
+def _is_positive_decimal(value: object) -> bool:
+    decimal_value = _to_decimal(value)
+    return decimal_value is not None and decimal_value > ZERO
 
 
 def _add_decimal(lhs: object, rhs: object) -> Decimal | None:
@@ -772,17 +780,20 @@ def _build_anomaly_sheet(work_order_df: pd.DataFrame) -> FlatSheet:
             & (current_rank > 0)
         )
 
-        overall_level.loc[better_rank] = flag_series.loc[better_rank]
-        highest_source.loc[better_rank] = source_label
-        highest_score.loc[better_rank] = score_abs.loc[better_rank]
-        severity_rank.loc[better_rank] = current_rank.loc[better_rank]
+        if better_rank.any():
+            overall_level.loc[better_rank] = flag_series.loc[better_rank]
+            highest_source.loc[better_rank] = source_label
+            highest_score.loc[better_rank] = score_abs.loc[better_rank]
+            severity_rank.loc[better_rank] = current_rank.loc[better_rank]
 
-        overall_level.loc[same_rank_better_score] = flag_series.loc[same_rank_better_score]
-        highest_source.loc[same_rank_better_score] = source_label
-        highest_score.loc[same_rank_better_score] = score_abs.loc[same_rank_better_score]
+        if same_rank_better_score.any():
+            overall_level.loc[same_rank_better_score] = flag_series.loc[same_rank_better_score]
+            highest_source.loc[same_rank_better_score] = source_label
+            highest_score.loc[same_rank_better_score] = score_abs.loc[same_rank_better_score]
 
-        prefer_total = same_rank_same_score & ((highest_source == '总成本异常') | (source_label == '总成本异常'))
-        highest_source.loc[same_rank_same_score & ~prefer_total] = '多项同时异常'
+        if same_rank_same_score.any():
+            prefer_total = same_rank_same_score & ((highest_source == '总成本异常') | (source_label == '总成本异常'))
+            highest_source.loc[same_rank_same_score & ~prefer_total] = '多项同时异常'
 
     highest_source.loc[severity_rank <= 0] = ''
     anomaly_df['异常等级'] = overall_level
@@ -807,6 +818,7 @@ def _build_anomaly_sheet(work_order_df: pd.DataFrame) -> FlatSheet:
         'moh_consumables_amount': '制造费用_机物料及低耗合计完工金额',
         'moh_depreciation_amount': '制造费用_折旧合计完工金额',
         'moh_utilities_amount': '制造费用_水电费合计完工金额',
+        'outsource_amount': '委外加工费合计完工金额',
         'total_unit_cost': '总单位完工成本',
         'dm_unit_cost': '直接材料单位完工成本',
         'dl_unit_cost': '直接人工单位完工成本',
@@ -846,12 +858,12 @@ def _build_quality_sheet(
     qty_input_df: pd.DataFrame,
     qty_sheet_df: pd.DataFrame,
     analysis_df: pd.DataFrame,
+    filtered_invalid_qty_count: int,
+    filtered_missing_total_amount_count: int,
 ) -> FlatSheet:
     unique_key = qty_sheet_df['_join_key']
     duplicate_count = int(unique_key.duplicated(keep=False).sum())
 
-    qty_null_rate = qty_sheet_df['本期完工数量'].isna().mean() if '本期完工数量' in qty_sheet_df.columns else 0.0
-    amount_null_rate = qty_sheet_df['本期完工金额'].isna().mean() if '本期完工金额' in qty_sheet_df.columns else 0.0
     dm_amount_null_rate = qty_sheet_df[QTY_DM_AMOUNT].isna().mean() if QTY_DM_AMOUNT in qty_sheet_df.columns else 0.0
     analyzable_rate = (
         analysis_df['是否可参与分析'].eq('是').mean()
@@ -877,7 +889,7 @@ def _build_quality_sheet(
                 '检查类别': '行数勾稽',
                 '指标': '产品数量统计输出行数',
                 '数值': str(len(qty_sheet_df)),
-                '说明': '补强后数量页行数，应与输入一致',
+                '说明': '仅保留完工数量大于 0 且总完工成本非空的工单',
             },
             {
                 '检查类别': '行数勾稽',
@@ -886,16 +898,16 @@ def _build_quality_sheet(
                 '说明': '去重后的工单级分析行数',
             },
             {
-                '检查类别': '空值率',
-                '指标': '本期完工数量缺失率',
-                '数值': f'{qty_null_rate:.2%}',
-                '说明': '关键数量字段空值率',
+                '检查类别': '行数勾稽',
+                '指标': '因完工数量无效被过滤行数',
+                '数值': str(filtered_invalid_qty_count),
+                '说明': '过滤条件包含完工数量为空、等于 0 或小于 0',
             },
             {
-                '检查类别': '空值率',
-                '指标': '本期完工金额缺失率',
-                '数值': f'{amount_null_rate:.2%}',
-                '说明': '关键总金额字段空值率',
+                '检查类别': '行数勾稽',
+                '指标': '因总完工成本为空被过滤行数',
+                '数值': str(filtered_missing_total_amount_count),
+                '说明': '仅统计完工数量有效但总完工成本为空的工单',
             },
             {
                 '检查类别': '空值率',
@@ -908,12 +920,6 @@ def _build_quality_sheet(
                 '指标': '工单主键重复行数',
                 '数值': str(duplicate_count),
                 '说明': '键=月份+产品编码+工单编号+工单行',
-            },
-            {
-                '检查类别': '范围检查',
-                '指标': '完工数量小于等于0行数',
-                '数值': str(int(qty_sheet_df[QTY_QTY_NON_POSITIVE].eq('是').sum())),
-                '说明': '该类数据不参与 log 与 Modified Z-score',
             },
             {
                 '检查类别': '分析覆盖率',
@@ -959,25 +965,9 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     detail['cost_bucket'] = detail['cost_item'].map(_map_broad_cost_bucket)
     detail['component_bucket'] = detail['cost_item'].map(_map_component_bucket)
     detail['amount'] = detail['completed_amount'].map(_to_decimal)
+    outsource_cost_mask = detail['cost_item'].astype(str).str.strip().eq('委外加工费')
 
-    excluded_cost_mask = detail['cost_item'].astype(str).str.strip().eq('委外加工费')
-    if excluded_cost_mask.any():
-        error_frames.append(
-            _build_error_frame(
-                detail.loc[
-                    excluded_cost_mask,
-                    ['product_code', 'product_name', 'period', 'order_no', 'order_line', 'cost_item'],
-                ],
-                issue_type='EXCLUDED_COST_ITEM',
-                field_name='成本项目名称',
-                reason='委外加工费不纳入 V3 价量分析与异常分析',
-                action='该成本项目已写入 error_log 并从分析口径中排除',
-                original_column='cost_item',
-                row_id_fields=WORK_ORDER_KEY_COLS,
-            )
-        )
-
-    unmapped_mask = detail['cost_bucket'].isna() & ~excluded_cost_mask
+    unmapped_mask = detail['cost_bucket'].isna() & ~outsource_cost_mask
     if unmapped_mask.any():
         error_frames.append(
             _build_error_frame(
@@ -993,7 +983,9 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
             )
         )
 
-    missing_detail_amount = detail['amount'].isna() & detail['cost_bucket'].notna()
+    # 委外加工费虽然不进三大类分析，但要进入数量页/工单页与总成本勾稽，因此空金额也要保留审计痕迹。
+    supported_cost_mask = detail['cost_bucket'].notna() | outsource_cost_mask
+    missing_detail_amount = detail['amount'].isna() & supported_cost_mask
     if missing_detail_amount.any():
         error_frames.append(
             _build_error_frame(
@@ -1021,6 +1013,8 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
 
     detail_for_analysis = detail.loc[detail['cost_bucket'].notna()].copy()
     detail_for_analysis['_join_key'] = _build_join_key(detail_for_analysis, WORK_ORDER_KEY_COLS)
+    detail_outsource = detail.loc[outsource_cost_mask].copy()
+    detail_outsource['_join_key'] = _build_join_key(detail_outsource, WORK_ORDER_KEY_COLS)
 
     broad_amounts = (
         detail_for_analysis.groupby(
@@ -1060,6 +1054,9 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         )
         .reset_index()
     )
+    outsource_amounts = detail_outsource.groupby(
+        WORK_ORDER_KEY_COLS + ['product_name'], dropna=False, as_index=False, sort=False
+    ).agg(outsource_amount=('amount', _sum_decimal_series))
 
     qty_sheet_df = df_qty.copy().reset_index(drop=True)
     qty_sheet_df['_source_row'] = range(len(qty_sheet_df))
@@ -1073,39 +1070,13 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     qty_sheet_df['completed_amount_total'] = qty_sheet_df['本期完工金额'].map(_to_decimal)
     qty_sheet_df['_join_key'] = _build_join_key(qty_sheet_df, WORK_ORDER_KEY_COLS)
 
-    missing_qty_mask = qty_sheet_df['completed_qty'].isna()
-    if missing_qty_mask.any():
-        error_frames.append(
-            _build_error_frame(
-                qty_sheet_df.loc[
-                    missing_qty_mask,
-                    ['product_code', 'product_name', 'period', 'order_no', 'order_line', '本期完工数量'],
-                ],
-                issue_type='MISSING_REQUIRED_VALUE',
-                field_name='本期完工数量',
-                reason='完工数量为空',
-                action='该工单保留在数量页，但不参与异常分析',
-                original_column='本期完工数量',
-                row_id_fields=WORK_ORDER_KEY_COLS,
-            )
-        )
+    valid_completed_qty_mask = qty_sheet_df['completed_qty'].map(_is_positive_decimal)
+    missing_total_amount_mask = valid_completed_qty_mask & qty_sheet_df['completed_amount_total'].isna()
+    filtered_invalid_qty_count = int((~valid_completed_qty_mask).sum())
+    filtered_missing_total_amount_count = int(missing_total_amount_mask.sum())
 
-    missing_total_amount_mask = qty_sheet_df['completed_amount_total'].isna()
-    if missing_total_amount_mask.any():
-        error_frames.append(
-            _build_error_frame(
-                qty_sheet_df.loc[
-                    missing_total_amount_mask,
-                    ['product_code', 'product_name', 'period', 'order_no', 'order_line', '本期完工金额'],
-                ],
-                issue_type='MISSING_REQUIRED_VALUE',
-                field_name='本期完工金额',
-                reason='总完工成本为空',
-                action='该工单保留在数量页，但总单位成本无法计算',
-                original_column='本期完工金额',
-                row_id_fields=WORK_ORDER_KEY_COLS,
-            )
-        )
+    # 业务要求：数量页与工单异常页只保留“完工数量有效且总完工成本非空”的工单。
+    qty_sheet_df = qty_sheet_df.loc[valid_completed_qty_mask & qty_sheet_df['completed_amount_total'].notna()].copy()
 
     duplicate_qty_mask = qty_sheet_df['_join_key'].duplicated(keep=False)
     if duplicate_qty_mask.any():
@@ -1123,6 +1094,9 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         )
 
     work_order_amounts = broad_amounts.merge(component_amounts, on=WORK_ORDER_KEY_COLS + ['product_name'], how='left')
+    work_order_amounts = work_order_amounts.merge(
+        outsource_amounts, on=WORK_ORDER_KEY_COLS + ['product_name'], how='outer'
+    )
     for column in [
         'dm_amount',
         'dl_amount',
@@ -1132,6 +1106,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         'moh_consumables_amount',
         'moh_depreciation_amount',
         'moh_utilities_amount',
+        'outsource_amount',
     ]:
         if column not in work_order_amounts.columns:
             work_order_amounts[column] = ZERO
@@ -1149,6 +1124,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         'moh_consumables_amount',
         'moh_depreciation_amount',
         'moh_utilities_amount',
+        'outsource_amount',
     ]
     qty_sheet_df = qty_sheet_df.merge(
         work_order_amounts[['_join_key'] + amount_columns].drop_duplicates('_join_key'),
@@ -1168,6 +1144,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     qty_sheet_df[QTY_MOH_CONSUMABLES_AMOUNT] = qty_sheet_df['moh_consumables_amount']
     qty_sheet_df[QTY_MOH_DEPRECIATION_AMOUNT] = qty_sheet_df['moh_depreciation_amount']
     qty_sheet_df[QTY_MOH_UTILITIES_AMOUNT] = qty_sheet_df['moh_utilities_amount']
+    qty_sheet_df[QTY_OUTSOURCE_AMOUNT] = qty_sheet_df['outsource_amount']
 
     qty_sheet_df[QTY_DM_UNIT_COST] = qty_sheet_df[QTY_DM_AMOUNT].combine(qty_sheet_df['completed_qty'], _safe_divide)
     qty_sheet_df[QTY_DL_UNIT_COST] = qty_sheet_df[QTY_DL_AMOUNT].combine(qty_sheet_df['completed_qty'], _safe_divide)
@@ -1187,12 +1164,8 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     qty_sheet_df[QTY_MOH_UTILITIES_UNIT_COST] = qty_sheet_df[QTY_MOH_UTILITIES_AMOUNT].combine(
         qty_sheet_df['completed_qty'], _safe_divide
     )
-
-    qty_sheet_df[QTY_VALID_QTY] = qty_sheet_df['completed_qty'].map(
-        lambda value: '是' if value is not None and value > ZERO else '否'
-    )
-    qty_sheet_df[QTY_QTY_NON_POSITIVE] = qty_sheet_df['completed_qty'].map(
-        lambda value: '是' if value is not None and value <= ZERO else '否'
+    qty_sheet_df[QTY_OUTSOURCE_UNIT_COST] = qty_sheet_df[QTY_OUTSOURCE_AMOUNT].combine(
+        qty_sheet_df['completed_qty'], _safe_divide
     )
 
     qty_sheet_df['moh_component_sum'] = (
@@ -1206,6 +1179,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         qty_sheet_df[QTY_DM_AMOUNT]
         .combine(qty_sheet_df[QTY_DL_AMOUNT], _add_decimal)
         .combine(qty_sheet_df[QTY_MOH_AMOUNT], _add_decimal)
+        .combine(qty_sheet_df[QTY_OUTSOURCE_AMOUNT], _add_decimal)
     )
 
     qty_sheet_df[QTY_MOH_MATCH] = (
@@ -1219,43 +1193,15 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         & (qty_sheet_df['derived_total_amount'] == qty_sheet_df['completed_amount_total'])
     ).map(lambda value: '是' if value else '否')
 
-    null_required_columns = [
-        'completed_qty',
-        'completed_amount_total',
-        QTY_DM_AMOUNT,
-        QTY_DL_AMOUNT,
-        QTY_MOH_AMOUNT,
-    ]
-    qty_sheet_df[QTY_HAS_NULL] = (
-        qty_sheet_df[null_required_columns].isna().any(axis=1).map(lambda value: '是' if value else '否')
-    )
-
     qty_reason = pd.Series('', index=qty_sheet_df.index, dtype='object')
-    qty_reason = _append_reason(qty_reason, qty_sheet_df[QTY_VALID_QTY].eq('否'), '完工数量无效')
-    qty_reason = _append_reason(qty_reason, qty_sheet_df[QTY_HAS_NULL].eq('是'), '关键字段存在空值')
     qty_reason = _append_reason(qty_reason, qty_sheet_df[QTY_MOH_MATCH].eq('否'), '制造费用明细与合计不一致')
-    qty_reason = _append_reason(qty_reason, qty_sheet_df[QTY_TOTAL_MATCH].eq('否'), '三大类金额与总完工成本不一致')
+    qty_reason = _append_reason(
+        qty_reason, qty_sheet_df[QTY_TOTAL_MATCH].eq('否'), '直接材料+直接人工+制造费用+委外加工费与总完工成本不一致'
+    )
     qty_sheet_df[QTY_CHECK_REASON] = qty_reason
     qty_sheet_df[QTY_CHECK_STATUS] = (
         qty_sheet_df[QTY_CHECK_REASON].eq('').map(lambda value: '通过' if value else '需复核')
     )
-
-    non_positive_qty_mask = qty_sheet_df[QTY_QTY_NON_POSITIVE].eq('是')
-    if non_positive_qty_mask.any():
-        error_frames.append(
-            _build_error_frame(
-                qty_sheet_df.loc[
-                    non_positive_qty_mask,
-                    ['product_code', 'product_name', 'period', 'order_no', 'order_line', 'completed_qty'],
-                ],
-                issue_type='INVALID_COMPLETED_QTY',
-                field_name='本期完工数量',
-                reason='完工数量小于等于 0，不参与单位成本 log 与 Modified Z-score',
-                action='保留在数量页并标记需复核',
-                original_column='completed_qty',
-                row_id_fields=WORK_ORDER_KEY_COLS,
-            )
-        )
 
     moh_mismatch_mask = qty_sheet_df[QTY_MOH_MATCH].eq('否')
     if moh_mismatch_mask.any():
@@ -1308,7 +1254,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
                 total_frame,
                 issue_type='TOTAL_COST_MISMATCH',
                 field_name='总完工成本',
-                reason='直接材料+直接人工+制造费用不等于数量页总完工成本',
+                reason='直接材料+直接人工+制造费用+委外加工费不等于数量页总完工成本',
                 action='保留结果并标记需复核',
                 lhs_column='derived_total_amount',
                 rhs_column='completed_amount_total',
@@ -1326,6 +1272,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         QTY_MOH_CONSUMABLES_AMOUNT,
         QTY_MOH_DEPRECIATION_AMOUNT,
         QTY_MOH_UTILITIES_AMOUNT,
+        QTY_OUTSOURCE_AMOUNT,
         QTY_DM_UNIT_COST,
         QTY_DL_UNIT_COST,
         QTY_MOH_UNIT_COST,
@@ -1334,9 +1281,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         QTY_MOH_CONSUMABLES_UNIT_COST,
         QTY_MOH_DEPRECIATION_UNIT_COST,
         QTY_MOH_UTILITIES_UNIT_COST,
-        QTY_VALID_QTY,
-        QTY_QTY_NON_POSITIVE,
-        QTY_HAS_NULL,
+        QTY_OUTSOURCE_UNIT_COST,
         QTY_MOH_MATCH,
         QTY_TOTAL_MATCH,
         QTY_CHECK_STATUS,
@@ -1382,8 +1327,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     analysis_source['moh_utilities_unit_cost'] = analysis_source[QTY_MOH_UTILITIES_AMOUNT].combine(
         analysis_source['completed_qty'], _safe_divide
     )
-
-    for column in ['dm_amount', 'dl_amount', 'moh_amount']:
+    for column in ['dm_amount', 'dl_amount', 'moh_amount', 'outsource_amount']:
         if column not in analysis_source.columns:
             analysis_source[column] = ZERO
 
@@ -1407,7 +1351,14 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     fact_df = _build_fact_table(analysis_source)
     product_summary_df = _build_product_summary_df(analysis_source)
     work_order_sheet = _build_anomaly_sheet(analysis_source)
-    quality_sheet = _build_quality_sheet(df_detail, df_qty, qty_sheet_output, work_order_sheet.data)
+    quality_sheet = _build_quality_sheet(
+        df_detail,
+        df_qty,
+        qty_sheet_output,
+        work_order_sheet.data,
+        filtered_invalid_qty_count,
+        filtered_missing_total_amount_count,
+    )
     error_log = _concat_error_logs(error_frames)
 
     qty_sheet_output = qty_sheet_output.drop(columns=['_join_key'])
@@ -1450,21 +1401,8 @@ def _build_legacy_fact_cost_pq(df_detail: pd.DataFrame, df_qty: pd.DataFrame) ->
     qty['qty'] = qty['本期完工数量'].map(_to_decimal)
 
     prep_errors: list[pd.DataFrame] = []
-    excluded_cost_mask = detail['cost_item'].astype(str).str.strip().eq('委外加工费')
-    if excluded_cost_mask.any():
-        prep_errors.append(
-            _build_error_frame(
-                detail.loc[excluded_cost_mask, ['product_code', 'product_name', 'period', 'cost_item']],
-                issue_type='UNMAPPED_COST_ITEM',
-                field_name='成本项目名称',
-                reason='委外加工费不纳入三大类分析',
-                action='该行已从价量分析中排除',
-                original_column='cost_item',
-                row_id_fields=['period', 'product_code', 'cost_item'],
-            )
-        )
-
-    unmapped_mask = detail['cost_bucket'].isna() & ~excluded_cost_mask
+    outsource_cost_mask = detail['cost_item'].astype(str).str.strip().eq('委外加工费')
+    unmapped_mask = detail['cost_bucket'].isna() & ~outsource_cost_mask
     if unmapped_mask.any():
         prep_errors.append(
             _build_error_frame(

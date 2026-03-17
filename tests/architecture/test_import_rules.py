@@ -51,6 +51,15 @@ def test_etl_stage_modules_do_not_import_excel() -> None:
         assert not any(name.startswith('src.excel') for name in imports), module_path
 
 
+def test_only_etl_entrypoint_may_import_excel() -> None:
+    etl_root = SRC_ROOT / 'etl'
+    for module_path in etl_root.glob('*.py'):
+        if module_path.name in {'__init__.py', 'costing_etl.py'}:
+            continue
+        imports = _collect_imports(module_path)
+        assert not any(name.startswith('src.excel') for name in imports), module_path
+
+
 def test_project_no_longer_imports_legacy_pq_analysis_shim() -> None:
     for module_path in _project_python_files():
         imports = _collect_imports(module_path)

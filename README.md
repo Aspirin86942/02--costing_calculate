@@ -100,22 +100,22 @@ python -m src.etl.costing_etl
 
 ## 测试
 ```bash
+# 先确认解释器来自 test 环境
+conda run -n test python -c "import sys; print(sys.executable)"
+
 # 运行测试
-pytest tests/ -q
+conda run -n test python -m pytest -q
 
 # 代码检查
-ruff check src/ tests/
-
-# 代码格式化
-ruff format src/ tests/
-```
-
-## Conda（推荐）
-```bash
-conda run -n test python -m pytest -q
 conda run -n test ruff check .
+
+# 代码格式化检查
 conda run -n test ruff format . --check
 ```
+
+## Contract Baseline
+- contract 真值来自 `tests/contracts/baselines/`，不来自 README。
+- 纯重构不得修改 baseline；只有业务口径明确变化时才允许更新，并必须说明差异。
 
 ## 数据目录说明
 - `data/raw/gb/` - GB 系列原始成本计算单

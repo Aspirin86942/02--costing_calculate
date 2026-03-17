@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pandas as pd
 
-from src.analytics.pq_analysis import (
+from src.analytics.fact_builder import (
     QTY_CHECK_STATUS,
     QTY_DM_AMOUNT,
     QTY_DM_UNIT_COST,
@@ -13,8 +13,8 @@ from src.analytics.pq_analysis import (
     QTY_OUTSOURCE_AMOUNT,
     QTY_OUTSOURCE_UNIT_COST,
     QTY_TOTAL_MATCH,
-    build_report_artifacts,
 )
+from src.analytics.qty_enricher import build_report_artifacts
 
 
 def _build_base_detail_df() -> pd.DataFrame:

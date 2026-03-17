@@ -3,14 +3,17 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Python ETL 工具：
-- `src/analytics/`: 分析与异常检测（`pq_analysis.py`，含价量分析、工单异常分析、数据质量校验）
-- `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`utils.py` 工具函数）
+- `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`quality.py`、`errors.py`）
+- `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
+- `src/excel/`: Excel 写出与样式（`styles.py`、`sheet_writers.py`、`workbook_writer.py`）
 - `src/config/`: 路径与目录配置（`settings.py`）
-- `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`）
+- `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`、`test_etl_pipeline.py`）
+- `tests/contracts/`: workbook / error_log / CLI 契约测试
+- `tests/architecture/`: 模块依赖边界测试
 - `data/raw/{gb,shukong}/`: 原始 Excel 输入
 - `data/processed/{gb,shukong}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
-- `scripts/`: 历史脚本归档；新增功能优先在 `src/` 实现
+- 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
 
 ### Build / Test / Dev Commands
 - `python -m pip install -e .`: 可编辑模式安装

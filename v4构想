@@ -1,0 +1,435 @@
+可以。下面这套就是给 Codex 的完整投喂包，直接复制用。
+
+先给判断：**不要把 v4 重构一次性丢给 Codex 做完**。Codex 官方现在确实适合做代码理解、仓库级重构、修复和可审阅 diff；Codex app 也支持并行 agent、隔离 worktree 和 reviewable diffs。你的项目这次重构又有明显的前后依赖：先固化 baseline，再拆 writer，再拆 ETL/analytics，最后删 shim 和 legacy。这个顺序不能乱，所以最稳的方式是：**1 条总控 Prompt + 5 条分 commit Prompt，逐条执行**。([OpenAI][1])
+
+另外，Codex 的官方定位就是会适配你现有项目结构和约定来改代码；这对你这种“不能以 README 为真值、只能以当前代码真实输出为契约”的项目特别重要。所以 prompt 里必须反复强调：**契约来自当前代码输出，不来自 README**。([OpenAI Developers][2])
+
+---
+
+## 你给 Codex 的使用规则
+
+执行方式建议固定成这样：
+
+1. 先贴“总控 Prompt”
+2. 等它输出对仓库的理解、风险点、Commit 0 方案
+3. 再单独贴 Commit 0 Prompt
+4. Commit 0 合并后，再贴 Commit 1
+5. 依次做到 Commit 4
+
+不要让它越级，不要让它“一次完成全部重构”。
+
+---
+
+## 总控 Prompt
+
+```text
+你现在在一个 Python 成本核算 ETL 仓库中工作。目标是执行 v4 分层重构，但必须严格保持当前代码生成的 workbook 语义不变。
+
+仓库稳定面：
+- CLI 入口：python -m src.etl.costing_etl
+- 稳定 Python 接口：CostingWorkbookETL.process_file(input_path: Path, output_path: Path) -> bool
+- README 不是契约真值；所有兼容性以“当前代码真实输出”与 contract tests 为准
+- 不允许改变业务口径
+- 不允许把 Decimal 改成 float
+- 不引入 Web API、数据库、任务调度
+- 失败模型继续保持 False + logging，不引入新的异常外观
+
+工作方式要求：
+1. 先阅读仓库结构、tests、pyproject.toml、src/etl/costing_etl.py、src/analytics/pq_analysis.py、README.md
+2. 先输出你理解到的当前架构、主要耦合点、风险点、建议执行顺序
+3. 未经我确认，不要直接开始大规模改动
+4. 每次只完成一个 commit 范围的工作，并保证变更可审阅
+5. 优先保证 contract tests 与现有行为兼容
+6. 输出 reviewable diff 风格改动，避免无关格式化噪音
+7. 不要顺手“优化”业务逻辑；只做当前 commit 范围内的结构工作
+
+非功能硬约束：
+- workbook 契约只认当前代码真实输出，不认 README 描述
+- 必须新增 tests/contracts/
+- error_log 稳定列固定为：
+  row_id, cost_bucket, product_code, product_name, period, issue_type, field_name,
+  original_value, lhs, rhs, diff, reason, action, retryable
+- v4 主契约中的稳定 issue_type 固定为：
+  UNMAPPED_COST_ITEM
+  MISSING_AMOUNT
+  DUPLICATE_WORK_ORDER_KEY
+  MOH_BREAKDOWN_MISMATCH
+  TOTAL_COST_MISMATCH
+  NON_POSITIVE_UNIT_COST
+- 允许 legacy shim 过渡期保留 MISSING_QTY、PRICE_MISMATCH，但它们最终不进入 v4 主契约
+- 禁止 writer 层为了估列宽回扫整个 worksheet
+- 禁止同一阶段重复 copy()、重复 astype(str).str.strip()、重复构造 join key
+- 金额计算必须继续使用 Decimal
+- 不要修改业务规则和白名单口径
+
+目标架构：
+- src/etl/ 只负责读取、列名标准化、总计行过滤、特殊填充、detail/qty split、orchestration
+- src/analytics/contracts.py 统一承载共享类型：
+  AnalysisArtifacts, FlatSheet, SectionBlock, ProductAnomalySection, ResolvedColumns, SplitResult
+- src/analytics/ 拆为：
+  errors.py
+  fact_builder.py
+  qty_enricher.py
+  anomaly.py
+  quality.py
+  table_rendering.py
+- src/excel/ 拆为：
+  styles.py
+  sheet_writers.py
+  workbook_writer.py
+
+依赖方向限制：
+- 只有 façade / orchestration 层可以调用 excel writer
+- src/etl/stages/* 不得依赖 src/excel/*
+- analytics 不得依赖 etl
+- analytics 不得依赖 excel
+- excel 只依赖 DataFrame 与 contracts
+- excel 不得依赖业务白名单、成本映射、error_log 规则
+
+需要新增的工程约束：
+- 新增 architecture tests，验证 import 方向约束
+- baseline 更新协议：纯重构 PR 不允许修改 baseline；只有业务口径明确变化且说明差异时才允许更新 baseline
+- 删除 shim 的完成定义：
+  1) 新路径测试全绿
+  2) architecture tests 全绿
+  3) 全仓搜索除 shim 自身外无旧 facade 引用
+  4) contract baseline 不变
+  5) 再删除 shim
+
+执行顺序固定为：
+- Commit 0：baseline capture + contract tests，不做结构重构
+- Commit 1：抽离 excel writer
+- Commit 2：拆 etl 阶段模块
+- Commit 3：拆 analytics，并保留 deprecated shim
+- Commit 4：迁移 tests/import 后删除 shim、legacy scripts、文档旧说明、pyproject.toml 里的 scripts 排除
+
+验收要求：
+- python -m pytest -q
+- ruff check .
+- ruff format . --check
+- 若未检测到 mypy 配置或依赖，明确输出“未检测到 mypy 配置/依赖，已跳过”
+- 每个 commit 必须可独立通过测试并可回退
+
+先不要写代码。
+先给我：
+1. 你对当前仓库结构和主流程的理解
+2. 你认为最危险的 5 个回归点
+3. Commit 0 会新增哪些文件、测试和 baseline
+4. 你准备如何比较 workbook semantics，而不是比较二进制文件
+5. 你准备如何实现 architecture tests
+```
+
+---
+
+## Commit 0 Prompt：基线与契约冻结
+
+```text
+请只完成 Commit 0：baseline capture 和 contract tests。
+
+范围内允许：
+- 新增 tests/contracts/
+- 新增 tests/architecture/
+- 新增 workbook semantics 提取/比较的测试辅助函数
+- 新增 baseline JSON
+- 新增合成或脱敏 fixture
+- 对现有测试做最小必要调整
+- 对代码做最小必要的测试可访问性改造，但不能改变输出语义
+
+范围内禁止：
+- 不要拆 src/excel/
+- 不要拆 src/etl/
+- 不要拆 src/analytics/
+- 不要删除 legacy shim
+- 不要删除 scripts/
+- 不要大规模格式化
+- 不要顺手重命名模块
+
+必须完成：
+1. 新增 tests/contracts/test_workbook_contract.py
+2. 新增 tests/contracts/test_error_log_contract.py
+3. 新增 tests/contracts/test_cli_contract.py
+4. 新增 tests/architecture/test_import_rules.py（先建立规则和骨架，即使当前只覆盖最关键约束）
+5. 新增 baseline 文件，例如：
+   - tests/contracts/baselines/workbook_semantics.json
+   - tests/contracts/baselines/error_log_contract.json
+6. 说明 baseline 如何生成
+7. workbook contract 需要比较：
+   - 9 张 sheet 的名称与顺序
+   - 列名与列序
+   - freeze panes
+   - auto filter
+   - number format
+   - 高亮位置
+   - column width（固定宽度页做精确断言；估算宽度页做分级断言或规范化后断言）
+8. error_log contract 需要比较：
+   - 列名与列序
+   - retryable 默认值
+   - 稳定 issue_type 集合
+9. CLI contract 需要比较：
+   - _find_input_files() 规则
+   - CLI 入口行为
+   - 输出文件命名
+   - 返回状态
+10. 加入 baseline 更新协议说明：
+   - 纯重构不得修改 baseline
+   - 业务口径变更时才允许修改 baseline，并必须说明差异
+
+完成后请输出：
+- 新增/修改的文件列表
+- baseline 结构说明
+- workbook semantics 的比较方法
+- 这些测试为什么足以保护后续重构
+- 还没覆盖到的风险点
+```
+
+---
+
+## Commit 1 Prompt：抽离 Excel Writer
+
+```text
+请只完成 Commit 1：抽离 Excel writer。
+
+前置要求：
+- 必须保持 Commit 0 的 contract tests 全绿
+- 不允许改 baseline
+- 不允许改 workbook 语义
+- 只允许 façade / orchestration 层调用 excel writer
+
+目标：
+- 新建 src/excel/styles.py
+- 新建 src/excel/sheet_writers.py
+- 新建 src/excel/workbook_writer.py
+- 把当前 costing_etl.py 中的样式、sheet 写出、冻结窗格、数字格式、高亮逻辑迁出
+- src/etl/costing_etl.py 仍保留 process_file()，但它只做 orchestration，不再持有 worksheet 写出细节
+
+强约束：
+- 禁止 writer 层为了估列宽回扫整个 worksheet
+- 列宽只允许基于 DataFrame 内容预估
+- “按产品异常值分析”如果必须逐格写，允许作为唯一例外页，但必须集中在 writer 层
+- excel 不得依赖业务白名单、成本映射、error_log 规则
+- analytics 不得依赖 excel
+
+测试要求：
+- 现有 tests 必须继续通过
+- contract tests 必须继续通过
+- 新增或补强 excel writer 行为测试，至少覆盖：
+  - freeze panes
+  - number formats
+  - autofilter
+  - 关键高亮
+  - 固定列宽与估算列宽的断言逻辑
+
+完成后请输出：
+- 迁出的函数/职责清单
+- 新的调用链
+- 仍然残留在 costing_etl.py 中、准备在 Commit 2 再处理的内容
+- 任何为了兼容 contract tests 做的特殊处理
+```
+
+---
+
+## Commit 2 Prompt：拆 ETL 阶段模块
+
+```text
+请只完成 Commit 2：拆 ETL 阶段模块。
+
+前置要求：
+- Commit 0 / Commit 1 的 tests 全绿
+- 不允许改 baseline
+- 不允许改 workbook 语义
+- 只有 façade / orchestration 层可以触达 excel writer
+- src/etl/stages/* 不得依赖 src/excel/*
+
+目标：
+- 把 src/etl/costing_etl.py 中的 ETL 阶段逻辑拆分出来
+- 建议形成以下职责模块（可微调文件名，但职责边界必须清楚）：
+  - reader.py：读取 workbook
+  - column_resolution.py：列名识别与标准化，产出 ResolvedColumns
+  - cleaners.py：去总计行、特殊 ffill 规则
+  - splitter.py：detail / qty split，产出 SplitResult
+  - pipeline.py：组合 ETL 阶段服务
+- 保留 src/etl/costing_etl.py 作为薄入口与 façade
+- 补回共享 DTO：
+  - ResolvedColumns
+  - SplitResult
+
+强约束：
+- 禁止重复 copy()
+- 禁止重复 astype(str).str.strip()
+- 禁止重复构造 join key
+- 标准化后的中间列必须复用
+- 保持脚本模式 bootstrap 行为
+- 保持 CLI 行为和 process_file 签名不变
+
+测试要求：
+- 补强 ETL 阶段测试，至少覆盖：
+  - 自动重命名
+  - 去总计行
+  - 集成车间供应商不下填
+  - detail / qty 边界拆分
+  - 脚本模式 bootstrap 只插入一次 project root
+- contract tests 必须继续通过
+- architecture tests 必须继续通过
+
+完成后请输出：
+- 新 ETL 模块结构
+- 每个阶段的输入/输出
+- 哪些重复标准化或重复复制被消除
+- 仍残留在 costing_etl.py 中、准备在 Commit 3 处理的内容
+```
+
+---
+
+## Commit 3 Prompt：拆 Analytics，并保留 Deprecated Shim
+
+```text
+请只完成 Commit 3：拆 analytics，并保留 deprecated shim。
+
+前置要求：
+- Commit 0 / 1 / 2 tests 全绿
+- 不允许改 baseline
+- 不允许改 workbook 语义
+- 不允许直接删除旧 facade
+- analytics 不得依赖 etl
+- analytics 不得依赖 excel
+
+目标：
+- 将 src/analytics/pq_analysis.py 拆分为：
+  - contracts.py
+  - errors.py
+  - fact_builder.py
+  - qty_enricher.py
+  - anomaly.py
+  - quality.py
+  - table_rendering.py
+- 拆解 build_report_artifacts()，至少分成：
+  - 金额汇总
+  - 数量补强
+  - 异常评分
+  - 质量校验
+  - 表格渲染准备
+- 保留 src/analytics/pq_analysis.py 作为 deprecated shim
+- shim 在本 commit 中继续 re-export：
+  - build_fact_cost_pq
+  - build_product_anomaly_sections
+  - render_tables
+- 允许 shim 继续临时兼容 MISSING_QTY、PRICE_MISMATCH 测试口径
+- v4 主契约仍只认稳定 issue_type 集合
+
+强约束：
+- 不改变业务规则
+- 不改变白名单顺序口径
+- Decimal 计算必须保持
+- 尽量减少重复 merge / combine / 临时列往返
+- 派生金额列、单位成本列、勾稽列按批次生成
+
+测试要求：
+- 新路径测试补齐
+- 旧 facade 相关测试暂时仍可保留，但应逐步迁往新模块路径
+- 覆盖：
+  - 委外加工费
+  - 缺失金额
+  - 重复工单键
+  - 制造费用勾稽
+  - 总成本勾稽
+  - 非正单位成本
+  - 白名单顺序
+- contract tests 必须继续通过
+- architecture tests 必须继续通过
+
+完成后请输出：
+- analytics 新模块结构
+- build_report_artifacts 的拆分结果
+- shim 还保留了哪些兼容职责
+- 删除 shim 之前还差哪些迁移动作
+```
+
+---
+
+## Commit 4 Prompt：删除 Shim、Legacy Scripts、清理文档
+
+```text
+请只完成 Commit 4：删除 shim、legacy scripts，并清理文档与配置。
+
+前置要求：
+- 新模块路径测试已全绿
+- architecture tests 全绿
+- contract baseline 不变
+- 先做全仓搜索确认旧 facade 仅剩 shim 自身
+
+先执行并汇报以下搜索结果：
+- rg -n "build_fact_cost_pq|_build_legacy_fact_cost_pq|build_product_anomaly_sections|render_tables" .
+- rg -n "scripts/Costing_Calculate.py|scripts/Costing_Calculating_V2.0.py|scripts/抓取所有字段脚本.py" .
+- rg -n "src.etl.costing_v2|scripts/" README.md AGENTS* CLAUDE* pyproject.toml src tests .
+
+只有当除 shim 本身外无旧 facade 业务引用时，才允许进入删除步骤。
+
+目标：
+- 删除 deprecated shim
+- 删除 _build_legacy_fact_cost_pq
+- 删除以下旧脚本：
+  - scripts/Costing_Calculate.py
+  - scripts/Costing_Calculating_V2.0.py
+  - scripts/抓取所有字段脚本.py
+- 更新 README、AGENTS、CLAUDE、pyproject.toml
+- 清理 pyproject.toml 中的 scripts 排除，例如 extend-exclude = ["scripts"]
+
+强约束：
+- 不允许改 baseline
+- 不允许改 workbook 语义
+- 不允许遗留旧 facade 的文档说明
+- 文档必须改成“已移除”，不能写成“已归档”
+
+测试要求：
+- 删除 shim 后，新路径 tests 必须继续全绿
+- 删除旧路径专用测试
+- contract tests 必须继续通过
+- architecture tests 必须继续通过
+
+完成后请输出：
+- 删除前的搜索结果摘要
+- 删除的文件列表
+- 更新的文档与配置列表
+- 为什么现在已经满足 shim 删除条件
+```
+
+---
+
+## 你还可以额外给 Codex 的“统一回报格式”
+
+每次 commit 后，让它都按这个模板回报，能减少废话：
+
+```text
+请按以下格式汇报：
+
+1. 本次改动摘要
+2. 新增/修改/删除的文件
+3. 关键设计决定
+4. 兼容性风险
+5. 已运行的测试/静态检查
+6. 未覆盖风险
+7. 下一 commit 前置条件
+```
+
+---
+
+## 你自己审 Codex 输出时，重点只看这 7 件事
+
+1. 有没有擅自改 baseline
+2. 有没有把 README 当真值
+3. 有没有偷改业务口径
+4. 有没有提前删 shim
+5. 有没有把 writer 反向耦合回 ETL/analytics
+6. 有没有把 `ruff format .` 当验收，没改成 `ruff format . --check`
+7. 有没有用“更新 baseline”掩盖纯重构回归
+
+---
+
+## 为什么这套喂法更适合 Codex
+
+因为 Codex 现在官方就是面向真实工程流：理解代码库、做 refactor、生成可审阅 diff，并且在 app 里支持并行 agent、隔离 worktree、Git 工作流和多线程任务。你的项目是典型的“中等规模单仓重构 + 强契约 + 强回归风险控制”，所以最适合这种**分步、可回退、每步有完成定义**的输入，而不是一次性长计划。([OpenAI][1])
+
+如果你愿意，我下一条可以直接把上面这套再压缩成一个 **“最短可复制版”**，专门给 Codex app 首屏粘贴。
+
+[1]: https://openai.com/codex/?utm_source=chatgpt.com "Codex | AI Coding Partner from OpenAI"
+[2]: https://developers.openai.com/codex?utm_source=chatgpt.com "Codex - developers.openai.com"

@@ -47,7 +47,7 @@ python -m src.etl.costing_etl
   - `直接材料` -> `direct_material`
   - `直接人工` -> `direct_labor`
   - `制造费用*` -> `moh`
-  - `委外加工费` -> 不纳入三大类分析，写入 `error_log`
+  - `委外加工费` -> 不纳入三大类价量分析，仅在工单分析与总成本勾稽中展示
 - 每张分析表均按三段展示：
   - `完工金额`（按月 + `总计`，含底部总计行）
   - `完工数量`（按月 + `总计`，含底部总计行）
@@ -64,7 +64,7 @@ python -m src.etl.costing_etl
 
 ## Excel 样式
 - 蓝黄风格：段标题黄底、表头浅蓝、总计行加深蓝
-- 冻结窗格：`C3`
+- 冻结窗格按 sheet 类型分别设置，真实契约以 `tests/contracts/` baseline 为准
 - 开启筛选
 - 数字格式：
   - 金额：`#,##0.00`
@@ -73,11 +73,19 @@ python -m src.etl.costing_etl
 - 不使用合并单元格
 
 ## 目录结构
-- `src/analytics/` - 价量分解分析模块
-  - `pq_analysis.py` - 长表构建、分解计算、宽表渲染
+- `src/analytics/` - 分析与异常检测模块
+  - `contracts.py` - 共享数据结构
+  - `fact_builder.py` - fact 构建与 Decimal 工具
+  - `qty_enricher.py` - 数量页补强与报表产物编排
+  - `table_rendering.py` - 三大类价量宽表与兼容摘要页
+  - `anomaly.py` / `quality.py` / `errors.py` - 工单异常、质量校验、error_log 契约
 - `src/etl/` - ETL 处理模块
-  - `costing_etl.py` - 主 ETL 脚本
+  - `costing_etl.py` - 主入口与 orchestration
+  - `pipeline.py` - ETL 阶段编排
+  - `stages/` - 读取、列识别、清洗、拆分
   - `utils.py` - 工具函数
+- `src/excel/` - Excel 写出与样式模块
+  - `styles.py` / `sheet_writers.py` / `workbook_writer.py`
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
   - `gb/` - GB 系列原始成本计算单
@@ -85,9 +93,10 @@ python -m src.etl.costing_etl
 - `data/processed/` - 处理结果
   - `gb/` - GB 系列处理结果
   - `shukong/` - 数控系列处理结果
-- `tests/` - 测试
+- `tests/` - 单元测试
+- `tests/contracts/` - workbook / error_log / CLI 契约测试
+- `tests/architecture/` - 模块依赖与导入边界测试
 - `docs/field_definitions/` - 字段定义文件
-- `scripts/` - 归档旧脚本
 
 ## 测试
 ```bash
@@ -105,7 +114,7 @@ ruff format src/ tests/
 ```bash
 conda run -n test python -m pytest -q
 conda run -n test ruff check .
-conda run -n test ruff format .
+conda run -n test ruff format . --check
 ```
 
 ## 数据目录说明
@@ -115,8 +124,8 @@ conda run -n test ruff format .
 - `data/processed/shukong/` - 数控系列处理结果
 - `docs/field_definitions/` - 字段定义文件 (gb 金蝶字段.txt/html)
 
-## 归档脚本
-以下脚本已归档到 `scripts/` 目录，不再主动维护：
+## 已移除脚本
+以下历史脚本已从仓库移除，功能已由 `src/` 内模块接管：
 - `Costing_Calculate.py` - 原始清洗脚本
 - `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
 - `抓取所有字段脚本.py` - 字段提取脚本

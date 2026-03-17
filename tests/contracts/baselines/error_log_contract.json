@@ -1,0 +1,31 @@
+{
+  "columns": [
+    "row_id",
+    "cost_bucket",
+    "product_code",
+    "product_name",
+    "period",
+    "issue_type",
+    "field_name",
+    "original_value",
+    "lhs",
+    "rhs",
+    "diff",
+    "reason",
+    "action",
+    "retryable"
+  ],
+  "retryable_default": false,
+  "stable_issue_types": [
+    "UNMAPPED_COST_ITEM",
+    "MISSING_AMOUNT",
+    "DUPLICATE_WORK_ORDER_KEY",
+    "MOH_BREAKDOWN_MISMATCH",
+    "TOTAL_COST_MISMATCH",
+    "NON_POSITIVE_UNIT_COST"
+  ],
+  "legacy_issue_types": [
+    "MISSING_QTY",
+    "PRICE_MISMATCH"
+  ]
+}

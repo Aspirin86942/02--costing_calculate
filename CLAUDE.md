@@ -16,8 +16,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 目录结构
 ```
 costing_calculate/
+├── src/analytics/        # 分析与异常检测
 ├── src/etl/              # ETL 处理模块
-│   └── costing_etl.py    # 主 ETL 脚本
+│   ├── costing_etl.py    # 主 ETL 脚本
+│   ├── pipeline.py       # ETL 阶段编排
+│   └── stages/           # 读取、列识别、清洗、拆分
+├── src/excel/            # Excel 写出与样式
 ├── src/config/           # 配置管理
 │   └── settings.py       # 路径配置
 ├── data/raw/             # 原始数据
@@ -26,9 +30,8 @@ costing_calculate/
 ├── data/processed/       # 处理结果
 │   ├── gb/
 │   └── shukong/
-├── tests/                # 测试
+├── tests/                # 单元 / 契约 / 架构测试
 ├── docs/field_definitions/  # 字段定义文件
-└── scripts/              # 归档旧脚本
 ```
 
 ### 数据契约 (Data Contracts)
@@ -80,9 +83,9 @@ ruff check src/ tests/
 ruff format src/ tests/
 ```
 
-## 归档脚本 (Archived Scripts)
+## 已移除脚本 (Removed Scripts)
 
-以下脚本已归档到 `scripts/` 目录，不再维护：
+以下历史脚本已从仓库移除，功能已由 `src/` 内模块接管：
 - `Costing_Calculate.py` - 原始清洗脚本
 - `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
 - `抓取所有字段脚本.py` - 字段提取脚本

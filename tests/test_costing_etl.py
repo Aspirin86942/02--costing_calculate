@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 from openpyxl import load_workbook
 
-from src.analytics.pq_analysis import AnalysisArtifacts, FlatSheet, ProductAnomalySection
+from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection
 from src.etl.costing_etl import CostingWorkbookETL
 
 

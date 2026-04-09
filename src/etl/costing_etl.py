@@ -428,4 +428,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit('Use `python main.py gb` or `python main.py sk` instead.')

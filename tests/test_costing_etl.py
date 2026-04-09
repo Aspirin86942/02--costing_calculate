@@ -127,6 +127,36 @@ class TestCostingWorkbookETL:
 
         assert result['product_code'].tolist() == ['GB_C.D.B0040AA', 'GB_C.D.B0041AA']
 
+    def test_filter_fact_df_for_analysis_allows_empty_product_order(self) -> None:
+        """测试显式空白白名单会跳过过滤，不使用默认顺序。"""
+        etl = CostingWorkbookETL(skip_rows=2, product_order=())
+        fact_df = pd.DataFrame(
+            [
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-A',
+                    'product_name': '产品A',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100,
+                    'qty': 5,
+                    'price': 20,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-B',
+                    'product_name': '产品B',
+                    'cost_bucket': 'direct_material',
+                    'amount': 200,
+                    'qty': 10,
+                    'price': 20,
+                },
+            ]
+        )
+
+        result = etl._filter_fact_df_for_analysis(fact_df)
+
+        pd.testing.assert_frame_equal(result, fact_df)
+
     def test_filter_fact_df_for_analysis_honors_injected_product_order(self) -> None:
         """测试注入的产品顺序会被用于分析过滤与排序。"""
         custom_order = (

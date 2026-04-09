@@ -10,14 +10,15 @@
 - `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`、`test_etl_pipeline.py`）
 - `tests/contracts/`: workbook / error_log / CLI 契约测试
 - `tests/architecture/`: 模块依赖边界测试
-- `data/raw/{gb,shukong}/`: 原始 Excel 输入
-- `data/processed/{gb,shukong}/`: 处理后输出
+- `data/raw/{gb,sk}/`: 原始 Excel 输入
+- `data/processed/{gb,sk}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
 - 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
 
 ### Build / Test / Dev Commands
 - `python -m pip install -e .`: 可编辑模式安装
-- `python -m src.etl.costing_etl`: 执行主 ETL（默认读取 `data/raw/gb/`）
+- `python main.py gb`: 执行 GB 管线
+- `python main.py sk`: 执行 SK 管线
 - `python -m pytest tests -q`: 运行测试
 - `python -m ruff check src tests`: 代码检查
 - `python -m ruff format src tests`: 代码格式化
@@ -44,7 +45,7 @@
 
 ### Commit / PR Guidelines
 - 默认使用 Conventional Commits：
-  - `feat(etl): add shukong file matcher`
+  - `feat(etl): add sk file matcher`
   - `fix(utils): handle empty period cell`
   - `test(etl): cover missing material column`
 - PR 建议包含：
@@ -58,7 +59,7 @@
 - 密钥与环境特定路径不得硬编码进源码。
 
 ### 当前业务规则（GB 分析输出）
-- 每个处理后的工作簿默认输出以下 9 张 Sheet：`成本明细`、`产品数量统计`、`直接材料_价量比`、`直接人工_价量比`、`制造费用_价量比`、`按工单按产品异常值分析`、`按产品异常值分析`、`数据质量校验`、`error_log`。
+- 每个处理后的工作簿默认输出以下 8 张 Sheet：`成本明细`、`产品数量统计`、`直接材料_价量比`、`直接人工_价量比`、`制造费用_价量比`、`按工单按产品异常值分析`、`按产品异常值分析`、`error_log`。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
 - 分析页仅展示白名单产品，匹配规则为`产品编码 + 产品名称`双字段精确匹配。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
@@ -72,7 +73,7 @@
   - 仅对大于 0 的单位成本计算对数与 Modified Z-score
   - 异常阈值：`|score| <= 2.5`为正常，`2.5 < |score| <= 3.5`为关注，`|score| > 3.5`为高度可疑
   - `委外加工费`只展示`委外加工费合计完工金额`与`委外加工费单位完工成本`，不输出`log`、`Modified Z-score`和异常标记，也不参与`异常等级`与`异常主要来源`判定
-- 新增`数据质量校验`sheet，至少输出行数勾稽、空值率、工单主键唯一性和分析覆盖率。
+- 质量校验结果默认输出到控制台摘要和同名 `.log` 文件，至少包含行数勾稽、空值率、工单主键唯一性和分析覆盖率。
 - `委外加工费`不归属`制造费用`，不纳入三大类价量分析，也不因为“不参与三大类分析”写入`error_log`；它只在`产品数量统计`和`按工单按产品异常值分析`中展示，并参与总完工成本勾稽。
 - `error_log`至少保留`MISSING_AMOUNT`、`TOTAL_COST_MISMATCH`、`MOH_BREAKDOWN_MISMATCH`、`DUPLICATE_WORK_ORDER_KEY`、`NON_POSITIVE_UNIT_COST`等可审计异常。
 - `按产品异常值分析`sheet保留，但已改为兼容摘要页，不再执行 IQR 检测。

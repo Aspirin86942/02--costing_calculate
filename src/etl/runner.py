@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import PipelineConfig

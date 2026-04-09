@@ -14,8 +14,8 @@ try:
     from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
-    from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.config.pipelines import GB_PIPELINE
+    from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -28,8 +28,8 @@ except ModuleNotFoundError:
     from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
-    from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.config.pipelines import GB_PIPELINE
+    from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -76,6 +76,8 @@ COL_CUMULATIVE_COMPLETED_CONSUMPTION = '累计完工单耗'
 COL_CUMULATIVE_COMPLETED_UNIT_COST = '累计完工单位成本'
 COL_CUMULATIVE_COMPLETED_AMOUNT = '累计完工金额'
 INTEGRATED_WORKSHOP_NAME = '集成车间'  # 供应商字段不再向下填充
+
+
 # 分析用的产品白名单和顺序，其他产品会被过滤掉
 class CostingWorkbookETL:
     """
@@ -207,7 +209,7 @@ class CostingWorkbookETL:
         ensure_directories()
 
     def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
-        """将数据质量校验结果写入日志，避免继续输出到 Excel。"""
+        """将质量指标结果写入日志，避免继续输出到 Excel。"""
         for metric in quality_metrics:
             logger.info(
                 'Quality metric | category=%s | metric=%s | value=%s | description=%s',

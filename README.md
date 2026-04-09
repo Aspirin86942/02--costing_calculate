@@ -19,18 +19,15 @@ pip install -e .
 
 ## 使用
 ```bash
-# 1. 将原始 Excel 文件放入对应 data/raw/ 目录
-#    - GB 系列文件 → data/raw/gb/
-#    - 数控系列文件 → data/raw/shukong/
+# GB 管线
+python main.py gb
 
-# 2. 运行主 ETL
-python -m src.etl.costing_etl
-
-# 3. 处理结果保存在对应 data/processed/ 目录
+# SK 管线
+python main.py sk
 ```
 
-## 输出工作表
-每个处理后的工作簿默认输出以下 9 张 Sheet：
+## 输出说明
+每个处理后的工作簿默认输出以下 8 张 Sheet：
 - `成本明细`
 - `产品数量统计`
 - `直接材料_价量比`
@@ -38,8 +35,11 @@ python -m src.etl.costing_etl
 - `制造费用_价量比`
 - `按工单按产品异常值分析`
 - `按产品异常值分析`
-- `数据质量校验`
 - `error_log`
+
+- 每次处理会在对应 `data/processed/<pipeline>/` 目录生成同名 `.log` 文件
+- 质量指标摘要输出到控制台和 `.log` 文件，不再写入独立 Excel Sheet
+- `error_log` 仍保留在 Excel 中
 
 ## 分析输出口径
 - 价量分析粒度：`产品编码 + 月份 + 成本类别`
@@ -80,19 +80,21 @@ python -m src.etl.costing_etl
   - `table_rendering.py` - 三大类价量宽表与兼容摘要页
   - `anomaly.py` / `quality.py` / `errors.py` - 工单异常、质量校验、error_log 契约
 - `src/etl/` - ETL 处理模块
-  - `costing_etl.py` - 主入口与 orchestration
+  - `costing_etl.py` - 单个工作簿 ETL 主流程
+  - `runner.py` - 管线调度、输入匹配与质量日志输出
   - `pipeline.py` - ETL 阶段编排
   - `stages/` - 读取、列识别、清洗、拆分
   - `utils.py` - 工具函数
+- `main.py` - 仓库根目录统一入口
 - `src/excel/` - Excel 写出与样式模块
   - `styles.py` / `sheet_writers.py` / `workbook_writer.py`
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
   - `gb/` - GB 系列原始成本计算单
-  - `shukong/` - 数控系列原始成本计算单
+  - `sk/` - SK 系列原始成本计算单
 - `data/processed/` - 处理结果
   - `gb/` - GB 系列处理结果
-  - `shukong/` - 数控系列处理结果
+  - `sk/` - SK 系列处理结果
 - `tests/` - 单元测试
 - `tests/contracts/` - workbook / error_log / CLI 契约测试
 - `tests/architecture/` - 模块依赖与导入边界测试
@@ -119,9 +121,9 @@ conda run -n test ruff format . --check
 
 ## 数据目录说明
 - `data/raw/gb/` - GB 系列原始成本计算单
-- `data/raw/shukong/` - 数控系列原始成本计算单
+- `data/raw/sk/` - SK 系列原始成本计算单
 - `data/processed/gb/` - GB 系列处理结果
-- `data/processed/shukong/` - 数控系列处理结果
+- `data/processed/sk/` - SK 系列处理结果
 - `docs/field_definitions/` - 字段定义文件 (gb 金蝶字段.txt/html)
 
 ## 已移除脚本

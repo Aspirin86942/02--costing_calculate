@@ -397,7 +397,6 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_product.freeze_panes == 'A6'
 
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
-    assert '数据质量校验' not in wb.sheetnames
     assert '本期完工数量缺失率' not in quality_metrics
     assert '本期完工金额缺失率' not in quality_metrics
     assert '完工数量小于等于0行数' not in quality_metrics

@@ -15,6 +15,7 @@ class _FakeGlobDir:
         self.patterns.append(pattern)
         return self.responses[len(self.patterns) - 1]
 
+
 def test_find_input_files_uses_pipeline_patterns_in_order(tmp_path) -> None:
     same_file = tmp_path / 'GB-成本计算单.xlsx'
     second_file = tmp_path / 'GB- 成本计算单.xlsx'

@@ -15,6 +15,7 @@ try:
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
+    from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -28,6 +29,7 @@ except ModuleNotFoundError:
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
+    from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -75,19 +77,6 @@ COL_CUMULATIVE_COMPLETED_UNIT_COST = '累计完工单位成本'
 COL_CUMULATIVE_COMPLETED_AMOUNT = '累计完工金额'
 INTEGRATED_WORKSHOP_NAME = '集成车间'  # 供应商字段不再向下填充
 # 分析用的产品白名单和顺序，其他产品会被过滤掉
-ANALYSIS_PRODUCT_ORDER: tuple[tuple[str, str], ...] = (
-    ('GB_C.D.B0048AA', 'BMS-400W驱动器'),
-    ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
-    ('GB_C.D.B0041AA', 'BMS-1100W驱动器'),
-    ('GB_C.D.B0042AA', 'BMS-1700W驱动器'),
-    ('GB_C.D.B0043AA', 'BMS-2400W驱动器'),
-    ('GB_C.D.B0044AA', 'BMS-3900W驱动器'),
-    ('GB_C.D.B0045AA', 'BMS-5900W驱动器'),
-    ('GB_C.D.B0046AA', 'BMS-7500W驱动器'),
-)
-ANALYSIS_PRODUCT_WHITELIST: set[tuple[str, str]] = set(ANALYSIS_PRODUCT_ORDER)
-
-
 class CostingWorkbookETL:
     """
     Process a costing workbook into detail/quantity sheets.
@@ -182,9 +171,22 @@ class CostingWorkbookETL:
         COL_CUMULATIVE_COMPLETED_AMOUNT,
     ]
 
-    def __init__(self, skip_rows: int = 2):
+    def __init__(
+        self,
+        skip_rows: int = 2,
+        *,
+        product_order: tuple[tuple[str, str], ...] | None = None,
+    ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
+        normalized_order = tuple(
+            (str(code), str(name)) for code, name in (product_order or GB_PIPELINE.product_order)
+        )
+        self.product_order: tuple[tuple[str, str], ...] = normalized_order
+        self.product_whitelist = frozenset(normalized_order)
+        self._product_order_index: dict[tuple[str, str], int] = {
+            pair: idx for idx, pair in enumerate(self.product_order)
+        }
         self.workbook_writer = CostingWorkbookWriter()
         self.pipeline = CostingEtlPipeline(
             skip_rows=skip_rows,
@@ -247,13 +249,17 @@ class CostingWorkbookETL:
             logger.warning('Skip analysis whitelist filter: missing columns=%s', missing_cols)
             return df
 
+        if not self.product_order:
+            logger.info('Skipping whitelist filter because no product order provided.')
+            return df
+
         if df.empty:
             return df
 
         product_pairs = pd.MultiIndex.from_frame(df[[code_col, name_col]].astype(str))
-        matched_mask = product_pairs.isin(ANALYSIS_PRODUCT_WHITELIST)
+        matched_mask = product_pairs.isin(self.product_whitelist)
         filtered_df = df.loc[matched_mask].copy()
-        order_map = {pair: idx for idx, pair in enumerate(ANALYSIS_PRODUCT_ORDER)}
+        order_map = self._product_order_index
         filtered_pairs = pd.MultiIndex.from_frame(filtered_df[[code_col, name_col]].astype(str))
         filtered_df['_order_idx'] = filtered_pairs.map(order_map)
         order_cols = ['_order_idx']
@@ -275,15 +281,16 @@ class CostingWorkbookETL:
         sections: list[ProductAnomalySection],
     ) -> list[ProductAnomalySection]:
         """按白名单和既定顺序过滤兼容摘要分段。"""
-        order_map = {pair: idx for idx, pair in enumerate(ANALYSIS_PRODUCT_ORDER)}
+        if not self.product_order:
+            return sections
         filtered_sections = [
             section
             for section in sections
-            if (str(section.product_code), str(section.product_name)) in ANALYSIS_PRODUCT_WHITELIST
+            if (str(section.product_code), str(section.product_name)) in self.product_whitelist
         ]
         return sorted(
             filtered_sections,
-            key=lambda section: order_map[(str(section.product_code), str(section.product_name))],
+            key=lambda section: self._product_order_index[(str(section.product_code), str(section.product_name))],
         )
 
     def _split_sheets(

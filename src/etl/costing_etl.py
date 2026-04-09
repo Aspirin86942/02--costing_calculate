@@ -179,9 +179,8 @@ class CostingWorkbookETL:
     ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
-        normalized_order = tuple(
-            (str(code), str(name)) for code, name in (product_order or GB_PIPELINE.product_order)
-        )
+        base_order = GB_PIPELINE.product_order if product_order is None else product_order
+        normalized_order = tuple((str(code), str(name)) for code, name in base_order)
         self.product_order: tuple[tuple[str, str], ...] = normalized_order
         self.product_whitelist = frozenset(normalized_order)
         self._product_order_index: dict[tuple[str, str], int] = {

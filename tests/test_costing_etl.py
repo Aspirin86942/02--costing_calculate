@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pandas as pd
 from openpyxl import load_workbook
 
-from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection
+from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
 from src.etl.costing_etl import CostingWorkbookETL
 
 
@@ -320,10 +320,10 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         '制造费用_价量比',
         '按工单按产品异常值分析',
         '按产品异常值分析',
-        '数据质量校验',
         'error_log',
     }
-    assert expected_sheets.issubset(set(xls.sheet_names))
+    assert set(xls.sheet_names) == expected_sheets
+    assert len(xls.sheet_names) == 8
 
     wb = load_workbook(output_path)
     ws_detail = wb['成本明细']
@@ -396,13 +396,8 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_product['A4'].value == 'GB_C.D.B0040AA'
     assert ws_product.freeze_panes == 'A6'
 
-    ws_quality = wb['数据质量校验']
-    quality_metrics = {
-        ws_quality.cell(row_idx, 2).value: ws_quality.cell(row_idx, 3).value
-        for row_idx in range(2, ws_quality.max_row + 1)
-    }
-    assert ws_quality['A1'].value == '检查类别'
-    assert ws_quality.freeze_panes == 'A2'
+    quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
+    assert '数据质量校验' not in wb.sheetnames
     assert '本期完工数量缺失率' not in quality_metrics
     assert '本期完工金额缺失率' not in quality_metrics
     assert '完工数量小于等于0行数' not in quality_metrics
@@ -410,6 +405,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert str(quality_metrics['工单异常分析输出行数']) == '1'
     assert str(quality_metrics['因完工数量无效被过滤行数']) == '1'
     assert str(quality_metrics['因总完工成本为空被过滤行数']) == '1'
+    assert etl.last_error_log_count == wb['error_log'].max_row - 1
 
 
 def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
@@ -535,9 +531,13 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
                 outlier_cells=set(),
             )
         ],
-        quality_sheet=FlatSheet(
-            data=pd.DataFrame([{'检查类别': '行数勾稽', '指标': '样例', '数值': '1', '说明': '测试'}]),
-            column_types={'检查类别': 'text', '指标': 'text', '数值': 'text', '说明': 'text'},
+        quality_metrics=(
+            QualityMetric(
+                category='行数勾稽',
+                metric='样例',
+                value='1',
+                description='测试',
+            ),
         ),
         error_log=pd.DataFrame(),
     )

@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pandas as pd
 from openpyxl import load_workbook
 
-from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection
+from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
 from src.etl.costing_etl import CostingWorkbookETL
 
 DEFAULT_WORKBOOK_BASENAME = 'workbook_contract_default.xlsx'
@@ -21,7 +21,6 @@ DEFAULT_SHEETS = (
     '制造费用_价量比',
     '按工单按产品异常值分析',
     '按产品异常值分析',
-    '数据质量校验',
     'error_log',
 )
 ANALYSIS_SHEETS = {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}
@@ -175,9 +174,13 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
                 outlier_cells=set(),
             )
         ],
-        quality_sheet=FlatSheet(
-            data=pd.DataFrame([{'检查类别': '行数勾稽', '指标': '样例', '数值': '1', '说明': '测试'}]),
-            column_types={'检查类别': 'text', '指标': 'text', '数值': 'text', '说明': 'text'},
+        quality_metrics=(
+            QualityMetric(
+                category='行数勾稽',
+                metric='样例',
+                value='1',
+                description='测试',
+            ),
         ),
         error_log=pd.DataFrame(),
     )

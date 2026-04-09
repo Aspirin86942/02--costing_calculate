@@ -136,7 +136,7 @@ def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:
     )
 
     artifacts = build_report_artifacts(df_detail, df_qty)
-    quality_metrics = artifacts.quality_sheet.data.set_index('指标')['数值']
+    quality_metrics = {metric.metric: metric.value for metric in artifacts.quality_metrics}
 
     assert artifacts.qty_sheet_df.empty
     assert artifacts.work_order_sheet.data.empty
@@ -167,7 +167,7 @@ def test_build_report_artifacts_filters_out_missing_total_amount_rows() -> None:
     )
 
     artifacts = build_report_artifacts(df_detail, df_qty)
-    quality_metrics = artifacts.quality_sheet.data.set_index('指标')['数值']
+    quality_metrics = {metric.metric: metric.value for metric in artifacts.quality_metrics}
 
     assert artifacts.qty_sheet_df.empty
     assert artifacts.work_order_sheet.data.empty

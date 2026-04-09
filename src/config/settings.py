@@ -12,11 +12,11 @@ PROCESSED_DIR = DATA_DIR / 'processed'
 
 # 原始数据分类
 GB_RAW_DIR = RAW_DIR / 'gb'  # GB 开头文件
-SHUKONG_RAW_DIR = RAW_DIR / 'shukong'  # 数控开头文件
+SK_RAW_DIR = RAW_DIR / 'sk'  # 数控开头文件
 
 # 处理结果分类
 GB_PROCESSED_DIR = PROCESSED_DIR / 'gb'
-SHUKONG_PROCESSED_DIR = PROCESSED_DIR / 'shukong'
+SK_PROCESSED_DIR = PROCESSED_DIR / 'sk'
 
 # 文档目录
 DOCS_DIR = PROJECT_ROOT / 'docs'
@@ -25,7 +25,7 @@ FIELD_DEFS_DIR = DOCS_DIR / 'field_definitions'
 
 def ensure_directories() -> list[Path]:
     """确保所有目录存在"""
-    dirs = [GB_RAW_DIR, SHUKONG_RAW_DIR, GB_PROCESSED_DIR, SHUKONG_PROCESSED_DIR, FIELD_DEFS_DIR]
+    dirs = [GB_RAW_DIR, SK_RAW_DIR, GB_PROCESSED_DIR, SK_PROCESSED_DIR, FIELD_DEFS_DIR]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
     return dirs

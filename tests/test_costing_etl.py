@@ -127,6 +127,49 @@ class TestCostingWorkbookETL:
 
         assert result['product_code'].tolist() == ['GB_C.D.B0040AA', 'GB_C.D.B0041AA']
 
+    def test_filter_fact_df_for_analysis_honors_injected_product_order(self) -> None:
+        """测试注入的产品顺序会被用于分析过滤与排序。"""
+        custom_order = (
+            ('CUSTOM-002', '产品乙'),
+            ('CUSTOM-001', '产品甲'),
+        )
+        etl = CostingWorkbookETL(skip_rows=2, product_order=custom_order)
+        fact_df = pd.DataFrame(
+            [
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-001',
+                    'product_name': '产品甲',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100,
+                    'qty': 10,
+                    'price': 10,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-002',
+                    'product_name': '产品乙',
+                    'cost_bucket': 'direct_material',
+                    'amount': 200,
+                    'qty': 20,
+                    'price': 10,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-003',
+                    'product_name': '产品丙',
+                    'cost_bucket': 'direct_material',
+                    'amount': 300,
+                    'qty': 30,
+                    'price': 10,
+                },
+            ]
+        )
+
+        result = etl._filter_fact_df_for_analysis(fact_df)
+
+        assert result['product_code'].tolist() == ['CUSTOM-002', 'CUSTOM-001']
+
 
 def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     """测试 process_file 会输出 v3 相关 sheet 与基础样式。"""

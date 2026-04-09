@@ -16,6 +16,19 @@ def test_pipeline_directories_follow_standard_names() -> None:
     assert SK_PIPELINE.processed_dir.name == 'sk'
 
 
+def test_pipeline_input_patterns_are_defined_per_target() -> None:
+    assert GB_PIPELINE.input_patterns == (
+        'GB-*成本计算单.xlsx',
+        'GB-* 成本计算单.xlsx',
+        'GB-*.xlsx',
+    )
+    assert SK_PIPELINE.input_patterns == (
+        'SK-*成本计算单.xlsx',
+        'SK-* 成本计算单.xlsx',
+        'SK-*.xlsx',
+    )
+
+
 def test_sk_pipeline_product_order_preserves_business_sequence() -> None:
     expected_codes = [
         'DP.C.P0197AA',

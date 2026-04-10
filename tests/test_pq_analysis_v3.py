@@ -115,6 +115,78 @@ def test_build_report_artifacts_enriches_qty_sheet() -> None:
     assert '是否存在空值' not in artifacts.qty_sheet_df.columns
 
 
+def test_build_report_artifacts_normalizes_standalone_cost_items_for_grouping() -> None:
+    """standalone 成本项应使用统一的标准化口径参与识别、汇总和列映射。"""
+    df_detail = pd.DataFrame(
+        [
+            *_build_base_detail_df().to_dict('records')[:3],
+            {
+                '月份': '2025年1月',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': ' 委外加工费 ',
+                '本期完工金额': 15,
+            },
+            {
+                '月份': '2025年1月',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': ' 软件费用 ',
+                '本期完工金额': 5,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年1月',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10,
+                '本期完工金额': 170,
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(
+        df_detail,
+        df_qty,
+        standalone_cost_items=(' 委外加工费 ', ' 软件费用 '),
+    )
+    qty_row = artifacts.qty_sheet_df.iloc[0]
+    work_order_row = artifacts.work_order_sheet.data.iloc[0]
+
+    assert qty_row[QTY_OUTSOURCE_AMOUNT] == Decimal('15')
+    assert qty_row[QTY_OUTSOURCE_UNIT_COST] == Decimal('1.5')
+    assert qty_row['本期完工软件费用合计完工金额'] == Decimal('5')
+    assert qty_row['软件费用单位完工成本'] == Decimal('0.5')
+    assert qty_row[QTY_TOTAL_MATCH] == '是'
+    assert qty_row[QTY_CHECK_STATUS] == '通过'
+    assert work_order_row['委外加工费合计完工金额'] == Decimal('15')
+    assert work_order_row['委外加工费单位完工成本'] == Decimal('1.5')
+    assert work_order_row['软件费用合计完工金额'] == Decimal('5')
+    assert work_order_row['软件费用单位完工成本'] == Decimal('0.5')
+    assert '软件费用异常标记' not in artifacts.work_order_sheet.data.columns
+    assert 'log_软件费用单位完工成本' not in artifacts.work_order_sheet.data.columns
+    assert 'Modified Z-score_软件费用' not in artifacts.work_order_sheet.data.columns
+    assert not artifacts.error_log['issue_type'].eq('UNMAPPED_COST_ITEM').any()
+
+
 def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:
     """测试数量无效的工单不会出现在数量页与工单异常页。"""
     df_detail = _build_base_detail_df()

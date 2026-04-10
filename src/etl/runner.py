@@ -56,7 +56,11 @@ def run_pipeline(config: PipelineConfig) -> int:
     config.processed_dir.mkdir(parents=True, exist_ok=True)
     output_file = config.processed_dir / f'{input_file.stem}_处理后.xlsx'
     log_file = config.processed_dir / f'{input_file.stem}_处理后.log'
-    etl = CostingWorkbookETL(skip_rows=2, product_order=config.product_order)
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=config.product_order,
+        standalone_cost_items=config.standalone_cost_items,
+    )
 
     if not etl.process_file(input_file, output_file):
         logger.error('处理失败: %s', input_file.name)

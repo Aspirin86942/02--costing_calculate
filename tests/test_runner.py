@@ -28,6 +28,7 @@ def test_find_input_files_preserves_pattern_order_and_deduplicates(tmp_path) -> 
         processed_dir=tmp_path,
         input_patterns=('SK-*成本计算单.xlsx', 'SK-* 成本计算单.xlsx', 'SK-*.xlsx'),
         product_order=(('DP.C.P0197AA', '动力线'),),
+        standalone_cost_items=('委外加工费', '软件费用'),
     )
 
     assert find_input_files(config) == [same_file, second_file, third_file]
@@ -46,8 +47,10 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
         product_order=(('DP.C.P0197AA', '动力线'),),
     )
 
+    captured: dict[str, tuple[str, ...] | None] = {}
+
     class _DummyETL:
-        def __init__(self, skip_rows: int, product_order) -> None:
+        def __init__(self, skip_rows: int, *, product_order, standalone_cost_items) -> None:
             self.skip_rows = skip_rows
             self.product_order = product_order
             self.last_quality_metrics = (
@@ -55,6 +58,7 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
                 QualityMetric('分析覆盖率', '可参与分析占比', '100.00%', '白名单工单覆盖率'),
             )
             self.last_error_log_count = 0
+            captured['standalone_cost_items'] = standalone_cost_items
 
         def process_file(self, input_path: Path, output_path: Path) -> bool:
             output_path.write_text('ok', encoding='utf-8')
@@ -70,3 +74,4 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
     assert log_path.exists()
     assert 'pipeline=sk' in stdout
     assert '可参与分析占比=100.00%' in log_path.read_text(encoding='utf-8')
+    assert captured['standalone_cost_items'] == config.standalone_cost_items

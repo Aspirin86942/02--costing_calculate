@@ -17,6 +17,7 @@ class PipelineConfig:
     processed_dir: Path
     product_order: ProductOrder = ()
     input_patterns: tuple[str, ...] = ()
+    standalone_cost_items: tuple[str, ...] = ('委外加工费',)
 
     @property
     def product_whitelist(self) -> frozenset[tuple[str, str]]:
@@ -67,6 +68,7 @@ SK_PIPELINE = PipelineConfig(
         'SK-* 成本计算单.xlsx',
         'SK-*.xlsx',
     ),
+    standalone_cost_items=('委外加工费', '软件费用'),
 )
 
 PIPELINES: dict[str, PipelineConfig] = {

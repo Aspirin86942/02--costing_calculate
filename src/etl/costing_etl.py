@@ -178,6 +178,7 @@ class CostingWorkbookETL:
         skip_rows: int = 2,
         *,
         product_order: tuple[tuple[str, str], ...] | None = None,
+        standalone_cost_items: tuple[str, ...] | None = None,
     ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
@@ -188,6 +189,10 @@ class CostingWorkbookETL:
         self._product_order_index: dict[tuple[str, str], int] = {
             pair: idx for idx, pair in enumerate(self.product_order)
         }
+        base_standalone_items = (
+            GB_PIPELINE.standalone_cost_items if standalone_cost_items is None else standalone_cost_items
+        )
+        self.standalone_cost_items: tuple[str, ...] = tuple(str(item) for item in base_standalone_items)
         self.workbook_writer = CostingWorkbookWriter()
         self.pipeline = CostingEtlPipeline(
             skip_rows=skip_rows,

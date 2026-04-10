@@ -42,3 +42,8 @@ def test_sk_pipeline_product_order_preserves_business_sequence() -> None:
     ]
     assert [code for code, _ in SK_PIPELINE.product_order] == expected_codes
     assert SK_PIPELINE.product_whitelist == set(SK_PIPELINE.product_order)
+
+
+def test_pipeline_standalone_cost_items_are_defined_per_target() -> None:
+    assert GB_PIPELINE.standalone_cost_items == ('委外加工费',)
+    assert SK_PIPELINE.standalone_cost_items == ('委外加工费', '软件费用')

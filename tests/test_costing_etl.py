@@ -44,6 +44,14 @@ class TestCostingWorkbookETL:
         assert hasattr(etl, 'DETAIL_COLS')
         assert hasattr(etl, 'QTY_COLS')
 
+    def test_standalone_cost_items_are_normalized(self) -> None:
+        """Ensure standalone cost items are stripped and empty entries removed."""
+        etl = CostingWorkbookETL(
+            skip_rows=2,
+            standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
+        )
+        assert etl.standalone_cost_items == ('委外加工费', '软件费用')
+
     def test_process_file_not_found(self) -> None:
         """测试文件不存在时返回 False。"""
         etl = CostingWorkbookETL(skip_rows=2)

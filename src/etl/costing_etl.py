@@ -192,7 +192,12 @@ class CostingWorkbookETL:
         base_standalone_items = (
             GB_PIPELINE.standalone_cost_items if standalone_cost_items is None else standalone_cost_items
         )
-        self.standalone_cost_items: tuple[str, ...] = tuple(str(item) for item in base_standalone_items)
+        normalized_items: list[str] = []
+        for item in base_standalone_items:
+            normalized = str(item).strip()
+            if normalized:
+                normalized_items.append(normalized)
+        self.standalone_cost_items = tuple(normalized_items)
         self.workbook_writer = CostingWorkbookWriter()
         self.pipeline = CostingEtlPipeline(
             skip_rows=skip_rows,

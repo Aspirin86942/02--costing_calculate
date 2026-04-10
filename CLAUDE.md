@@ -13,83 +13,72 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 架构 (Architecture)
 
-### 目录结构
+### 模块依赖规则 (Module Dependency Rules)
+
+**严格分层**，由 `tests/architecture/test_import_rules.py` 强制：
+- `analytics` 不得导入 `etl` 或 `excel`
+- `excel` 不得导入 `etl`
+- `etl/stages/*` 不得导入 `excel`
+- 仅 `etl/costing_etl.py` 和 `etl/pipeline.py` 可导入 `excel` 模块
+
+### 数据流 (Data Flow)
+
 ```
-costing_calculate/
-├── src/analytics/        # 分析与异常检测
-├── src/etl/              # ETL 处理模块
-│   ├── costing_etl.py    # 主 ETL 脚本
-│   ├── pipeline.py       # ETL 阶段编排
-│   └── stages/           # 读取、列识别、清洗、拆分
-├── src/excel/            # Excel 写出与样式
-├── src/config/           # 配置管理
-│   └── settings.py       # 路径配置
-├── data/raw/             # 原始数据
-│   ├── gb/               # GB 系列文件
-│   └── shukong/          # 数控系列文件
-├── data/processed/       # 处理结果
-│   ├── gb/
-│   └── shukong/
-├── tests/                # 单元 / 契约 / 架构测试
-├── docs/field_definitions/  # 字段定义文件
+原始 Excel -> reader.load_raw_workbook()
+          -> 列名标准化 (clean_column_name)
+          -> 列推断/重命名 (infer_rename_map)
+          -> 删除合计行 (remove_total_rows)
+          -> 规则填充 (forward_fill_with_rules)
+          -> 拆分为 detail/qty (split_detail_and_qty_sheets)
+          -> 构建分析 fact 表 (build_report_artifacts)
+          -> 渲染价量表 (render_tables)
+          -> 写出 Excel (CostingWorkbookWriter)
 ```
 
 ### 数据契约 (Data Contracts)
 
-- **字段映射**：`docs/field_definitions/gb 金蝶字段.txt` 定义了标准字段名
-- **关键列**：`子项物料编码 `、` 成本项目名称 `、` 工单编号 `、` 工单行号 `、` 年期` 为核心标识列
-- **期间格式**：`年期` 列格式为 `YYYY 年 MM 期 `，脚本中会统一格式化为 `YYYY 年 MM 期`
+**字段映射**：`docs/field_definitions/gb 金蝶字段.txt` 定义了标准字段名
 
-### 审计特性 (Audit Features)
+**关键列**：`子项物料编码 `、` 成本项目名称 `、` 工单编号 `、` 工单行号 `、` 年期`
 
-- **数据完整性校验**：
-  - 处理前后行数对比
-  - 关键列存在性检查
-  - 剔除合计行前后记录行数变化
-- **可追溯性**：
-  - 所有脚本使用 `logging` 记录关键步骤和异常
-  - 错误信息包含具体行数、列名和上下文
+**期间格式**：`年期` 列统一格式化为 `YYYY 年 MM 期`
+
+**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了 8 个目标产品，仅这些产品进入价量/异常分析
+
+**输出 Sheet**：9 张表
+- `成本明细 `、`产品数量统计`
+- `直接材料_价量比 `、` 直接人工_价量比 `、`制造费用_价量比`
+- `按工单按产品异常值分析 `、` 按产品异常值分析`
+- `数据质量校验 `、`error_log`
 
 ## 依赖 (Dependencies)
 
 - **Python**: 3.11+
-- **核心包**：
-  - `pandas`（数据操作）
-  - `openpyxl`（Excel 读写）
-  - `numpy`（数值计算）
-  - `beautifulsoup4`（HTML 解析）
+- **核心包**：`pandas>=2.0.0`, `openpyxl>=3.1.0`, `numpy>=1.24.0`, `beautifulsoup4>=4.12.0`
 
 ## 常用命令 (Common Commands)
 
-### 安装
 ```bash
+# 安装
 pip install -e .
-```
 
-### 运行 ETL
-```bash
-# 将原始 Excel 文件放入 data/raw/gb/ 或 data/raw/shukong/
+# 运行 ETL (自动读取 data/raw/gb/下的 GB-*成本计算单*.xlsx)
 python -m src.etl.costing_etl
+
+# 测试 (需使用 conda test 环境)
+conda run -n test python -m pytest -q
+
+# 单测
+conda run -n test python -m pytest tests/ -k test_name -q
+
+# 代码检查/格式化
+conda run -n test ruff check .
+conda run -n test ruff format . --check
+conda run -n test ruff format .
 ```
 
-### 测试
-```bash
-pytest tests/ -q
-```
+## 测试契约 (Test Contracts)
 
-### 代码检查
-```bash
-ruff check src/ tests/
-ruff format src/ tests/
-```
+**Baseline 真值**：`tests/contracts/baselines/` 是 workbook / error_log / CLI 契约的唯一来源，README 描述仅供参考。
 
-## 已移除脚本 (Removed Scripts)
-
-以下历史脚本已从仓库移除，功能已由 `src/` 内模块接管：
-- `Costing_Calculate.py` - 原始清洗脚本
-- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
-- `抓取所有字段脚本.py` - 字段提取脚本
-
-## 已移除 (Removed)
-
-- `Costing_Allocation.py` - 成本分摊脚本（已废弃）
+**重构规则**：纯重构不得修改 baseline；仅业务口径变化时才允许更新，并必须说明差异。

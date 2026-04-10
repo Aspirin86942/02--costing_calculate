@@ -16,7 +16,6 @@ try:
     from src.analytics.table_rendering import render_tables
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
-    from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -31,7 +30,6 @@ except ModuleNotFoundError:
     from src.analytics.table_rendering import render_tables
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
-    from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
     from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter

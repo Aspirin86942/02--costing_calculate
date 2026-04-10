@@ -190,11 +190,13 @@ def _prepare_detail_frame(
         }
     )
     detail['period'] = detail[detail_period_col].map(normalize_period)
-    detail['cost_bucket'] = detail['cost_item'].map(map_broad_cost_bucket)
-    detail['component_bucket'] = detail['cost_item'].map(map_component_bucket)
+    # 真实 Excel 会出现前后空格；独立成本项识别、桶映射和后续聚合必须共用同一标准化口径。
+    detail['normalized_cost_item'] = detail['cost_item'].astype(str).str.strip()
+    detail['cost_bucket'] = detail['normalized_cost_item'].map(map_broad_cost_bucket)
+    detail['component_bucket'] = detail['normalized_cost_item'].map(map_component_bucket)
     detail['amount'] = detail['completed_amount'].map(to_decimal)
     standalone_cost_items = {meta.cost_item for meta in standalone_metas}
-    standalone_cost_mask = detail['cost_item'].astype(str).str.strip().isin(standalone_cost_items)
+    standalone_cost_mask = detail['normalized_cost_item'].isin(standalone_cost_items)
 
     unmapped_mask = detail['cost_bucket'].isna() & ~standalone_cost_mask
     if unmapped_mask.any():
@@ -248,7 +250,7 @@ def _aggregate_work_order_amounts(
 ) -> pd.DataFrame:
     detail_for_analysis = detail.loc[detail['cost_bucket'].notna()].copy()
     standalone_cost_items = {meta.cost_item for meta in standalone_metas}
-    detail_standalone = detail.loc[detail['cost_item'].astype(str).str.strip().isin(standalone_cost_items)].copy()
+    detail_standalone = detail.loc[detail['normalized_cost_item'].isin(standalone_cost_items)].copy()
 
     broad_amounts = (
         detail_for_analysis.groupby(
@@ -286,12 +288,12 @@ def _aggregate_work_order_amounts(
     )
     standalone_amounts = (
         detail_standalone.groupby(
-            WORK_ORDER_KEY_COLS + ['product_name', 'cost_item'], dropna=False, as_index=False, sort=False
+            WORK_ORDER_KEY_COLS + ['product_name', 'normalized_cost_item'], dropna=False, as_index=False, sort=False
         )
         .agg(amount=('amount', sum_decimal_series))
         .pivot_table(
             index=WORK_ORDER_KEY_COLS + ['product_name'],
-            columns='cost_item',
+            columns='normalized_cost_item',
             values='amount',
             aggfunc='first',
             sort=False,

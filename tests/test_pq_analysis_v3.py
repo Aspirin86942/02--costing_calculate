@@ -362,6 +362,49 @@ def test_build_report_artifacts_supports_software_fee_as_sk_standalone_item() ->
     assert not artifacts.error_log['issue_type'].eq('TOTAL_COST_MISMATCH').any()
 
 
+def test_build_report_artifacts_normalizes_spaced_standalone_cost_items() -> None:
+    """测试带前后空格的独立成本项在识别、聚合和勾稽时使用统一口径。"""
+    df_detail = _build_base_detail_df().copy()
+    df_detail.loc[df_detail['成本项目名称'] == '委外加工费', '成本项目名称'] = ' 委外加工费 '
+    df_detail = pd.concat(
+        [
+            df_detail,
+            pd.DataFrame(
+                [
+                    {
+                        '月份': '2025年01期',
+                        '成本中心名称': '中心A',
+                        '产品编码': 'GB_C.D.B0040AA',
+                        '产品名称': 'BMS-750W驱动器',
+                        '规格型号': 'S-01',
+                        '工单编号': 'WO-001',
+                        '工单行号': 1,
+                        '基本单位': 'PCS',
+                        '成本项目名称': ' 软件费用 ',
+                        '本期完工金额': 5,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    df_qty = _build_base_qty_df(total_amount=170)
+
+    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=(' 委外加工费 ', ' 软件费用 '))
+    qty_row = artifacts.qty_sheet_df.iloc[0]
+    work_order_row = artifacts.work_order_sheet.data.iloc[0]
+
+    assert qty_row[QTY_OUTSOURCE_AMOUNT] == Decimal('15')
+    assert qty_row['本期完工软件费用合计完工金额'] == Decimal('5')
+    assert qty_row['软件费用单位完工成本'] == Decimal('0.5')
+    assert qty_row['直接材料+直接人工+制造费用+委外加工费+软件费用是否等于总完工成本'] == '是'
+    assert qty_row[QTY_CHECK_STATUS] == '通过'
+    assert work_order_row['委外加工费合计完工金额'] == Decimal('15')
+    assert work_order_row['软件费用合计完工金额'] == Decimal('5')
+    assert not artifacts.error_log['issue_type'].eq('UNMAPPED_COST_ITEM').any()
+    assert not artifacts.error_log['issue_type'].eq('TOTAL_COST_MISMATCH').any()
+
+
 def test_build_report_artifacts_keeps_software_fee_unmapped_for_gb_default() -> None:
     """测试 GB 默认配置下软件费用仍记为未映射成本项。"""
     df_detail = pd.concat(

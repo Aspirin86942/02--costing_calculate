@@ -1,7 +1,7 @@
 """测试主 ETL 输出与基础行为。"""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -43,6 +43,22 @@ class TestCostingWorkbookETL:
         assert hasattr(etl, 'FILL_COLS')
         assert hasattr(etl, 'DETAIL_COLS')
         assert hasattr(etl, 'QTY_COLS')
+
+    def test_standalone_cost_items_are_normalized(self) -> None:
+        """Stand-alone cost items must be stripped and empty entries removed."""
+        etl = CostingWorkbookETL(
+            skip_rows=2,
+            standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
+        )
+        assert etl.standalone_cost_items == ('委外加工费', '软件费用')
+
+    def test_standalone_cost_items_are_normalized(self) -> None:
+        """Ensure standalone cost items are trimmed and empty entries dropped."""
+        etl = CostingWorkbookETL(
+            skip_rows=2,
+            standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
+        )
+        assert etl.standalone_cost_items == ('委外加工费', '软件费用')
 
     def test_process_file_not_found(self) -> None:
         """测试文件不存在时返回 False。"""
@@ -563,3 +579,192 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
     assert _rgb_suffix(moh_labor_flag.fill.fgColor) == '4472C4'
     assert _rgb_suffix(moh_labor_value.font.color) == 'FFFFFF'
     assert _rgb_suffix(moh_labor_flag.font.color) == 'FFFFFF'
+
+
+def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:
+    """process_file 调用分析编排时应透传 standalone_cost_items。"""
+    etl = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '成本项目名称': '直接材料',
+                '本期完工金额': 120.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '本期完工数量': 10,
+                '本期完工金额': 120.0,
+            }
+        ]
+    )
+    artifacts = AnalysisArtifacts(
+        fact_df=pd.DataFrame(),
+        qty_sheet_df=df_qty.copy(),
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame(
+                [{'月份': '2025年01期', '产品编码': 'DP.C.P0197AA', '产品名称': '动力线', '工单编号': 'WO-001', '工单行': '1'}]
+            ),
+            column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text', '工单编号': 'text', '工单行': 'text'},
+        ),
+        product_anomaly_sections=[],
+        quality_metrics=(),
+        error_log=pd.DataFrame(),
+    )
+    mocked_build = Mock(return_value=artifacts)
+
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    assert mocked_build.call_count == 1
+    assert mocked_build.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
+
+
+def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:
+    """SK 输出应包含软件费用列并应用格式；GB 默认输出不应出现软件费用列。"""
+    input_path = tmp_path / 'input.xlsx'
+    sk_output_path = tmp_path / 'sk_output.xlsx'
+    gb_output_path = tmp_path / 'gb_output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '成本项目名称': '直接材料',
+                '本期完工金额': 120.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '本期完工数量': 10,
+                '本期完工金额': 120.0,
+            }
+        ]
+    )
+
+    def build_fake_artifacts(*, include_software_fee: bool) -> AnalysisArtifacts:
+        qty_row = {
+            '月份': '2025年01期',
+            '产品编码': 'DP.C.P0197AA',
+            '产品名称': '动力线',
+            '工单编号': 'WO-001',
+            '工单行号': 1,
+            '本期完工数量': 10.0,
+            '本期完工金额': 120.0,
+            '本期完工委外加工费合计完工金额': 20.0,
+            '委外加工费单位完工成本': 2.0,
+        }
+        if include_software_fee:
+            qty_row['本期完工软件费用合计完工金额'] = 30.0
+            qty_row['软件费用单位完工成本'] = 3.0
+
+        work_order_row = {
+            '月份': '2025年01期',
+            '产品编码': 'DP.C.P0197AA',
+            '产品名称': '动力线',
+            '工单编号': 'WO-001',
+            '工单行': '1',
+            '本期完工数量': 10.0,
+            '委外加工费合计完工金额': 20.0,
+            '委外加工费单位完工成本': 2.0,
+        }
+        work_order_column_types = {
+            '月份': 'text',
+            '产品编码': 'text',
+            '产品名称': 'text',
+            '工单编号': 'text',
+            '工单行': 'text',
+            '本期完工数量': 'qty',
+            '委外加工费合计完工金额': 'amount',
+            '委外加工费单位完工成本': 'price',
+        }
+        if include_software_fee:
+            work_order_row['软件费用合计完工金额'] = 30.0
+            work_order_row['软件费用单位完工成本'] = 3.0
+            work_order_column_types['软件费用合计完工金额'] = 'amount'
+            work_order_column_types['软件费用单位完工成本'] = 'price'
+
+        return AnalysisArtifacts(
+            fact_df=pd.DataFrame(),
+            qty_sheet_df=pd.DataFrame([qty_row]),
+            work_order_sheet=FlatSheet(data=pd.DataFrame([work_order_row]), column_types=work_order_column_types),
+            product_anomaly_sections=[],
+            quality_metrics=(),
+            error_log=pd.DataFrame(),
+        )
+
+    mocked_build = Mock(
+        side_effect=lambda _detail, _qty, **kwargs: build_fake_artifacts(
+            include_software_fee='软件费用' in kwargs.get('standalone_cost_items', ())
+        )
+    )
+
+    etl_sk = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
+    ):
+        assert etl_sk.process_file(input_path, sk_output_path) is True
+
+    sk_wb = load_workbook(sk_output_path)
+    sk_qty_ws = sk_wb['产品数量统计']
+    sk_qty_headers = _build_header_map(sk_qty_ws)
+    assert '本期完工软件费用合计完工金额' in sk_qty_headers
+    assert '软件费用单位完工成本' in sk_qty_headers
+    assert sk_qty_ws.cell(2, sk_qty_headers['本期完工软件费用合计完工金额']).number_format == '#,##0.00'
+    assert sk_qty_ws.cell(2, sk_qty_headers['软件费用单位完工成本']).number_format == '#,##0.00'
+
+    sk_work_order_ws = sk_wb['按工单按产品异常值分析']
+    sk_work_order_headers = _build_header_map(sk_work_order_ws)
+    assert '软件费用合计完工金额' in sk_work_order_headers
+    assert '软件费用单位完工成本' in sk_work_order_headers
+    assert '软件费用异常标记' not in sk_work_order_headers
+    assert 'log_软件费用单位完工成本' not in sk_work_order_headers
+    assert 'Modified Z-score_软件费用' not in sk_work_order_headers
+
+    etl_gb = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费',))
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
+    ):
+        assert etl_gb.process_file(input_path, gb_output_path) is True
+
+    gb_wb = load_workbook(gb_output_path)
+    gb_qty_ws = gb_wb['产品数量统计']
+    gb_qty_headers = _build_header_map(gb_qty_ws)
+    assert '本期完工软件费用合计完工金额' not in gb_qty_headers
+    assert '软件费用单位完工成本' not in gb_qty_headers

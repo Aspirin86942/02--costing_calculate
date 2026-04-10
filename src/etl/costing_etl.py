@@ -192,7 +192,12 @@ class CostingWorkbookETL:
         base_standalone_items = (
             GB_PIPELINE.standalone_cost_items if standalone_cost_items is None else standalone_cost_items
         )
-        self.standalone_cost_items: tuple[str, ...] = tuple(str(item) for item in base_standalone_items)
+        normalized_items: list[str] = []
+        for item in base_standalone_items:
+            normalized = str(item).strip()
+            if normalized:
+                normalized_items.append(normalized)
+        self.standalone_cost_items = tuple(normalized_items)
         self.workbook_writer = CostingWorkbookWriter()
         self.pipeline = CostingEtlPipeline(
             skip_rows=skip_rows,
@@ -353,7 +358,17 @@ class CostingWorkbookETL:
                 df_filled[COL_FILLED_COST_ITEM] = None
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
-            artifacts = build_report_artifacts(df_detail, df_qty)
+            # 优先透传 standalone_cost_items，兼容旧签名以便渐进合并上游变更。
+            try:
+                artifacts = build_report_artifacts(
+                    df_detail,
+                    df_qty,
+                    standalone_cost_items=self.standalone_cost_items,
+                )
+            except TypeError as exc:
+                if 'standalone_cost_items' not in str(exc):
+                    raise
+                artifacts = build_report_artifacts(df_detail, df_qty)
             analysis_fact_df = self._filter_fact_df_for_analysis(artifacts.fact_df)
             analysis_tables = render_tables(analysis_fact_df)
             filtered_work_order_sheet = FlatSheet(

@@ -451,8 +451,7 @@ def _enrich_qty_sheet(
     qty_reason = qty_reason.mask(qty_sheet_df[QTY_MOH_MATCH].eq('否'), '制造费用明细与合计不一致')
     total_mismatch_mask = qty_sheet_df[total_match_column].eq('否')
     qty_reason.loc[total_mismatch_mask & qty_reason.ne('')] = (
-        qty_reason.loc[total_mismatch_mask & qty_reason.ne('')]
-        + f';{total_mismatch_reason}'
+        qty_reason.loc[total_mismatch_mask & qty_reason.ne('')] + f';{total_mismatch_reason}'
     )
     qty_reason.loc[total_mismatch_mask & qty_reason.eq('')] = total_mismatch_reason
     qty_sheet_df[QTY_CHECK_REASON] = qty_reason

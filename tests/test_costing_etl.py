@@ -611,7 +611,15 @@ def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp
         qty_sheet_df=df_qty.copy(),
         work_order_sheet=FlatSheet(
             data=pd.DataFrame(
-                [{'月份': '2025年01期', '产品编码': 'DP.C.P0197AA', '产品名称': '动力线', '工单编号': 'WO-001', '工单行': '1'}]
+                [
+                    {
+                        '月份': '2025年01期',
+                        '产品编码': 'DP.C.P0197AA',
+                        '产品名称': '动力线',
+                        '工单编号': 'WO-001',
+                        '工单行': '1',
+                    }
+                ]
             ),
             column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text', '工单编号': 'text', '工单行': 'text'},
         ),

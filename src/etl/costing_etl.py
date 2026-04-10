@@ -358,7 +358,11 @@ class CostingWorkbookETL:
                 df_filled[COL_FILLED_COST_ITEM] = None
 
             df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
-            artifacts = build_report_artifacts(df_detail, df_qty)
+            artifacts = build_report_artifacts(
+                df_detail,
+                df_qty,
+                standalone_cost_items=self.standalone_cost_items,
+            )
             analysis_fact_df = self._filter_fact_df_for_analysis(artifacts.fact_df)
             analysis_tables = render_tables(analysis_fact_df)
             filtered_work_order_sheet = FlatSheet(

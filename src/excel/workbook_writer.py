@@ -34,6 +34,19 @@ QTY_TWO_DECIMAL_COLUMNS = {
 }
 
 
+def _resolve_qty_numeric_columns(qty_sheet_df: pd.DataFrame) -> set[str]:
+    """数量页两位小数字段集合，包含动态 standalone 列。"""
+    dynamic_columns = {
+        column_name
+        for column_name in qty_sheet_df.columns
+        if (
+            (column_name.startswith('本期完工') and column_name.endswith('合计完工金额'))
+            or column_name.endswith('单位完工成本')
+        )
+    }
+    return QTY_TWO_DECIMAL_COLUMNS | dynamic_columns
+
+
 class CostingWorkbookWriter:
     """统一写出成本 workbook。"""
 
@@ -64,7 +77,7 @@ class CostingWorkbookWriter:
                 writer,
                 '产品数量统计',
                 qty_sheet_df,
-                numeric_columns=QTY_TWO_DECIMAL_COLUMNS,
+                numeric_columns=_resolve_qty_numeric_columns(qty_sheet_df),
                 freeze_panes='A2',
             )
             for sheet_name, sections in analysis_tables.items():

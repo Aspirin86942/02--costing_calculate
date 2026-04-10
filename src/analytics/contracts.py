@@ -38,6 +38,16 @@ class FlatSheet:
 
 
 @dataclass
+class QualityMetric:
+    """数据质量指标对象，供 ETL 和外层消费。"""
+
+    category: str
+    metric: str
+    value: str
+    description: str
+
+
+@dataclass
 class AnalysisArtifacts:
     """V3 分析输出产物。"""
 
@@ -45,7 +55,7 @@ class AnalysisArtifacts:
     qty_sheet_df: pd.DataFrame
     work_order_sheet: FlatSheet
     product_anomaly_sections: list[ProductAnomalySection]
-    quality_sheet: FlatSheet
+    quality_metrics: tuple[QualityMetric, ...]
     error_log: pd.DataFrame
 
 

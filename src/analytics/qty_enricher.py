@@ -46,7 +46,7 @@ from src.analytics.fact_builder import (
     sum_decimal_series,
     to_decimal,
 )
-from src.analytics.quality import build_quality_sheet
+from src.analytics.quality import build_quality_metrics
 from src.analytics.table_rendering import build_product_anomaly_sections, build_product_summary_df
 
 
@@ -110,7 +110,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
     fact_df = build_fact_table(analysis_source)
     product_summary_df = build_product_summary_df(analysis_source)
     work_order_sheet = build_anomaly_sheet(analysis_source)
-    quality_sheet = build_quality_sheet(
+    quality_metrics = build_quality_metrics(
         df_detail,
         df_qty,
         qty_sheet_output,
@@ -126,7 +126,7 @@ def build_report_artifacts(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> Ana
         qty_sheet_df=qty_sheet_output,
         work_order_sheet=work_order_sheet,
         product_anomaly_sections=build_product_anomaly_sections(product_summary_df),
-        quality_sheet=quality_sheet,
+        quality_metrics=quality_metrics,
         error_log=error_log,
     )
 

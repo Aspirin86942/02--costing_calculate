@@ -49,7 +49,6 @@ class CostingWorkbookWriter:
         analysis_tables: dict[str, list[SectionBlock]],
         work_order_sheet: FlatSheet,
         product_anomaly_sections: list[ProductAnomalySection],
-        quality_sheet: FlatSheet,
         error_log: pd.DataFrame,
     ) -> None:
         """按固定 sheet 顺序写出完整 workbook。"""
@@ -78,5 +77,4 @@ class CostingWorkbookWriter:
             )
             self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
-            self.sheet_writer.write_flat_sheet(writer, '数据质量校验', quality_sheet, freeze_panes='A2')
             error_log.to_excel(writer, sheet_name='error_log', index=False)

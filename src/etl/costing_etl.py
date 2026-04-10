@@ -11,9 +11,10 @@ from pathlib import Path
 import pandas as pd
 
 try:
-    from src.analytics.contracts import FlatSheet, ProductAnomalySection
+    from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
+    from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
@@ -25,9 +26,10 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.contracts import FlatSheet, ProductAnomalySection
+    from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
     from src.analytics.qty_enricher import build_report_artifacts
     from src.analytics.table_rendering import render_tables
+    from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.config.pipelines import GB_PIPELINE
     from src.etl.pipeline import CostingEtlPipeline
@@ -76,6 +78,8 @@ COL_CUMULATIVE_COMPLETED_CONSUMPTION = '累计完工单耗'
 COL_CUMULATIVE_COMPLETED_UNIT_COST = '累计完工单位成本'
 COL_CUMULATIVE_COMPLETED_AMOUNT = '累计完工金额'
 INTEGRATED_WORKSHOP_NAME = '集成车间'  # 供应商字段不再向下填充
+
+
 # 分析用的产品白名单和顺序，其他产品会被过滤掉
 class CostingWorkbookETL:
     """
@@ -202,7 +206,20 @@ class CostingWorkbookETL:
             integrated_workshop_name=INTEGRATED_WORKSHOP_NAME,
             logger=logger,
         )
+        self.last_quality_metrics: tuple[QualityMetric, ...] = ()
+        self.last_error_log_count: int = 0
         ensure_directories()
+
+    def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
+        """将质量指标结果写入日志，避免继续输出到 Excel。"""
+        for metric in quality_metrics:
+            logger.info(
+                'Quality metric | category=%s | metric=%s | value=%s | description=%s',
+                metric.category,
+                metric.metric,
+                metric.value,
+                metric.description,
+            )
 
     def _load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
         """读取原始 workbook。"""
@@ -306,6 +323,8 @@ class CostingWorkbookETL:
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""
         try:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
             logger.info('Processing file: %s', input_path)
             df_raw = self._load_raw_dataframe(input_path)
             logger.info('Loaded rows=%s, cols=%s', len(df_raw), len(df_raw.columns))
@@ -345,6 +364,10 @@ class CostingWorkbookETL:
             )
             product_anomaly_sections = self._filter_product_anomaly_sections(artifacts.product_anomaly_sections)
             error_log = artifacts.error_log.copy()
+            self.last_quality_metrics = artifacts.quality_metrics
+            self.last_error_log_count = len(error_log)
+            self._log_quality_metrics(self.last_quality_metrics)
+            logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
 
             self.workbook_writer.write_workbook(
                 output_path,
@@ -353,7 +376,6 @@ class CostingWorkbookETL:
                 analysis_tables=analysis_tables,
                 work_order_sheet=filtered_work_order_sheet,
                 product_anomaly_sections=product_anomaly_sections,
-                quality_sheet=artifacts.quality_sheet,
                 error_log=error_log,
             )
 
@@ -408,4 +430,4 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit('Use `python main.py gb` or `python main.py sk` instead.')

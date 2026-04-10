@@ -393,3 +393,52 @@ def test_build_report_artifacts_keeps_software_fee_unmapped_for_gb_default() -> 
     assert artifacts.error_log['issue_type'].eq('UNMAPPED_COST_ITEM').any()
     assert '本期完工软件费用合计完工金额' not in artifacts.qty_sheet_df.columns
     assert '软件费用单位完工成本' not in artifacts.qty_sheet_df.columns
+
+
+def test_build_report_artifacts_supports_software_fee_only_standalone_output_columns() -> None:
+    """测试仅配置软件费用时，工单异常页不要求委外列存在。"""
+    df_detail = pd.concat(
+        [
+            _build_base_detail_df().loc[lambda df: df['成本项目名称'] != '委外加工费'],
+            pd.DataFrame(
+                [
+                    {
+                        '月份': '2025年01期',
+                        '成本中心名称': '中心A',
+                        '产品编码': 'GB_C.D.B0040AA',
+                        '产品名称': 'BMS-750W驱动器',
+                        '规格型号': 'S-01',
+                        '工单编号': 'WO-001',
+                        '工单行号': 1,
+                        '基本单位': 'PCS',
+                        '成本项目名称': '软件费用',
+                        '本期完工金额': 5,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    df_qty = _build_base_qty_df(total_amount=155)
+
+    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=('软件费用',))
+    work_order_columns = set(artifacts.work_order_sheet.data.columns)
+
+    assert '软件费用合计完工金额' in work_order_columns
+    assert '软件费用单位完工成本' in work_order_columns
+    assert '委外加工费合计完工金额' not in work_order_columns
+    assert '委外加工费单位完工成本' not in work_order_columns
+
+
+def test_build_report_artifacts_supports_empty_standalone_output_columns() -> None:
+    """测试空 standalone 配置下工单异常页可正常构建且不输出 standalone 列。"""
+    df_detail = _build_base_detail_df().loc[lambda df: df['成本项目名称'] != '委外加工费']
+    df_qty = _build_base_qty_df(total_amount=150)
+
+    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=())
+    work_order_columns = set(artifacts.work_order_sheet.data.columns)
+
+    assert '委外加工费合计完工金额' not in work_order_columns
+    assert '委外加工费单位完工成本' not in work_order_columns
+    assert '软件费用合计完工金额' not in work_order_columns
+    assert '软件费用单位完工成本' not in work_order_columns

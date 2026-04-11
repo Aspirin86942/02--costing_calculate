@@ -35,7 +35,7 @@ QTY_TWO_DECIMAL_COLUMNS = {
 
 
 def _resolve_qty_numeric_columns(qty_sheet_df: pd.DataFrame) -> set[str]:
-    """数量页两位小数字段集合，含动态 standalone 列。"""
+    """数量页两位小数字段集合，包含动态 standalone 列。"""
     dynamic_columns = {
         column_name
         for column_name in qty_sheet_df.columns

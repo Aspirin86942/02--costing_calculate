@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
@@ -30,7 +31,6 @@ QTY_MOH_DEPRECIATION_UNIT_COST = '制造费用_折旧单位完工成本'
 QTY_MOH_UTILITIES_UNIT_COST = '制造费用_水电费单位完工成本'
 QTY_OUTSOURCE_UNIT_COST = '委外加工费单位完工成本'
 QTY_MOH_MATCH = '制造费用明细项合计是否等于制造费用合计'
-QTY_TOTAL_MATCH = '直接材料+直接人工+制造费用+委外加工费是否等于总完工成本'
 QTY_CHECK_STATUS = '数据校验状态'
 QTY_CHECK_REASON = '异常原因说明'
 
@@ -45,6 +45,101 @@ MOH_COMPONENT_MAP = {
     '制造费用_折旧': 'moh_depreciation_amount',
     '制造费用_水电费': 'moh_utilities_amount',
 }
+
+
+@dataclass(frozen=True)
+class StandaloneCostItemMeta:
+    """独立成本项在数量页与工单异常页的列元数据。"""
+
+    cost_item: str
+    amount_key: str
+    unit_cost_key: str
+    qty_amount_column: str
+    qty_unit_cost_column: str
+    work_order_amount_column: str
+    work_order_unit_cost_column: str
+
+
+DEFAULT_STANDALONE_COST_ITEMS = ('委外加工费',)
+_KNOWN_STANDALONE_META: dict[str, StandaloneCostItemMeta] = {
+    '委外加工费': StandaloneCostItemMeta(
+        cost_item='委外加工费',
+        amount_key='outsource_amount',
+        unit_cost_key='outsource_unit_cost',
+        qty_amount_column=QTY_OUTSOURCE_AMOUNT,
+        qty_unit_cost_column=QTY_OUTSOURCE_UNIT_COST,
+        work_order_amount_column='委外加工费合计完工金额',
+        work_order_unit_cost_column='委外加工费单位完工成本',
+    ),
+    '软件费用': StandaloneCostItemMeta(
+        cost_item='软件费用',
+        amount_key='software_amount',
+        unit_cost_key='software_unit_cost',
+        qty_amount_column='本期完工软件费用合计完工金额',
+        qty_unit_cost_column='软件费用单位完工成本',
+        work_order_amount_column='软件费用合计完工金额',
+        work_order_unit_cost_column='软件费用单位完工成本',
+    ),
+}
+
+
+def normalize_standalone_cost_items(standalone_cost_items: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    if standalone_cost_items is None:
+        return DEFAULT_STANDALONE_COST_ITEMS
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in standalone_cost_items:
+        name = str(item).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return tuple(normalized)
+
+
+def resolve_standalone_cost_item_metas(
+    standalone_cost_items: tuple[str, ...] | list[str] | None,
+) -> tuple[StandaloneCostItemMeta, ...]:
+    normalized_items = normalize_standalone_cost_items(standalone_cost_items)
+    metas: list[StandaloneCostItemMeta] = []
+    for index, item in enumerate(normalized_items, start=1):
+        known_meta = _KNOWN_STANDALONE_META.get(item)
+        if known_meta is not None:
+            metas.append(known_meta)
+            continue
+        fallback_key = f'standalone_item_{index}'
+        metas.append(
+            StandaloneCostItemMeta(
+                cost_item=item,
+                amount_key=f'{fallback_key}_amount',
+                unit_cost_key=f'{fallback_key}_unit_cost',
+                qty_amount_column=f'本期完工{item}合计完工金额',
+                qty_unit_cost_column=f'{item}单位完工成本',
+                work_order_amount_column=f'{item}合计完工金额',
+                work_order_unit_cost_column=f'{item}单位完工成本',
+            )
+        )
+    return tuple(metas)
+
+
+def build_total_cost_expression(standalone_metas: tuple[StandaloneCostItemMeta, ...]) -> str:
+    items = ['直接材料', '直接人工', '制造费用'] + [meta.cost_item for meta in standalone_metas]
+    return '+'.join(items)
+
+
+def build_total_match_column_name(standalone_metas: tuple[StandaloneCostItemMeta, ...]) -> str:
+    return f'{build_total_cost_expression(standalone_metas)}是否等于总完工成本'
+
+
+def build_total_mismatch_reason(standalone_metas: tuple[StandaloneCostItemMeta, ...]) -> str:
+    return f'{build_total_cost_expression(standalone_metas)}与总完工成本不一致'
+
+
+def build_total_mismatch_error_reason(standalone_metas: tuple[StandaloneCostItemMeta, ...]) -> str:
+    return f'{build_total_cost_expression(standalone_metas)}不等于数量页总完工成本'
+
+
+QTY_TOTAL_MATCH = build_total_match_column_name(resolve_standalone_cost_item_metas(DEFAULT_STANDALONE_COST_ITEMS))
 
 
 def to_decimal(value: object) -> Decimal | None:

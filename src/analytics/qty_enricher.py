@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pandas as pd
 
 from src.analytics.anomaly import ANOMALY_METRICS, build_anomaly_sheet
@@ -11,6 +9,7 @@ from src.analytics.contracts import AnalysisArtifacts
 from src.analytics.errors import build_error_frame, concat_error_logs, normalize_key_value
 from src.analytics.fact_builder import (
     COST_BUCKETS,
+    DEFAULT_STANDALONE_COST_ITEMS,
     QTY_CHECK_REASON,
     QTY_CHECK_STATUS,
     QTY_DL_AMOUNT,
@@ -30,20 +29,22 @@ from src.analytics.fact_builder import (
     QTY_MOH_UNIT_COST,
     QTY_MOH_UTILITIES_AMOUNT,
     QTY_MOH_UTILITIES_UNIT_COST,
-    QTY_OUTSOURCE_AMOUNT,
-    QTY_OUTSOURCE_UNIT_COST,
-    QTY_TOTAL_MATCH,
     WORK_ORDER_KEY_COLS,
     ZERO,
+    StandaloneCostItemMeta,
     add_decimal,
     build_fact_table,
     build_join_key,
+    build_total_match_column_name,
+    build_total_mismatch_error_reason,
+    build_total_mismatch_reason,
     is_positive_decimal,
     map_broad_cost_bucket,
     map_component_bucket,
     normalize_period,
     period_to_display,
     resolve_period_column,
+    resolve_standalone_cost_item_metas,
     safe_divide,
     sum_decimal_series,
     to_decimal,
@@ -52,36 +53,21 @@ from src.analytics.quality import build_quality_metrics
 from src.analytics.table_rendering import build_product_anomaly_sections, build_product_summary_df
 
 
-@dataclass(frozen=True)
-class StandaloneCostItemDefinition:
-    item_name: str
-    amount_column: str
-    qty_amount_column: str
-    qty_unit_cost_column: str
-    work_order_amount_column: str
-    work_order_unit_cost_column: str
-
-
-DEFAULT_STANDALONE_COST_ITEMS = ('委外加工费',)
-STANDALONE_COST_ITEM_ALIASES = {
-    '委外加工费': 'outsource',
-    '软件费用': 'software',
-}
-
-
 def build_report_artifacts(
     df_detail: pd.DataFrame,
     df_qty: pd.DataFrame,
-    *,
-    standalone_cost_items: tuple[str, ...] | None = None,
+    standalone_cost_items: tuple[str, ...] | list[str] | None = DEFAULT_STANDALONE_COST_ITEMS,
 ) -> AnalysisArtifacts:
     """构建 V3 报表所需的全部分析产物。"""
     detail_period_col, qty_period_col = _validate_input_frames(df_detail, df_qty)
-    standalone_definitions = _build_standalone_cost_item_definitions(standalone_cost_items)
+    standalone_metas = resolve_standalone_cost_item_metas(standalone_cost_items)
+    total_match_column = build_total_match_column_name(standalone_metas)
+    total_mismatch_reason = build_total_mismatch_reason(standalone_metas)
+    total_mismatch_error_reason = build_total_mismatch_error_reason(standalone_metas)
 
     error_frames: list[pd.DataFrame] = []
-    detail = _prepare_detail_frame(df_detail, detail_period_col, error_frames, standalone_definitions)
-    work_order_amounts = _aggregate_work_order_amounts(detail, standalone_definitions)
+    detail = _prepare_detail_frame(df_detail, detail_period_col, error_frames, standalone_metas)
+    work_order_amounts = _aggregate_work_order_amounts(detail, standalone_metas)
     qty_sheet_df, filtered_invalid_qty_count, filtered_missing_total_amount_count = _prepare_qty_sheet_base(
         df_qty,
         qty_period_col,
@@ -102,8 +88,20 @@ def build_report_artifacts(
             )
         )
 
-    qty_sheet_df = _enrich_qty_sheet(qty_sheet_df, work_order_amounts, standalone_definitions)
-    error_frames.extend(_build_qty_reconciliation_errors(qty_sheet_df))
+    qty_sheet_df = _enrich_qty_sheet(
+        qty_sheet_df,
+        work_order_amounts,
+        standalone_metas,
+        total_match_column=total_match_column,
+        total_mismatch_reason=total_mismatch_reason,
+    )
+    error_frames.extend(
+        _build_qty_reconciliation_errors(
+            qty_sheet_df,
+            total_match_column=total_match_column,
+            total_mismatch_error_reason=total_mismatch_error_reason,
+        )
+    )
 
     qty_output_columns = list(df_qty.columns) + [
         QTY_DM_AMOUNT,
@@ -114,7 +112,7 @@ def build_report_artifacts(
         QTY_MOH_CONSUMABLES_AMOUNT,
         QTY_MOH_DEPRECIATION_AMOUNT,
         QTY_MOH_UTILITIES_AMOUNT,
-        QTY_OUTSOURCE_AMOUNT,
+        *[meta.qty_amount_column for meta in standalone_metas],
         QTY_DM_UNIT_COST,
         QTY_DL_UNIT_COST,
         QTY_MOH_UNIT_COST,
@@ -123,22 +121,18 @@ def build_report_artifacts(
         QTY_MOH_CONSUMABLES_UNIT_COST,
         QTY_MOH_DEPRECIATION_UNIT_COST,
         QTY_MOH_UTILITIES_UNIT_COST,
-        QTY_OUTSOURCE_UNIT_COST,
+        *[meta.qty_unit_cost_column for meta in standalone_metas],
         QTY_MOH_MATCH,
-        QTY_TOTAL_MATCH,
+        total_match_column,
         QTY_CHECK_STATUS,
         QTY_CHECK_REASON,
     ]
-    for definition in standalone_definitions:
-        if definition.item_name == '委外加工费':
-            continue
-        qty_output_columns.extend([definition.qty_amount_column, definition.qty_unit_cost_column])
     qty_sheet_output = qty_sheet_df[qty_output_columns + ['_join_key']].copy()
 
-    analysis_source = _build_analysis_source(qty_sheet_df, error_frames, standalone_definitions)
+    analysis_source = _build_analysis_source(qty_sheet_df, error_frames, standalone_metas)
     fact_df = build_fact_table(analysis_source)
     product_summary_df = build_product_summary_df(analysis_source)
-    work_order_sheet = _build_work_order_sheet(analysis_source, standalone_definitions)
+    work_order_sheet = build_anomaly_sheet(analysis_source, standalone_metas=standalone_metas)
     quality_metrics = build_quality_metrics(
         df_detail,
         df_qty,
@@ -183,7 +177,7 @@ def _prepare_detail_frame(
     df_detail: pd.DataFrame,
     detail_period_col: str,
     error_frames: list[pd.DataFrame],
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
 ) -> pd.DataFrame:
     detail = df_detail.copy().rename(
         columns={
@@ -196,16 +190,15 @@ def _prepare_detail_frame(
         }
     )
     detail['period'] = detail[detail_period_col].map(normalize_period)
-    detail['normalized_cost_item'] = detail['cost_item'].map(_normalize_cost_item)
+    # 真实 Excel 会出现前后空格；独立成本项识别、桶映射和后续聚合必须共用同一标准化口径。
+    detail['normalized_cost_item'] = detail['cost_item'].astype(str).str.strip()
     detail['cost_bucket'] = detail['normalized_cost_item'].map(map_broad_cost_bucket)
     detail['component_bucket'] = detail['normalized_cost_item'].map(map_component_bucket)
     detail['amount'] = detail['completed_amount'].map(to_decimal)
-    standalone_items = {definition.item_name for definition in standalone_definitions}
-    detail['standalone_cost_item'] = detail['normalized_cost_item'].where(
-        detail['normalized_cost_item'].isin(standalone_items)
-    )
+    standalone_cost_items = {meta.cost_item for meta in standalone_metas}
+    standalone_cost_mask = detail['normalized_cost_item'].isin(standalone_cost_items)
 
-    unmapped_mask = detail['cost_bucket'].isna() & detail['standalone_cost_item'].isna()
+    unmapped_mask = detail['cost_bucket'].isna() & ~standalone_cost_mask
     if unmapped_mask.any():
         error_frames.append(
             build_error_frame(
@@ -221,7 +214,7 @@ def _prepare_detail_frame(
             )
         )
 
-    supported_cost_mask = detail['cost_bucket'].notna() | detail['standalone_cost_item'].notna()
+    supported_cost_mask = detail['cost_bucket'].notna() | standalone_cost_mask
     missing_detail_amount = detail['amount'].isna() & supported_cost_mask
     if missing_detail_amount.any():
         error_frames.append(
@@ -253,10 +246,11 @@ def _prepare_detail_frame(
 
 def _aggregate_work_order_amounts(
     detail: pd.DataFrame,
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
 ) -> pd.DataFrame:
     detail_for_analysis = detail.loc[detail['cost_bucket'].notna()].copy()
-    detail_standalone = detail.loc[detail['standalone_cost_item'].notna()].copy()
+    standalone_cost_items = {meta.cost_item for meta in standalone_metas}
+    detail_standalone = detail.loc[detail['normalized_cost_item'].isin(standalone_cost_items)].copy()
 
     broad_amounts = (
         detail_for_analysis.groupby(
@@ -294,24 +288,19 @@ def _aggregate_work_order_amounts(
     )
     standalone_amounts = (
         detail_standalone.groupby(
-            WORK_ORDER_KEY_COLS + ['product_name', 'standalone_cost_item'],
-            dropna=False,
-            as_index=False,
-            sort=False,
+            WORK_ORDER_KEY_COLS + ['product_name', 'normalized_cost_item'], dropna=False, as_index=False, sort=False
         )
         .agg(amount=('amount', sum_decimal_series))
         .pivot_table(
             index=WORK_ORDER_KEY_COLS + ['product_name'],
-            columns='standalone_cost_item',
+            columns='normalized_cost_item',
             values='amount',
             aggfunc='first',
             sort=False,
         )
         .reset_index()
     )
-    standalone_rename_map = {
-        definition.item_name: definition.amount_column for definition in standalone_definitions
-    }
+    standalone_rename_map = {meta.cost_item: meta.amount_key for meta in standalone_metas}
     standalone_amounts = standalone_amounts.rename(columns=standalone_rename_map)
 
     work_order_amounts = broad_amounts.merge(component_amounts, on=WORK_ORDER_KEY_COLS + ['product_name'], how='left')
@@ -327,7 +316,8 @@ def _aggregate_work_order_amounts(
         'moh_consumables_amount',
         'moh_depreciation_amount',
         'moh_utilities_amount',
-    ] + [definition.amount_column for definition in standalone_definitions]
+        *[meta.amount_key for meta in standalone_metas],
+    ]
     for column in amount_columns:
         if column not in work_order_amounts.columns:
             work_order_amounts[column] = ZERO
@@ -371,7 +361,10 @@ def _prepare_qty_sheet_base(
 def _enrich_qty_sheet(
     qty_sheet_df: pd.DataFrame,
     work_order_amounts: pd.DataFrame,
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
+    *,
+    total_match_column: str,
+    total_mismatch_reason: str,
 ) -> pd.DataFrame:
     amount_columns = [
         'dm_amount',
@@ -382,7 +375,8 @@ def _enrich_qty_sheet(
         'moh_consumables_amount',
         'moh_depreciation_amount',
         'moh_utilities_amount',
-    ] + [definition.amount_column for definition in standalone_definitions]
+        *[meta.amount_key for meta in standalone_metas],
+    ]
     qty_sheet_df = qty_sheet_df.merge(
         work_order_amounts[['_join_key'] + amount_columns].drop_duplicates('_join_key'),
         on='_join_key',
@@ -401,13 +395,8 @@ def _enrich_qty_sheet(
     qty_sheet_df[QTY_MOH_CONSUMABLES_AMOUNT] = qty_sheet_df['moh_consumables_amount']
     qty_sheet_df[QTY_MOH_DEPRECIATION_AMOUNT] = qty_sheet_df['moh_depreciation_amount']
     qty_sheet_df[QTY_MOH_UTILITIES_AMOUNT] = qty_sheet_df['moh_utilities_amount']
-
-    outsource_amount_column = _get_standalone_amount_column(standalone_definitions, '委外加工费')
-    if outsource_amount_column is None:
-        qty_sheet_df['outsource_amount'] = ZERO
-    else:
-        qty_sheet_df['outsource_amount'] = qty_sheet_df[outsource_amount_column]
-    qty_sheet_df[QTY_OUTSOURCE_AMOUNT] = qty_sheet_df['outsource_amount']
+    for meta in standalone_metas:
+        qty_sheet_df[meta.qty_amount_column] = qty_sheet_df[meta.amount_key]
 
     qty_sheet_df[QTY_DM_UNIT_COST] = qty_sheet_df[QTY_DM_AMOUNT].combine(qty_sheet_df['completed_qty'], safe_divide)
     qty_sheet_df[QTY_DL_UNIT_COST] = qty_sheet_df[QTY_DL_AMOUNT].combine(qty_sheet_df['completed_qty'], safe_divide)
@@ -427,12 +416,8 @@ def _enrich_qty_sheet(
     qty_sheet_df[QTY_MOH_UTILITIES_UNIT_COST] = qty_sheet_df[QTY_MOH_UTILITIES_AMOUNT].combine(
         qty_sheet_df['completed_qty'], safe_divide
     )
-    qty_sheet_df[QTY_OUTSOURCE_UNIT_COST] = qty_sheet_df[QTY_OUTSOURCE_AMOUNT].combine(
-        qty_sheet_df['completed_qty'], safe_divide
-    )
-    for definition in standalone_definitions:
-        qty_sheet_df[definition.qty_amount_column] = qty_sheet_df[definition.amount_column]
-        qty_sheet_df[definition.qty_unit_cost_column] = qty_sheet_df[definition.qty_amount_column].combine(
+    for meta in standalone_metas:
+        qty_sheet_df[meta.qty_unit_cost_column] = qty_sheet_df[meta.qty_amount_column].combine(
             qty_sheet_df['completed_qty'], safe_divide
         )
 
@@ -448,10 +433,9 @@ def _enrich_qty_sheet(
         .combine(qty_sheet_df[QTY_DL_AMOUNT], add_decimal)
         .combine(qty_sheet_df[QTY_MOH_AMOUNT], add_decimal)
     )
-    for definition in standalone_definitions:
+    for meta in standalone_metas:
         qty_sheet_df['derived_total_amount'] = qty_sheet_df['derived_total_amount'].combine(
-            qty_sheet_df[definition.qty_amount_column],
-            add_decimal,
+            qty_sheet_df[meta.qty_amount_column], add_decimal
         )
 
     qty_sheet_df[QTY_MOH_MATCH] = (
@@ -459,7 +443,7 @@ def _enrich_qty_sheet(
         & qty_sheet_df[QTY_MOH_AMOUNT].notna()
         & (qty_sheet_df['moh_component_sum'] == qty_sheet_df[QTY_MOH_AMOUNT])
     ).map(lambda value: '是' if value else '否')
-    qty_sheet_df[QTY_TOTAL_MATCH] = (
+    qty_sheet_df[total_match_column] = (
         qty_sheet_df['derived_total_amount'].notna()
         & qty_sheet_df['completed_amount_total'].notna()
         & (qty_sheet_df['derived_total_amount'] == qty_sheet_df['completed_amount_total'])
@@ -467,12 +451,11 @@ def _enrich_qty_sheet(
 
     qty_reason = pd.Series('', index=qty_sheet_df.index, dtype='object')
     qty_reason = qty_reason.mask(qty_sheet_df[QTY_MOH_MATCH].eq('否'), '制造费用明细与合计不一致')
-    total_mismatch_mask = qty_sheet_df[QTY_TOTAL_MATCH].eq('否')
+    total_mismatch_mask = qty_sheet_df[total_match_column].eq('否')
     qty_reason.loc[total_mismatch_mask & qty_reason.ne('')] = (
-        qty_reason.loc[total_mismatch_mask & qty_reason.ne('')]
-        + ';直接材料+直接人工+制造费用+委外加工费与总完工成本不一致'
+        qty_reason.loc[total_mismatch_mask & qty_reason.ne('')] + f';{total_mismatch_reason}'
     )
-    qty_reason.loc[total_mismatch_mask & qty_reason.eq('')] = '直接材料+直接人工+制造费用+委外加工费与总完工成本不一致'
+    qty_reason.loc[total_mismatch_mask & qty_reason.eq('')] = total_mismatch_reason
     qty_sheet_df[QTY_CHECK_REASON] = qty_reason
     qty_sheet_df[QTY_CHECK_STATUS] = (
         qty_sheet_df[QTY_CHECK_REASON].eq('').map(lambda value: '通过' if value else '需复核')
@@ -480,7 +463,12 @@ def _enrich_qty_sheet(
     return qty_sheet_df
 
 
-def _build_qty_reconciliation_errors(qty_sheet_df: pd.DataFrame) -> list[pd.DataFrame]:
+def _build_qty_reconciliation_errors(
+    qty_sheet_df: pd.DataFrame,
+    *,
+    total_match_column: str,
+    total_mismatch_error_reason: str,
+) -> list[pd.DataFrame]:
     error_frames: list[pd.DataFrame] = []
 
     moh_mismatch_mask = qty_sheet_df[QTY_MOH_MATCH].eq('否')
@@ -509,7 +497,7 @@ def _build_qty_reconciliation_errors(qty_sheet_df: pd.DataFrame) -> list[pd.Data
             )
         )
 
-    total_mismatch_mask = qty_sheet_df[QTY_TOTAL_MATCH].eq('否')
+    total_mismatch_mask = qty_sheet_df[total_match_column].eq('否')
     if total_mismatch_mask.any():
         total_frame = qty_sheet_df.loc[
             total_mismatch_mask,
@@ -534,7 +522,7 @@ def _build_qty_reconciliation_errors(qty_sheet_df: pd.DataFrame) -> list[pd.Data
                 total_frame,
                 issue_type='TOTAL_COST_MISMATCH',
                 field_name='总完工成本',
-                reason='直接材料+直接人工+制造费用+委外加工费不等于数量页总完工成本',
+                reason=total_mismatch_error_reason,
                 action='保留结果并标记需复核',
                 lhs_column='derived_total_amount',
                 rhs_column='completed_amount_total',
@@ -549,7 +537,7 @@ def _build_qty_reconciliation_errors(qty_sheet_df: pd.DataFrame) -> list[pd.Data
 def _build_analysis_source(
     qty_sheet_df: pd.DataFrame,
     error_frames: list[pd.DataFrame],
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
 ) -> pd.DataFrame:
     analysis_source = qty_sheet_df.sort_values('_source_row').drop_duplicates('_join_key', keep='first').copy()
     analysis_source = analysis_source.drop(
@@ -585,14 +573,7 @@ def _build_analysis_source(
     analysis_source['moh_utilities_unit_cost'] = analysis_source[QTY_MOH_UTILITIES_AMOUNT].combine(
         analysis_source['completed_qty'], safe_divide
     )
-    for definition in standalone_definitions:
-        analysis_source[definition.work_order_unit_cost_column] = analysis_source[definition.amount_column].combine(
-            analysis_source['completed_qty'],
-            safe_divide,
-        )
-    for column in ['dm_amount', 'dl_amount', 'moh_amount'] + [
-        definition.amount_column for definition in standalone_definitions
-    ]:
+    for column in ['dm_amount', 'dl_amount', 'moh_amount', *[meta.amount_key for meta in standalone_metas]]:
         if column not in analysis_source.columns:
             analysis_source[column] = ZERO
 
@@ -610,88 +591,6 @@ def _build_analysis_source(
                     action='保留在异常分析页并标记复核原因',
                     original_column=metric_key,
                     row_id_fields=WORK_ORDER_KEY_COLS,
+                )
             )
-        )
     return analysis_source
-
-
-def _build_standalone_cost_item_definitions(
-    standalone_cost_items: tuple[str, ...] | None,
-) -> tuple[StandaloneCostItemDefinition, ...]:
-    normalized_items = _normalize_standalone_cost_items(standalone_cost_items)
-    definitions: list[StandaloneCostItemDefinition] = []
-    for index, item_name in enumerate(normalized_items, start=1):
-        alias = STANDALONE_COST_ITEM_ALIASES.get(item_name, f'standalone_cost_{index}')
-        definitions.append(
-            StandaloneCostItemDefinition(
-                item_name=item_name,
-                amount_column=f'{alias}_amount',
-                qty_amount_column=f'本期完工{item_name}合计完工金额',
-                qty_unit_cost_column=f'{item_name}单位完工成本',
-                work_order_amount_column=f'{item_name}合计完工金额',
-                work_order_unit_cost_column=f'{item_name}单位完工成本',
-            )
-        )
-    return tuple(definitions)
-
-
-def _normalize_standalone_cost_items(standalone_cost_items: tuple[str, ...] | None) -> tuple[str, ...]:
-    base_items = DEFAULT_STANDALONE_COST_ITEMS if standalone_cost_items is None else standalone_cost_items
-    normalized_items: list[str] = []
-    seen_items: set[str] = set()
-    for item in base_items:
-        normalized_item = _normalize_cost_item(item)
-        if normalized_item is None or normalized_item in seen_items:
-            continue
-        normalized_items.append(normalized_item)
-        seen_items.add(normalized_item)
-    return tuple(normalized_items)
-
-
-def _normalize_cost_item(cost_item: object) -> str | None:
-    if cost_item is None or pd.isna(cost_item):
-        return None
-    normalized = str(cost_item).strip()
-    return normalized or None
-
-
-def _get_standalone_amount_column(
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
-    item_name: str,
-) -> str | None:
-    for definition in standalone_definitions:
-        if definition.item_name == item_name:
-            return definition.amount_column
-    return None
-
-
-def _build_work_order_sheet(
-    analysis_source: pd.DataFrame,
-    standalone_definitions: tuple[StandaloneCostItemDefinition, ...],
-) -> object:
-    work_order_sheet = build_anomaly_sheet(analysis_source)
-    if not standalone_definitions:
-        return work_order_sheet
-
-    work_order_df = work_order_sheet.data.copy()
-    column_types = dict(work_order_sheet.column_types)
-    insert_before = '总单位完工成本'
-    insert_position = work_order_df.columns.get_loc(insert_before)
-    for definition in standalone_definitions:
-        if definition.work_order_amount_column not in work_order_df.columns:
-            work_order_df.insert(
-                insert_position,
-                definition.work_order_amount_column,
-                analysis_source[definition.amount_column].tolist(),
-            )
-            column_types[definition.work_order_amount_column] = 'amount'
-            insert_position += 1
-        if definition.work_order_unit_cost_column not in work_order_df.columns:
-            work_order_df.insert(
-                insert_position,
-                definition.work_order_unit_cost_column,
-                analysis_source[definition.work_order_unit_cost_column].tolist(),
-            )
-            column_types[definition.work_order_unit_cost_column] = 'price'
-            insert_position += 1
-    return type(work_order_sheet)(data=work_order_df, column_types=column_types)

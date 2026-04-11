@@ -45,15 +45,7 @@ class TestCostingWorkbookETL:
         assert hasattr(etl, 'QTY_COLS')
 
     def test_standalone_cost_items_are_normalized(self) -> None:
-        """Stand-alone cost items must be stripped and empty entries removed."""
-        etl = CostingWorkbookETL(
-            skip_rows=2,
-            standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
-        )
-        assert etl.standalone_cost_items == ('委外加工费', '软件费用')
-
-    def test_standalone_cost_items_are_normalized(self) -> None:
-        """Ensure standalone cost items are trimmed and empty entries dropped."""
+        """Ensure standalone cost items are stripped and empty entries removed."""
         etl = CostingWorkbookETL(
             skip_rows=2,
             standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
@@ -619,7 +611,15 @@ def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp
         qty_sheet_df=df_qty.copy(),
         work_order_sheet=FlatSheet(
             data=pd.DataFrame(
-                [{'月份': '2025年01期', '产品编码': 'DP.C.P0197AA', '产品名称': '动力线', '工单编号': 'WO-001', '工单行': '1'}]
+                [
+                    {
+                        '月份': '2025年01期',
+                        '产品编码': 'DP.C.P0197AA',
+                        '产品名称': '动力线',
+                        '工单编号': 'WO-001',
+                        '工单行': '1',
+                    }
+                ]
             ),
             column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text', '工单编号': 'text', '工单行': 'text'},
         ),
@@ -641,7 +641,7 @@ def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:
-    """SK 输出应包含软件费用列并应用格式；GB 默认输出不应出现软件费用列。"""
+    """真实链路校验：SK 应输出软件费用列，GB 不应输出软件费用列。"""
     input_path = tmp_path / 'input.xlsx'
     sk_output_path = tmp_path / 'sk_output.xlsx'
     gb_output_path = tmp_path / 'gb_output.xlsx'
@@ -651,91 +651,87 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
         [
             {
                 '月份': '2025年01期',
+                '成本中心名称': '中心A',
                 '产品编码': 'DP.C.P0197AA',
                 '产品名称': '动力线',
+                '规格型号': 'S-01',
                 '工单编号': 'WO-001',
                 '工单行号': 1,
+                '基本单位': 'PCS',
                 '成本项目名称': '直接材料',
-                '本期完工金额': 120.0,
-            }
+                '本期完工金额': 80.0,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 20.0,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': 10.0,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '委外加工费',
+                '本期完工金额': 30.0,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DP.C.P0197AA',
+                '产品名称': '动力线',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '软件费用',
+                '本期完工金额': 40.0,
+            },
         ]
     )
     df_qty = pd.DataFrame(
         [
             {
                 '月份': '2025年01期',
+                '成本中心名称': '中心A',
                 '产品编码': 'DP.C.P0197AA',
                 '产品名称': '动力线',
+                '规格型号': 'S-01',
                 '工单编号': 'WO-001',
                 '工单行号': 1,
-                '本期完工数量': 10,
-                '本期完工金额': 120.0,
+                '基本单位': 'PCS',
+                '本期完工数量': 10.0,
+                '本期完工金额': 180.0,
             }
         ]
-    )
-
-    def build_fake_artifacts(*, include_software_fee: bool) -> AnalysisArtifacts:
-        qty_row = {
-            '月份': '2025年01期',
-            '产品编码': 'DP.C.P0197AA',
-            '产品名称': '动力线',
-            '工单编号': 'WO-001',
-            '工单行号': 1,
-            '本期完工数量': 10.0,
-            '本期完工金额': 120.0,
-            '本期完工委外加工费合计完工金额': 20.0,
-            '委外加工费单位完工成本': 2.0,
-        }
-        if include_software_fee:
-            qty_row['本期完工软件费用合计完工金额'] = 30.0
-            qty_row['软件费用单位完工成本'] = 3.0
-
-        work_order_row = {
-            '月份': '2025年01期',
-            '产品编码': 'DP.C.P0197AA',
-            '产品名称': '动力线',
-            '工单编号': 'WO-001',
-            '工单行': '1',
-            '本期完工数量': 10.0,
-            '委外加工费合计完工金额': 20.0,
-            '委外加工费单位完工成本': 2.0,
-        }
-        work_order_column_types = {
-            '月份': 'text',
-            '产品编码': 'text',
-            '产品名称': 'text',
-            '工单编号': 'text',
-            '工单行': 'text',
-            '本期完工数量': 'qty',
-            '委外加工费合计完工金额': 'amount',
-            '委外加工费单位完工成本': 'price',
-        }
-        if include_software_fee:
-            work_order_row['软件费用合计完工金额'] = 30.0
-            work_order_row['软件费用单位完工成本'] = 3.0
-            work_order_column_types['软件费用合计完工金额'] = 'amount'
-            work_order_column_types['软件费用单位完工成本'] = 'price'
-
-        return AnalysisArtifacts(
-            fact_df=pd.DataFrame(),
-            qty_sheet_df=pd.DataFrame([qty_row]),
-            work_order_sheet=FlatSheet(data=pd.DataFrame([work_order_row]), column_types=work_order_column_types),
-            product_anomaly_sections=[],
-            quality_metrics=(),
-            error_log=pd.DataFrame(),
-        )
-
-    mocked_build = Mock(
-        side_effect=lambda _detail, _qty, **kwargs: build_fake_artifacts(
-            include_software_fee='软件费用' in kwargs.get('standalone_cost_items', ())
-        )
     )
 
     etl_sk = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
     with (
         patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
         patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
     ):
         assert etl_sk.process_file(input_path, sk_output_path) is True
 
@@ -759,7 +755,6 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     with (
         patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
         patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
     ):
         assert etl_gb.process_file(input_path, gb_output_path) is True
 
@@ -768,3 +763,8 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     gb_qty_headers = _build_header_map(gb_qty_ws)
     assert '本期完工软件费用合计完工金额' not in gb_qty_headers
     assert '软件费用单位完工成本' not in gb_qty_headers
+
+    gb_work_order_ws = gb_wb['按工单按产品异常值分析']
+    gb_work_order_headers = _build_header_map(gb_work_order_ws)
+    assert '软件费用合计完工金额' not in gb_work_order_headers
+    assert '软件费用单位完工成本' not in gb_work_order_headers

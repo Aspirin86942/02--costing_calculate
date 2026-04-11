@@ -8,7 +8,12 @@ import pandas as pd
 
 from src.analytics.contracts import FlatSheet
 from src.analytics.errors import append_reason
-from src.analytics.fact_builder import ZERO
+from src.analytics.fact_builder import (
+    DEFAULT_STANDALONE_COST_ITEMS,
+    ZERO,
+    StandaloneCostItemMeta,
+    resolve_standalone_cost_item_metas,
+)
 
 ANOMALY_METRICS = [
     ('total_unit_cost', '总单位完工成本', '总成本异常标记', '总成本异常'),
@@ -46,7 +51,6 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_机物料及低耗合计完工金额',
     '制造费用_折旧合计完工金额',
     '制造费用_水电费合计完工金额',
-    '委外加工费合计完工金额',
     '总单位完工成本',
     '直接材料单位完工成本',
     '直接人工单位完工成本',
@@ -56,7 +60,6 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_机物料及低耗单位完工成本',
     '制造费用_折旧单位完工成本',
     '制造费用_水电费单位完工成本',
-    '委外加工费单位完工成本',
     'log_总单位完工成本',
     'log_直接材料单位完工成本',
     'log_直接人工单位完工成本',
@@ -109,7 +112,6 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_机物料及低耗合计完工金额': 'amount',
     '制造费用_折旧合计完工金额': 'amount',
     '制造费用_水电费合计完工金额': 'amount',
-    '委外加工费合计完工金额': 'amount',
     '总单位完工成本': 'price',
     '直接材料单位完工成本': 'price',
     '直接人工单位完工成本': 'price',
@@ -119,7 +121,6 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_机物料及低耗单位完工成本': 'price',
     '制造费用_折旧单位完工成本': 'price',
     '制造费用_水电费单位完工成本': 'price',
-    '委外加工费单位完工成本': 'price',
     'log_总单位完工成本': 'score',
     'log_直接材料单位完工成本': 'score',
     'log_直接人工单位完工成本': 'score',
@@ -165,7 +166,12 @@ def grade_score(score: float | None) -> str:
     return '正常'
 
 
-def build_anomaly_sheet(work_order_df: pd.DataFrame) -> FlatSheet:
+def build_anomaly_sheet(
+    work_order_df: pd.DataFrame,
+    standalone_metas: tuple[StandaloneCostItemMeta, ...] | None = None,
+) -> FlatSheet:
+    if standalone_metas is None:
+        standalone_metas = resolve_standalone_cost_item_metas(DEFAULT_STANDALONE_COST_ITEMS)
     anomaly_df = work_order_df.copy()
     reason_series = pd.Series('', index=anomaly_df.index, dtype='object')
 
@@ -267,7 +273,6 @@ def build_anomaly_sheet(work_order_df: pd.DataFrame) -> FlatSheet:
         'moh_consumables_amount': '制造费用_机物料及低耗合计完工金额',
         'moh_depreciation_amount': '制造费用_折旧合计完工金额',
         'moh_utilities_amount': '制造费用_水电费合计完工金额',
-        'outsource_amount': '委外加工费合计完工金额',
         'total_unit_cost': '总单位完工成本',
         'dm_unit_cost': '直接材料单位完工成本',
         'dl_unit_cost': '直接人工单位完工成本',
@@ -296,6 +301,20 @@ def build_anomaly_sheet(work_order_df: pd.DataFrame) -> FlatSheet:
         'modified_z_moh_depreciation_unit_cost': 'Modified Z-score_制造费用_折旧',
         'modified_z_moh_utilities_unit_cost': 'Modified Z-score_制造费用_水电费',
     }
+    output_columns = WORK_ORDER_OUTPUT_COLUMNS.copy()
+    output_column_types = WORK_ORDER_COLUMN_TYPES.copy()
+    for meta in standalone_metas:
+        if meta.amount_key in anomaly_df.columns:
+            rename_map[meta.amount_key] = meta.work_order_amount_column
+        if meta.unit_cost_key in anomaly_df.columns and meta.work_order_unit_cost_column not in anomaly_df.columns:
+            rename_map[meta.unit_cost_key] = meta.work_order_unit_cost_column
+        output_column_types.setdefault(meta.work_order_amount_column, 'amount')
+        output_column_types.setdefault(meta.work_order_unit_cost_column, 'price')
+        if meta.work_order_amount_column not in output_columns:
+            output_columns.insert(output_columns.index('总单位完工成本'), meta.work_order_amount_column)
+        if meta.work_order_unit_cost_column not in output_columns:
+            output_columns.insert(output_columns.index('log_总单位完工成本'), meta.work_order_unit_cost_column)
+
     output_df = anomaly_df.rename(columns=rename_map)
-    output_df = output_df[WORK_ORDER_OUTPUT_COLUMNS]
-    return FlatSheet(data=output_df, column_types=WORK_ORDER_COLUMN_TYPES)
+    output_df = output_df[output_columns]
+    return FlatSheet(data=output_df, column_types=output_column_types)

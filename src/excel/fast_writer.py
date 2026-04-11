@@ -529,10 +529,20 @@ class FastSheetWriter:
         )
         text_format = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
         number_format_cache: dict[str, Any] = {}
+        numeric_format_by_col: dict[int, Any] = {}
 
         columns = df.columns.tolist()
         for col_idx, column_name in enumerate(columns):
             worksheet.write(0, col_idx, column_name, header_format)
+            number_format = column_formats.get(column_name)
+            if number_format is None:
+                continue
+            numeric_format_by_col[col_idx] = number_format_cache.setdefault(
+                number_format,
+                workbook.add_format(
+                    {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
+                ),
+            )
 
         if apply_column_widths:
             fixed_width_value = _resolve_fixed_width(fixed_width)
@@ -546,25 +556,22 @@ class FastSheetWriter:
 
             for col_idx, column_name in enumerate(columns):
                 width = width_map.get(col_idx + 1, 12.0)
-                number_format = column_formats.get(column_name)
-                default_format = text_format
-                if number_format is not None:
-                    default_format = number_format_cache.setdefault(
-                        number_format,
-                        workbook.add_format(
-                            {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
-                        ),
-                    )
+                default_format = numeric_format_by_col.get(col_idx, text_format)
                 worksheet.set_column(col_idx, col_idx, width, default_format)
 
         for row_offset, row_data in enumerate(df.itertuples(index=False, name=None)):
             excel_row = row_offset + 1
+            coerced_row_data = tuple(_coerce_row_value_for_excel(value) for value in row_data)
             # write_row 是热点路径核心：逐行写出可显著减少 Python 层逐单元格调用开销。
+            # 先用 text_format 兜底整行样式，再对数值列定点覆盖，保证空值/无列宽场景也不丢格式。
             worksheet.write_row(
                 excel_row,
                 0,
-                tuple(_coerce_row_value_for_excel(value) for value in row_data),
+                coerced_row_data,
+                text_format,
             )
+            for col_idx, numeric_format in numeric_format_by_col.items():
+                _write_cell(worksheet, excel_row, col_idx, coerced_row_data[col_idx], numeric_format)
 
         if freeze_panes is not None:
             freeze_row, freeze_col = _freeze_panes_to_rc(freeze_panes)

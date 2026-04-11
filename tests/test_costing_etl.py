@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
+from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
 from src.etl.costing_etl import CostingWorkbookETL
 
@@ -266,6 +267,81 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
 
     assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
     dataframe_writer_mock.assert_not_called()
+
+
+def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:
+    """快路径下空数值单元格仍应保留数字格式和边框。"""
+    output_path = tmp_path / 'fast_blank_numeric.xlsx'
+    sheet_writer = FastSheetWriter()
+    sheet_df = pd.DataFrame([{'文本列': 'A', '数值列': None}])
+
+    with pd.ExcelWriter(
+        output_path,
+        engine='xlsxwriter',
+        engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+    ) as writer:
+        sheet_writer.write_dataframe_fast(
+            writer,
+            '热点sheet',
+            sheet_df,
+            numeric_columns={'数值列'},
+            freeze_panes='A2',
+            fixed_width=15,
+        )
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['热点sheet']
+    value_cell = worksheet['B2']
+
+    assert value_cell.value is None
+    assert value_cell.number_format == '#,##0.00'
+    assert value_cell.alignment.horizontal == 'right'
+    assert value_cell.border.left.style == 'thin'
+    assert value_cell.border.right.style == 'thin'
+    assert value_cell.border.top.style == 'thin'
+    assert value_cell.border.bottom.style == 'thin'
+
+
+def test_write_dataframe_fast_error_log_style_without_column_widths(tmp_path) -> None:
+    """error_log 在 apply_column_widths=False 下数据区样式不退化。"""
+    output_path = tmp_path / 'fast_error_log.xlsx'
+    sheet_writer = FastSheetWriter()
+    error_log_df = pd.DataFrame(
+        [
+            {
+                'row_id': '1',
+                'error_type': 'MISSING_AMOUNT',
+                'message': 'missing amount',
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(
+        output_path,
+        engine='xlsxwriter',
+        engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+    ) as writer:
+        sheet_writer.write_dataframe_fast(
+            writer,
+            'error_log',
+            error_log_df,
+            numeric_columns=set(),
+            freeze_panes=None,
+            auto_filter=False,
+            apply_column_widths=False,
+        )
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['error_log']
+    cell = worksheet['A2']
+
+    assert worksheet.freeze_panes is None
+    assert worksheet.auto_filter.ref is None
+    assert cell.alignment.horizontal == 'left'
+    assert cell.border.left.style == 'thin'
+    assert cell.border.right.style == 'thin'
+    assert cell.border.top.style == 'thin'
+    assert cell.border.bottom.style == 'thin'
 
 
 def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:

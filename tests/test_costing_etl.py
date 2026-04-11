@@ -1,5 +1,6 @@
 """测试主 ETL 输出与基础行为。"""
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -546,6 +547,59 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert str(quality_metrics['因完工数量无效被过滤行数']) == '1'
     assert str(quality_metrics['因总完工成本为空被过滤行数']) == '1'
     assert etl.last_error_log_count == wb['error_log'].max_row - 1
+
+
+def test_process_file_logs_read_transform_export_timings(caplog, tmp_path) -> None:
+    """process_file 应输出读数、转换和导出的阶段耗时日志。"""
+    caplog.set_level(logging.INFO, logger='src.etl.costing_etl')
+    etl = CostingWorkbookETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    messages = [record.message for record in caplog.records]
+    assert any('Timing | stage=read' in message for message in messages)
+    assert any('Timing | stage=transform' in message for message in messages)
+    assert any('Timing | stage=export' in message for message in messages)
 
 
 def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:

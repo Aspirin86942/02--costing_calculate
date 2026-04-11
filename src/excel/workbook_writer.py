@@ -99,5 +99,7 @@ class CostingWorkbookWriter:
                 'error_log',
                 error_log,
                 numeric_columns=set(),
-                freeze_panes='A2',
+                freeze_panes=None,
+                auto_filter=False,
+                apply_column_widths=False,
             )

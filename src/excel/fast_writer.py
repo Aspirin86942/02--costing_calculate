@@ -99,8 +99,10 @@ class FastSheetWriter:
         df: pd.DataFrame,
         *,
         numeric_columns: set[str],
-        freeze_panes: str = 'A2',
+        freeze_panes: str | None = 'A2',
         fixed_width: int | None = None,
+        auto_filter: bool = True,
+        apply_column_widths: bool = True,
     ) -> Any:
         """写入普通 DataFrame sheet，并按列名应用数值格式。"""
         column_formats = {column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns}
@@ -112,6 +114,8 @@ class FastSheetWriter:
             column_formats=column_formats,
             freeze_panes=freeze_panes,
             fixed_width=fixed_width,
+            auto_filter=auto_filter,
+            apply_column_widths=apply_column_widths,
         )
 
     def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
@@ -342,65 +346,7 @@ class FastSheetWriter:
 
     def apply_work_order_highlights(self, worksheet: Any) -> None:
         """兼容入口：高亮已在写入阶段完成，避免 constant_memory 下事后回写失败。"""
-        if getattr(worksheet, '_codex_highlight_inline_processed', False):
-            return
-
-        cached_rows: list[tuple[object, ...]] | None = getattr(worksheet, '_codex_highlight_rows', None)
-        columns: list[str] | None = getattr(worksheet, '_codex_highlight_columns', None)
-        column_formats: dict[str, str] | None = getattr(worksheet, '_codex_highlight_column_formats', None)
-        workbook: Any | None = getattr(worksheet, '_codex_highlight_workbook', None)
-        if not cached_rows or not columns or column_formats is None or workbook is None:
-            return
-
-        header_map = {column_name: idx for idx, column_name in enumerate(columns)}
-        highlight_pairs: list[tuple[int, int]] = []
-        for value_column, flag_column in WORK_ORDER_HIGHLIGHT_COLUMNS:
-            value_idx = header_map.get(value_column)
-            flag_idx = header_map.get(flag_column)
-            if value_idx is not None and flag_idx is not None:
-                highlight_pairs.append((value_idx, flag_idx))
-        if not highlight_pairs:
-            return
-
-        highlight_format_cache: dict[tuple[str, str, str, str], Any] = {}
-        for row_offset, row_data in enumerate(cached_rows):
-            row_style_by_col: dict[int, dict[str, str]] = {}
-            for value_idx, flag_idx in highlight_pairs:
-                highlight_style = _resolve_highlight_style(row_data[flag_idx])
-                if highlight_style is None:
-                    continue
-                row_style_by_col[value_idx] = highlight_style
-                row_style_by_col[flag_idx] = highlight_style
-            if not row_style_by_col:
-                continue
-
-            excel_row = row_offset + 1
-            for col_idx, highlight_style in row_style_by_col.items():
-                column_name = columns[col_idx]
-                number_format = column_formats.get(column_name)
-                align = 'right' if number_format is not None else 'left'
-                format_key = (
-                    number_format or '',
-                    align,
-                    highlight_style['fill'],
-                    highlight_style.get('font_color', ''),
-                )
-                cell_format = highlight_format_cache.get(format_key)
-                if cell_format is None:
-                    format_config: dict[str, Any] = {
-                        'align': align,
-                        'valign': 'vcenter',
-                        'border': 1,
-                        'bg_color': highlight_style['fill'],
-                    }
-                    if number_format is not None:
-                        format_config['num_format'] = number_format
-                    font_color = highlight_style.get('font_color')
-                    if font_color is not None:
-                        format_config['font_color'] = font_color
-                    cell_format = workbook.add_format(format_config)
-                    highlight_format_cache[format_key] = cell_format
-                _write_cell(worksheet, excel_row, col_idx, row_data[col_idx], cell_format)
+        return None
 
     def _write_flat_dataframe(
         self,
@@ -409,9 +355,11 @@ class FastSheetWriter:
         df: pd.DataFrame,
         *,
         column_formats: dict[str, str],
-        freeze_panes: str,
+        freeze_panes: str | None,
         fixed_width: int | None,
         highlight_columns: tuple[tuple[str, str], ...] | None = None,
+        auto_filter: bool = True,
+        apply_column_widths: bool = True,
     ) -> Any:
         workbook = writer.book
         worksheet = workbook.add_worksheet(sheet_name)
@@ -438,13 +386,7 @@ class FastSheetWriter:
         for col_idx, column_name in enumerate(columns):
             worksheet.write(0, col_idx, column_name, header_format)
 
-        cached_rows: list[tuple[object, ...]] | None = None
-        if highlight_pairs:
-            cached_rows = []
-
         for row_offset, row_data in enumerate(df.itertuples(index=False, name=None)):
-            if cached_rows is not None:
-                cached_rows.append(tuple(row_data))
             excel_row = row_offset + 1
             row_style_by_col: dict[int, dict[str, str]] = {}
             for value_idx, flag_idx in highlight_pairs:
@@ -496,41 +438,36 @@ class FastSheetWriter:
 
                 _write_cell(worksheet, excel_row, col_idx, value, cell_format)
 
-        freeze_row, freeze_col = _freeze_panes_to_rc(freeze_panes)
-        worksheet.freeze_panes(freeze_row, freeze_col)
+        if freeze_panes is not None:
+            freeze_row, freeze_col = _freeze_panes_to_rc(freeze_panes)
+            worksheet.freeze_panes(freeze_row, freeze_col)
 
-        if columns:
+        if auto_filter and columns:
             filter_end_row = max(len(df), 1)
             worksheet.autofilter(0, 0, filter_end_row, len(columns) - 1)
 
-        fixed_width_value = _resolve_fixed_width(fixed_width)
-        if fixed_width_value is None:
-            width_map = estimate_flat_column_widths(df)
-        else:
-            width_map = {
-                column_idx: fixed_width_value
-                for column_idx in range(1, len(columns) + 1)
-            }
+        if apply_column_widths:
+            fixed_width_value = _resolve_fixed_width(fixed_width)
+            if fixed_width_value is None:
+                width_map = estimate_flat_column_widths(df)
+            else:
+                width_map = {
+                    column_idx: fixed_width_value
+                    for column_idx in range(1, len(columns) + 1)
+                }
 
-        for col_idx, column_name in enumerate(columns):
-            width = width_map.get(col_idx + 1, 12.0)
-            number_format = column_formats.get(column_name)
-            default_format = text_format
-            if number_format is not None:
-                default_format = number_format_cache.setdefault(
-                    number_format,
-                    workbook.add_format(
-                        {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
-                    ),
-                )
-            worksheet.set_column(col_idx, col_idx, width, default_format)
-
-        worksheet._codex_highlight_inline_processed = bool(highlight_pairs)
-        if cached_rows is not None:
-            worksheet._codex_highlight_rows = cached_rows
-            worksheet._codex_highlight_columns = columns
-            worksheet._codex_highlight_column_formats = column_formats
-            worksheet._codex_highlight_workbook = workbook
+            for col_idx, column_name in enumerate(columns):
+                width = width_map.get(col_idx + 1, 12.0)
+                number_format = column_formats.get(column_name)
+                default_format = text_format
+                if number_format is not None:
+                    default_format = number_format_cache.setdefault(
+                        number_format,
+                        workbook.add_format(
+                            {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
+                        ),
+                    )
+                worksheet.set_column(col_idx, col_idx, width, default_format)
 
         return worksheet
 

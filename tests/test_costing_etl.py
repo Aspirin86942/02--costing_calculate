@@ -404,6 +404,10 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_product['A4'].value == 'GB_C.D.B0040AA'
     assert ws_product.freeze_panes == 'A6'
 
+    ws_error_log = wb['error_log']
+    assert ws_error_log.freeze_panes is None
+    assert ws_error_log.auto_filter.ref is None
+
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
     assert '本期完工数量缺失率' not in quality_metrics
     assert '本期完工金额缺失率' not in quality_metrics

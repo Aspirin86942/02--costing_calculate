@@ -25,13 +25,6 @@ def _find_title_row(worksheet, title: str) -> int:
     raise AssertionError(f'未找到标题行: {title}')
 
 
-def _rgb_suffix(color) -> str | None:
-    rgb = getattr(color, 'rgb', None)
-    if rgb is None:
-        return None
-    return rgb[-6:]
-
-
 class TestCostingWorkbookETL:
     """测试 CostingWorkbookETL 类。"""
 
@@ -415,8 +408,82 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert etl.last_error_log_count == wb['error_log'].max_row - 1
 
 
-def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
-    """测试工单异常页会同步高亮值列和标记列。"""
+def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
+    """轻量导出骨架：仍写出8张sheet，关键明细页保留A2冻结和数值格式。"""
+    etl = CostingWorkbookETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工单位成本': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10.0,
+                '本期完工金额': 165.0,
+            }
+        ]
+    )
+
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    xls = pd.ExcelFile(output_path, engine='openpyxl')
+    assert len(xls.sheet_names) == 8
+    assert set(xls.sheet_names) == {
+        '成本明细',
+        '产品数量统计',
+        '直接材料_价量比',
+        '直接人工_价量比',
+        '制造费用_价量比',
+        '按工单按产品异常值分析',
+        '按产品异常值分析',
+        'error_log',
+    }
+
+    wb = load_workbook(output_path)
+    ws_detail = wb['成本明细']
+    detail_headers = _build_header_map(ws_detail)
+    assert ws_detail.freeze_panes == 'A2'
+    assert ws_detail.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
+    assert ws_detail.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
+
+    ws_qty = wb['产品数量统计']
+    qty_headers = _build_header_map(ws_qty)
+    assert ws_qty.freeze_panes == 'A2'
+    assert ws_qty.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
+    assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
+
+
+def test_process_file_writes_work_order_value_and_flag_cells(tmp_path) -> None:
+    """Task 1a：工单异常页可正常写出值列和标记列（不验证高亮样式）。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -565,12 +632,12 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
     moh_labor_value = ws_work_order.cell(2, headers['制造费用_人工单位完工成本'])
     moh_labor_flag = ws_work_order.cell(2, headers['制造费用_人工异常标记'])
 
-    assert _rgb_suffix(dm_value.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(dm_flag.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(moh_labor_value.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_flag.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_value.font.color) == 'FFFFFF'
-    assert _rgb_suffix(moh_labor_flag.font.color) == 'FFFFFF'
+    assert dm_value.value == 18.0
+    assert dm_flag.value == '关注'
+    assert moh_labor_value.value == 30.0
+    assert moh_labor_flag.value == '高度可疑'
+    assert ws_work_order.freeze_panes == 'A2'
+    assert ws_work_order.auto_filter.ref is not None
 
 
 def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock
-from src.excel.sheet_writers import SheetWriter
+from src.excel.fast_writer import FastSheetWriter
 
 DETAIL_TWO_DECIMAL_COLUMNS = {'本期完工单位成本', '本期完工金额'}
 QTY_TWO_DECIMAL_COLUMNS = {
@@ -51,7 +51,7 @@ class CostingWorkbookWriter:
     """统一写出成本 workbook。"""
 
     def __init__(self) -> None:
-        self.sheet_writer = SheetWriter()
+        self.sheet_writer = FastSheetWriter()
 
     def write_workbook(
         self,
@@ -65,7 +65,11 @@ class CostingWorkbookWriter:
         error_log: pd.DataFrame,
     ) -> None:
         """按固定 sheet 顺序写出完整 workbook。"""
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(
+            output_path,
+            engine='xlsxwriter',
+            engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+        ) as writer:
             self.sheet_writer.write_dataframe_sheet(
                 writer,
                 '成本明细',
@@ -90,4 +94,10 @@ class CostingWorkbookWriter:
             )
             self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
-            error_log.to_excel(writer, sheet_name='error_log', index=False)
+            self.sheet_writer.write_dataframe_sheet(
+                writer,
+                'error_log',
+                error_log,
+                numeric_columns=set(),
+                freeze_panes='A2',
+            )

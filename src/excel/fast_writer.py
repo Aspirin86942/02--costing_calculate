@@ -89,6 +89,17 @@ def _write_cell(worksheet: Any, row_idx: int, col_idx: int, value: object, cell_
     worksheet.write(row_idx, col_idx, value, cell_format)
 
 
+def _coerce_row_value_for_excel(value: object) -> object:
+    """把行值统一成 xlsxwriter 适配类型，避免 NaN 被写成文本。"""
+    if _is_blank_excel_value(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Real):
+        return float(value)
+    return value
+
+
 class FastSheetWriter:
     """负责把 DataFrame/section 数据写成 xlsxwriter sheet。"""
 
@@ -108,6 +119,32 @@ class FastSheetWriter:
         column_formats = {column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns}
         write_df = self._coerce_excel_numeric_columns(df, set(column_formats))
         return self._write_flat_dataframe(
+            writer,
+            sheet_name,
+            write_df,
+            column_formats=column_formats,
+            freeze_panes=freeze_panes,
+            fixed_width=fixed_width,
+            auto_filter=auto_filter,
+            apply_column_widths=apply_column_widths,
+        )
+
+    def write_dataframe_fast(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        df: pd.DataFrame,
+        *,
+        numeric_columns: set[str],
+        freeze_panes: str | None = 'A2',
+        fixed_width: int | None = None,
+        auto_filter: bool = True,
+        apply_column_widths: bool = True,
+    ) -> Any:
+        """写入热点 DataFrame sheet，数据行优先走 write_row 流式路径。"""
+        column_formats = {column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns}
+        write_df = self._coerce_excel_numeric_columns(df, set(column_formats))
+        return self._write_flat_dataframe_fast(
             writer,
             sheet_name,
             write_df,
@@ -468,6 +505,74 @@ class FastSheetWriter:
                         ),
                     )
                 worksheet.set_column(col_idx, col_idx, width, default_format)
+
+        return worksheet
+
+    def _write_flat_dataframe_fast(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        df: pd.DataFrame,
+        *,
+        column_formats: dict[str, str],
+        freeze_panes: str | None,
+        fixed_width: int | None,
+        auto_filter: bool = True,
+        apply_column_widths: bool = True,
+    ) -> Any:
+        workbook = writer.book
+        worksheet = workbook.add_worksheet(sheet_name)
+        writer.sheets[sheet_name] = worksheet
+
+        header_format = workbook.add_format(
+            {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
+        )
+        text_format = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
+        number_format_cache: dict[str, Any] = {}
+
+        columns = df.columns.tolist()
+        for col_idx, column_name in enumerate(columns):
+            worksheet.write(0, col_idx, column_name, header_format)
+
+        if apply_column_widths:
+            fixed_width_value = _resolve_fixed_width(fixed_width)
+            if fixed_width_value is None:
+                width_map = estimate_flat_column_widths(df)
+            else:
+                width_map = {
+                    column_idx: fixed_width_value
+                    for column_idx in range(1, len(columns) + 1)
+                }
+
+            for col_idx, column_name in enumerate(columns):
+                width = width_map.get(col_idx + 1, 12.0)
+                number_format = column_formats.get(column_name)
+                default_format = text_format
+                if number_format is not None:
+                    default_format = number_format_cache.setdefault(
+                        number_format,
+                        workbook.add_format(
+                            {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
+                        ),
+                    )
+                worksheet.set_column(col_idx, col_idx, width, default_format)
+
+        for row_offset, row_data in enumerate(df.itertuples(index=False, name=None)):
+            excel_row = row_offset + 1
+            # write_row 是热点路径核心：逐行写出可显著减少 Python 层逐单元格调用开销。
+            worksheet.write_row(
+                excel_row,
+                0,
+                tuple(_coerce_row_value_for_excel(value) for value in row_data),
+            )
+
+        if freeze_panes is not None:
+            freeze_row, freeze_col = _freeze_panes_to_rc(freeze_panes)
+            worksheet.freeze_panes(freeze_row, freeze_col)
+
+        if auto_filter and columns:
+            filter_end_row = max(len(df), 1)
+            worksheet.autofilter(0, 0, filter_end_row, len(columns) - 1)
 
         return worksheet
 

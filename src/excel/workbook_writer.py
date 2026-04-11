@@ -70,7 +70,7 @@ class CostingWorkbookWriter:
             engine='xlsxwriter',
             engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
         ) as writer:
-            self.sheet_writer.write_dataframe_sheet(
+            self.sheet_writer.write_dataframe_fast(
                 writer,
                 '成本明细',
                 detail_df,
@@ -78,7 +78,7 @@ class CostingWorkbookWriter:
                 freeze_panes='A2',
                 fixed_width=15,
             )
-            self.sheet_writer.write_dataframe_sheet(
+            self.sheet_writer.write_dataframe_fast(
                 writer,
                 '产品数量统计',
                 qty_sheet_df,
@@ -97,7 +97,7 @@ class CostingWorkbookWriter:
             )
             self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
-            self.sheet_writer.write_dataframe_sheet(
+            self.sheet_writer.write_dataframe_fast(
                 writer,
                 'error_log',
                 error_log,

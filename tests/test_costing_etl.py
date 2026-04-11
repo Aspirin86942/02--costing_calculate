@@ -8,6 +8,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
+from src.excel.workbook_writer import CostingWorkbookWriter
 from src.etl.costing_etl import CostingWorkbookETL
 
 
@@ -230,6 +231,41 @@ class TestCostingWorkbookETL:
         result = etl._filter_fact_df_for_analysis(fact_df)
 
         assert result['product_code'].tolist() == ['CUSTOM-002', 'CUSTOM-001']
+
+
+def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
+    """热点 sheet 应路由到 write_dataframe_fast。"""
+    workbook_writer = CostingWorkbookWriter()
+    output_path = tmp_path / 'routed.xlsx'
+
+    detail_df = pd.DataFrame([{'本期完工单位成本': 10.0, '本期完工金额': 100.0}])
+    qty_sheet_df = pd.DataFrame(
+        [
+            {
+                '本期完工金额': 165.0,
+                '本期完工直接材料合计完工金额': 100.0,
+            }
+        ]
+    )
+    error_log_df = pd.DataFrame([{'error_code': 'E001', 'message': 'sample'}])
+    work_order_sheet = FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'})
+
+    with (
+        patch.object(workbook_writer.sheet_writer, 'write_dataframe_fast') as fast_writer_mock,
+        patch.object(workbook_writer.sheet_writer, 'write_dataframe_sheet') as dataframe_writer_mock,
+    ):
+        workbook_writer.write_workbook(
+            output_path,
+            detail_df=detail_df,
+            qty_sheet_df=qty_sheet_df,
+            analysis_tables={},
+            work_order_sheet=work_order_sheet,
+            product_anomaly_sections=[],
+            error_log=error_log_df,
+        )
+
+    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
+    dataframe_writer_mock.assert_not_called()
 
 
 def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:

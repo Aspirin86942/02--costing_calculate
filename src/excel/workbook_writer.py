@@ -76,6 +76,7 @@ class CostingWorkbookWriter:
                 detail_df,
                 numeric_columns=DETAIL_TWO_DECIMAL_COLUMNS,
                 freeze_panes='A2',
+                fixed_width=15,
             )
             self.sheet_writer.write_dataframe_sheet(
                 writer,
@@ -83,6 +84,7 @@ class CostingWorkbookWriter:
                 qty_sheet_df,
                 numeric_columns=_resolve_qty_numeric_columns(qty_sheet_df),
                 freeze_panes='A2',
+                fixed_width=15,
             )
             for sheet_name, sections in analysis_tables.items():
                 self.sheet_writer.write_analysis_sheet(writer, sheet_name, sections)
@@ -91,6 +93,7 @@ class CostingWorkbookWriter:
                 '按工单按产品异常值分析',
                 work_order_sheet,
                 freeze_panes='A2',
+                fixed_width=15,
             )
             self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)

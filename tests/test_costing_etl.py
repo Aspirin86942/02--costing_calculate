@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
 from src.etl.costing_etl import CostingWorkbookETL
@@ -30,6 +31,28 @@ def _rgb_suffix(color) -> str | None:
     if rgb is None:
         return None
     return rgb[-6:]
+
+
+def _assert_header_columns_fixed_width(
+    worksheet,
+    header_map: dict[str, int],
+    *,
+    expected_width: float = 15.0,
+) -> None:
+    dimensions = list(worksheet.column_dimensions.values())
+    for col_idx in header_map.values():
+        width = None
+        for dimension in dimensions:
+            if dimension.width is None:
+                continue
+            if dimension.min <= col_idx <= dimension.max:
+                width = float(dimension.width)
+                break
+        if width is None:
+            column_letter = get_column_letter(col_idx)
+            fallback_width = worksheet.column_dimensions[column_letter].width
+            width = None if fallback_width is None else float(fallback_width)
+        assert width == expected_width
 
 
 class TestCostingWorkbookETL:
@@ -485,12 +508,14 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     assert ws_detail.freeze_panes == 'A2'
     assert ws_detail.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
     assert ws_detail.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(ws_detail, detail_headers)
 
     ws_qty = wb['产品数量统计']
     qty_headers = _build_header_map(ws_qty)
     assert ws_qty.freeze_panes == 'A2'
     assert ws_qty.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
     assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(ws_qty, qty_headers)
 
 
 def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:

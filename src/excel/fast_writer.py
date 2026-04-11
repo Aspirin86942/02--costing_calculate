@@ -122,7 +122,9 @@ class FastSheetWriter:
         apply_column_widths: bool = True,
     ) -> Any:
         """写入普通 DataFrame sheet，并按列名应用数值格式。"""
-        column_formats = {column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns}
+        column_formats = {
+            column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns
+        }
         write_df = self._coerce_excel_numeric_columns(df, set(column_formats))
         return self._write_flat_dataframe(
             writer,
@@ -148,7 +150,9 @@ class FastSheetWriter:
         apply_column_widths: bool = True,
     ) -> Any:
         """写入热点 DataFrame sheet，数据行优先走 write_row 流式路径。"""
-        column_formats = {column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns}
+        column_formats = {
+            column_name: EXCEL_TWO_DECIMAL_FORMAT for column_name in numeric_columns if column_name in df.columns
+        }
         write_df = self._coerce_excel_numeric_columns(df, set(column_formats))
         return self._write_flat_dataframe_fast(
             writer,
@@ -532,10 +536,7 @@ class FastSheetWriter:
             if fixed_width_value is None:
                 width_map = estimate_flat_column_widths(df)
             else:
-                width_map = {
-                    column_idx: fixed_width_value
-                    for column_idx in range(1, len(columns) + 1)
-                }
+                width_map = dict.fromkeys(range(1, len(columns) + 1), fixed_width_value)
 
             for col_idx, column_name in enumerate(columns):
                 width = width_map.get(col_idx + 1, 12.0)
@@ -593,12 +594,9 @@ class FastSheetWriter:
             if fixed_width_value is None:
                 width_map = estimate_flat_column_widths(df)
             else:
-                width_map = {
-                    column_idx: fixed_width_value
-                    for column_idx in range(1, len(columns) + 1)
-                }
+                width_map = dict.fromkeys(range(1, len(columns) + 1), fixed_width_value)
 
-            for col_idx, column_name in enumerate(columns):
+            for col_idx, _column_name in enumerate(columns):
                 width = width_map.get(col_idx + 1, 12.0)
                 default_format = numeric_format_by_col.get(col_idx, text_format)
                 worksheet.set_column(col_idx, col_idx, width, default_format)

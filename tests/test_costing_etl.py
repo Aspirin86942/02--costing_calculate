@@ -9,9 +9,9 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
+from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
-from src.etl.costing_etl import CostingWorkbookETL
 from tests.contracts._workbook_contract_helper import extract_highlight_semantics
 
 

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
+
+project_root = Path(__file__).resolve().parents[2]
+project_root_str = str(project_root)
+if project_root_str not in sys.path:
+    sys.path.insert(0, project_root_str)
 
 from tests.contracts._workbook_contract_helper import (
     build_default_contract_workbook,

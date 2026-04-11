@@ -7,6 +7,7 @@ from numbers import Real
 from typing import Any
 
 import pandas as pd
+from xlsxwriter.utility import xl_col_to_name
 
 from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock
 from src.excel.styles import (
@@ -98,6 +99,11 @@ def _coerce_row_value_for_excel(value: object) -> object:
     if isinstance(value, Real):
         return float(value)
     return value
+
+
+def _build_ascii_safe_excel_text(text: str) -> str:
+    """把中文文本转换为只含 ASCII 的 Excel 公式片段，避免 xlsxwriter 序列化成问号。"""
+    return '&'.join(f'UNICHAR({ord(char)})' for char in text)
 
 
 class FastSheetWriter:
@@ -294,7 +300,6 @@ class FastSheetWriter:
             column_formats=column_formats,
             freeze_panes=freeze_panes,
             fixed_width=fixed_width,
-            highlight_columns=WORK_ORDER_HIGHLIGHT_COLUMNS,
         )
 
     def write_product_anomaly_sheet(
@@ -381,9 +386,48 @@ class FastSheetWriter:
             for col_idx in range(max_col_overall):
                 worksheet.set_column(col_idx, col_idx, fixed_width, text_format)
 
-    def apply_work_order_highlights(self, worksheet: Any) -> None:
-        """兼容入口：高亮已在写入阶段完成，避免 constant_memory 下事后回写失败。"""
-        return None
+    def apply_work_order_highlights(
+        self,
+        workbook: Any,
+        worksheet: Any,
+        *,
+        columns: list[str],
+        max_row: int,
+    ) -> None:
+        """给工单异常页挂条件格式规则，由 Excel 打开时再渲染高亮。"""
+        if max_row <= 1:
+            return
+
+        header_map = {column_name: idx for idx, column_name in enumerate(columns)}
+        format_cache = {
+            flag_label: workbook.add_format(
+                {
+                    'bg_color': style['fill'],
+                    **({'font_color': style['font_color']} if 'font_color' in style else {}),
+                }
+            )
+            for flag_label, style in HIGHLIGHT_STYLE_MAP.items()
+        }
+
+        for value_column, flag_column in WORK_ORDER_HIGHLIGHT_COLUMNS:
+            value_idx = header_map.get(value_column)
+            flag_idx = header_map.get(flag_column)
+            if value_idx is None or flag_idx is None:
+                continue
+
+            flag_col_letter = xl_col_to_name(flag_idx)
+            for flag_label, cell_format in format_cache.items():
+                formula = f'=EXACT(${flag_col_letter}2,{_build_ascii_safe_excel_text(flag_label)})'
+                for target_idx in (value_idx, flag_idx):
+                    target_col_letter = xl_col_to_name(target_idx)
+                    worksheet.conditional_format(
+                        f'{target_col_letter}2:{target_col_letter}{max_row}',
+                        {
+                            'type': 'formula',
+                            'criteria': formula,
+                            'format': cell_format,
+                        },
+                    )
 
     def _write_flat_dataframe(
         self,

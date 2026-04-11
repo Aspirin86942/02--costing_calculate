@@ -95,7 +95,12 @@ class CostingWorkbookWriter:
                 freeze_panes='A2',
                 fixed_width=15,
             )
-            self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
+            self.sheet_writer.apply_work_order_highlights(
+                writer.book,
+                work_order_worksheet,
+                columns=work_order_sheet.data.columns.tolist(),
+                max_row=len(work_order_sheet.data) + 1,
+            )
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
             self.sheet_writer.write_dataframe_fast(
                 writer,

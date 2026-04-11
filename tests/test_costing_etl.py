@@ -11,6 +11,7 @@ from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomaly
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
 from src.etl.costing_etl import CostingWorkbookETL
+from tests.contracts._workbook_contract_helper import extract_highlight_semantics
 
 
 def _build_header_map(worksheet, header_row: int = 1) -> dict[str, int]:
@@ -26,13 +27,6 @@ def _find_title_row(worksheet, title: str) -> int:
         if worksheet.cell(row_idx, 1).value == title:
             return row_idx
     raise AssertionError(f'未找到标题行: {title}')
-
-
-def _rgb_suffix(color) -> str | None:
-    rgb = getattr(color, 'rgb', None)
-    if rgb is None:
-        return None
-    return rgb[-6:]
 
 
 def _assert_header_columns_fixed_width(
@@ -630,8 +624,8 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     _assert_header_columns_fixed_width(ws_qty, qty_headers)
 
 
-def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
-    """测试工单异常页会同步高亮值列和标记列。"""
+def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> None:
+    """测试工单异常页会写出条件格式规则，而不是直接回填单元格颜色。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -771,21 +765,32 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
     ):
         assert etl.process_file(input_path, output_path) is True
 
-    wb = load_workbook(output_path)
-    ws_work_order = wb['按工单按产品异常值分析']
-    headers = _build_header_map(ws_work_order)
+    highlight_semantics = extract_highlight_semantics(output_path)
 
-    dm_value = ws_work_order.cell(2, headers['直接材料单位完工成本'])
-    dm_flag = ws_work_order.cell(2, headers['直接材料异常标记'])
-    moh_labor_value = ws_work_order.cell(2, headers['制造费用_人工单位完工成本'])
-    moh_labor_flag = ws_work_order.cell(2, headers['制造费用_人工异常标记'])
-
-    assert _rgb_suffix(dm_value.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(dm_flag.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(moh_labor_value.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_flag.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_value.font.color) == 'FFFFFF'
-    assert _rgb_suffix(moh_labor_flag.font.color) == 'FFFFFF'
+    assert {
+        'sqref': 'J2:J2',
+        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
+        'fill': 'DDEBF7',
+        'font': None,
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'R2:R2',
+        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
+        'fill': 'DDEBF7',
+        'font': None,
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'N2:N2',
+        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
+        'fill': '4472C4',
+        'font': 'FFFFFF',
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'V2:V2',
+        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
+        'fill': '4472C4',
+        'font': 'FFFFFF',
+    } in highlight_semantics['rules']
 
 
 def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:

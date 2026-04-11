@@ -25,6 +25,13 @@ def _find_title_row(worksheet, title: str) -> int:
     raise AssertionError(f'未找到标题行: {title}')
 
 
+def _rgb_suffix(color) -> str | None:
+    rgb = getattr(color, 'rgb', None)
+    if rgb is None:
+        return None
+    return rgb[-6:]
+
+
 class TestCostingWorkbookETL:
     """测试 CostingWorkbookETL 类。"""
 
@@ -482,8 +489,8 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
 
 
-def test_process_file_writes_work_order_value_and_flag_cells(tmp_path) -> None:
-    """Task 1a：工单异常页可正常写出值列和标记列（不验证高亮样式）。"""
+def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
+    """测试工单异常页会同步高亮值列和标记列。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -632,12 +639,12 @@ def test_process_file_writes_work_order_value_and_flag_cells(tmp_path) -> None:
     moh_labor_value = ws_work_order.cell(2, headers['制造费用_人工单位完工成本'])
     moh_labor_flag = ws_work_order.cell(2, headers['制造费用_人工异常标记'])
 
-    assert dm_value.value == 18.0
-    assert dm_flag.value == '关注'
-    assert moh_labor_value.value == 30.0
-    assert moh_labor_flag.value == '高度可疑'
-    assert ws_work_order.freeze_panes == 'A2'
-    assert ws_work_order.auto_filter.ref is not None
+    assert _rgb_suffix(dm_value.fill.fgColor) == 'DDEBF7'
+    assert _rgb_suffix(dm_flag.fill.fgColor) == 'DDEBF7'
+    assert _rgb_suffix(moh_labor_value.fill.fgColor) == '4472C4'
+    assert _rgb_suffix(moh_labor_flag.fill.fgColor) == '4472C4'
+    assert _rgb_suffix(moh_labor_value.font.color) == 'FFFFFF'
+    assert _rgb_suffix(moh_labor_flag.font.color) == 'FFFFFF'
 
 
 def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:

@@ -20,6 +20,20 @@ from src.excel.styles import (
 _FREEZE_PANES_PATTERN = re.compile(r'^([A-Z]+)([1-9]\d*)$')
 # xlsxwriter 与 openpyxl 的列宽刻度不同，这里做最小换算以保持既有契约读取值为 15.0。
 _XLSXWRITER_WIDTH_FOR_FIXED_15 = 14.3
+WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ('直接材料单位完工成本', '直接材料异常标记'),
+    ('直接人工单位完工成本', '直接人工异常标记'),
+    ('制造费用单位完工成本', '制造费用异常标记'),
+    ('制造费用_其他单位完工成本', '制造费用_其他异常标记'),
+    ('制造费用_人工单位完工成本', '制造费用_人工异常标记'),
+    ('制造费用_机物料及低耗单位完工成本', '制造费用_机物料及低耗异常标记'),
+    ('制造费用_折旧单位完工成本', '制造费用_折旧异常标记'),
+    ('制造费用_水电费单位完工成本', '制造费用_水电费异常标记'),
+)
+HIGHLIGHT_STYLE_MAP: dict[str, dict[str, str]] = {
+    '关注': {'fill': '#DDEBF7'},
+    '高度可疑': {'fill': '#4472C4', 'font_color': '#FFFFFF'},
+}
 
 
 def _freeze_panes_to_rc(freeze_panes: str) -> tuple[int, int]:
@@ -52,6 +66,13 @@ def _resolve_fixed_width(fixed_width: int | None) -> float | None:
     if fixed_width == 15:
         return _XLSXWRITER_WIDTH_FOR_FIXED_15
     return float(fixed_width)
+
+
+def _resolve_highlight_style(flag_value: object) -> dict[str, str] | None:
+    """按异常标记解析高亮样式。"""
+    if flag_value is None:
+        return None
+    return HIGHLIGHT_STYLE_MAP.get(str(flag_value).strip())
 
 
 def _write_cell(worksheet: Any, row_idx: int, col_idx: int, value: object, cell_format: Any) -> None:
@@ -232,6 +253,7 @@ class FastSheetWriter:
             column_formats=column_formats,
             freeze_panes=freeze_panes,
             fixed_width=fixed_width,
+            highlight_columns=WORK_ORDER_HIGHLIGHT_COLUMNS,
         )
 
     def write_product_anomaly_sheet(
@@ -318,9 +340,67 @@ class FastSheetWriter:
             for col_idx in range(max_col_overall):
                 worksheet.set_column(col_idx, col_idx, fixed_width, text_format)
 
-    def apply_work_order_highlights(self, worksheet: Any) -> None:  # noqa: ARG002
-        """Task 1 暂不迁移工单异常页高亮，保持兼容占位。"""
-        return None
+    def apply_work_order_highlights(self, worksheet: Any) -> None:
+        """兼容入口：高亮已在写入阶段完成，避免 constant_memory 下事后回写失败。"""
+        if getattr(worksheet, '_codex_highlight_inline_processed', False):
+            return
+
+        cached_rows: list[tuple[object, ...]] | None = getattr(worksheet, '_codex_highlight_rows', None)
+        columns: list[str] | None = getattr(worksheet, '_codex_highlight_columns', None)
+        column_formats: dict[str, str] | None = getattr(worksheet, '_codex_highlight_column_formats', None)
+        workbook: Any | None = getattr(worksheet, '_codex_highlight_workbook', None)
+        if not cached_rows or not columns or column_formats is None or workbook is None:
+            return
+
+        header_map = {column_name: idx for idx, column_name in enumerate(columns)}
+        highlight_pairs: list[tuple[int, int]] = []
+        for value_column, flag_column in WORK_ORDER_HIGHLIGHT_COLUMNS:
+            value_idx = header_map.get(value_column)
+            flag_idx = header_map.get(flag_column)
+            if value_idx is not None and flag_idx is not None:
+                highlight_pairs.append((value_idx, flag_idx))
+        if not highlight_pairs:
+            return
+
+        highlight_format_cache: dict[tuple[str, str, str, str], Any] = {}
+        for row_offset, row_data in enumerate(cached_rows):
+            row_style_by_col: dict[int, dict[str, str]] = {}
+            for value_idx, flag_idx in highlight_pairs:
+                highlight_style = _resolve_highlight_style(row_data[flag_idx])
+                if highlight_style is None:
+                    continue
+                row_style_by_col[value_idx] = highlight_style
+                row_style_by_col[flag_idx] = highlight_style
+            if not row_style_by_col:
+                continue
+
+            excel_row = row_offset + 1
+            for col_idx, highlight_style in row_style_by_col.items():
+                column_name = columns[col_idx]
+                number_format = column_formats.get(column_name)
+                align = 'right' if number_format is not None else 'left'
+                format_key = (
+                    number_format or '',
+                    align,
+                    highlight_style['fill'],
+                    highlight_style.get('font_color', ''),
+                )
+                cell_format = highlight_format_cache.get(format_key)
+                if cell_format is None:
+                    format_config: dict[str, Any] = {
+                        'align': align,
+                        'valign': 'vcenter',
+                        'border': 1,
+                        'bg_color': highlight_style['fill'],
+                    }
+                    if number_format is not None:
+                        format_config['num_format'] = number_format
+                    font_color = highlight_style.get('font_color')
+                    if font_color is not None:
+                        format_config['font_color'] = font_color
+                    cell_format = workbook.add_format(format_config)
+                    highlight_format_cache[format_key] = cell_format
+                _write_cell(worksheet, excel_row, col_idx, row_data[col_idx], cell_format)
 
     def _write_flat_dataframe(
         self,
@@ -331,6 +411,7 @@ class FastSheetWriter:
         column_formats: dict[str, str],
         freeze_panes: str,
         fixed_width: int | None,
+        highlight_columns: tuple[tuple[str, str], ...] | None = None,
     ) -> Any:
         workbook = writer.book
         worksheet = workbook.add_worksheet(sheet_name)
@@ -341,24 +422,78 @@ class FastSheetWriter:
         )
         text_format = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
         number_format_cache: dict[str, Any] = {}
+        highlight_format_cache: dict[tuple[str, str, str, str], Any] = {}
 
         columns = df.columns.tolist()
+        header_map = {column_name: idx for idx, column_name in enumerate(columns)}
+        highlight_pairs: list[tuple[int, int]] = []
+        if highlight_columns is not None:
+            for value_column, flag_column in highlight_columns:
+                value_idx = header_map.get(value_column)
+                flag_idx = header_map.get(flag_column)
+                if value_idx is None or flag_idx is None:
+                    continue
+                highlight_pairs.append((value_idx, flag_idx))
+
         for col_idx, column_name in enumerate(columns):
             worksheet.write(0, col_idx, column_name, header_format)
 
+        cached_rows: list[tuple[object, ...]] | None = None
+        if highlight_pairs:
+            cached_rows = []
+
         for row_offset, row_data in enumerate(df.itertuples(index=False, name=None)):
+            if cached_rows is not None:
+                cached_rows.append(tuple(row_data))
             excel_row = row_offset + 1
+            row_style_by_col: dict[int, dict[str, str]] = {}
+            for value_idx, flag_idx in highlight_pairs:
+                highlight_style = _resolve_highlight_style(row_data[flag_idx])
+                if highlight_style is None:
+                    continue
+                row_style_by_col[value_idx] = highlight_style
+                row_style_by_col[flag_idx] = highlight_style
+
             for col_idx, value in enumerate(row_data):
                 number_format = column_formats.get(columns[col_idx])
                 if number_format is None:
-                    cell_format = text_format
+                    base_cell_format = text_format
+                    align = 'left'
                 else:
-                    cell_format = number_format_cache.setdefault(
+                    base_cell_format = number_format_cache.setdefault(
                         number_format,
                         workbook.add_format(
                             {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
                         ),
                     )
+                    align = 'right'
+
+                highlight_style = row_style_by_col.get(col_idx)
+                if highlight_style is None:
+                    cell_format = base_cell_format
+                else:
+                    format_key = (
+                        number_format or '',
+                        align,
+                        highlight_style['fill'],
+                        highlight_style.get('font_color', ''),
+                    )
+                    cell_format = highlight_format_cache.get(format_key)
+                    if cell_format is None:
+                        format_config: dict[str, Any] = {
+                            'align': align,
+                            'valign': 'vcenter',
+                            'border': 1,
+                            'bg_color': highlight_style['fill'],
+                        }
+                        if number_format is not None:
+                            format_config['num_format'] = number_format
+                        font_color = highlight_style.get('font_color')
+                        if font_color is not None:
+                            format_config['font_color'] = font_color
+                        cell_format = workbook.add_format(format_config)
+                        highlight_format_cache[format_key] = cell_format
+
                 _write_cell(worksheet, excel_row, col_idx, value, cell_format)
 
         freeze_row, freeze_col = _freeze_panes_to_rc(freeze_panes)
@@ -389,6 +524,13 @@ class FastSheetWriter:
                     ),
                 )
             worksheet.set_column(col_idx, col_idx, width, default_format)
+
+        worksheet._codex_highlight_inline_processed = bool(highlight_pairs)
+        if cached_rows is not None:
+            worksheet._codex_highlight_rows = cached_rows
+            worksheet._codex_highlight_columns = columns
+            worksheet._codex_highlight_column_formats = column_formats
+            worksheet._codex_highlight_workbook = workbook
 
         return worksheet
 

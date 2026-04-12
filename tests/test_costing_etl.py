@@ -439,6 +439,30 @@ def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> Non
     assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
 
 
+def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_column() -> None:
+    detail_df = pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}])
+    qty_sheet_df = pd.DataFrame(
+        [
+            {'月份': '2025年01期', '成本中心名称': float('nan'), '本期完工数量': 1.0, '本期完工金额': 100.0},
+            {'月份': '2025年02期', '成本中心名称': '集成检测部', '本期完工数量': 2.0, '本期完工金额': 200.0},
+        ]
+    )
+
+    models = build_sheet_models(
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[],
+        error_log=pd.DataFrame(columns=['error_type', 'message']),
+    )
+
+    qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
+    rows = list(qty_model.rows_factory())
+    assert rows[0][1] is None
+    assert rows[1][1] == '集成检测部'
+
+
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 from unittest.mock import patch
 
-import logging
 import pandas as pd
 import polars as pl
 from openpyxl import Workbook
@@ -260,11 +260,65 @@ def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tm
     )
 
 
+def test_workbook_ingestor_openpyxl_fallback_normalizes_nan_in_text_columns(tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'fallback-with-null.xlsx'
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = 'FallbackSheet'
+    worksheet.append(['metadata'])
+    worksheet.append(['unused'])
+    worksheet.append(['年期', '产品编码'])
+    worksheet.append(['月份', '产品名称'])
+    worksheet.append(['2025年1期', 'P001'])
+    worksheet.append(['2025年2期', None])
+    workbook.save(workbook_path)
+
+    ingestor = WorkbookIngestor()
+    with patch.object(ingestor, '_load_with_calamine', side_effect=RuntimeError('boom')):
+        result = ingestor.load(workbook_path, skip_rows=2)
+
+    assert result.sheet_name == 'FallbackSheet'
+    assert result.frame.columns == ['column_0', 'column_1']
+    assert result.frame.row(0) == ('2025年1期', 'P001')
+    assert result.frame.row(1) == ('2025年2期', None)
+
+
+def test_workbook_ingestor_openpyxl_fallback_allows_mixed_int_and_float_columns(tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'fallback-with-mixed-numeric.xlsx'
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = 'FallbackSheet'
+    worksheet.append(['metadata'])
+    worksheet.append(['unused'])
+    worksheet.append(['年期', '本期完工数量'])
+    worksheet.append(['月份', '数量'])
+    worksheet.append(['2025年1期', 1])
+    worksheet.append(['2025年2期', 0.8459])
+    workbook.save(workbook_path)
+
+    ingestor = WorkbookIngestor()
+    with patch.object(ingestor, '_load_with_calamine', side_effect=RuntimeError('boom')):
+        result = ingestor.load(workbook_path, skip_rows=2)
+
+    assert result.frame.columns == ['column_0', 'column_1']
+    assert result.frame.row(0) == ('2025年1期', 1.0)
+    assert result.frame.row(1) == ('2025年2期', 0.8459)
+
+
 def test_build_normalized_cost_frame_removes_totals_and_skips_integrated_vendor_fill() -> None:
     raw = RawWorkbookFrame(
         sheet_name='成本计算单',
         header_rows=(
-            ('年期', '成本中心名称', '产品编码', '供应商编码', '成本项目名称', '工单编号', '子项物料编码', '本期完工金额'),
+            (
+                '年期',
+                '成本中心名称',
+                '产品编码',
+                '供应商编码',
+                '成本项目名称',
+                '工单编号',
+                '子项物料编码',
+                '本期完工金额',
+            ),
             ('', '', '', '', '', '', '', ''),
         ),
         frame=pl.DataFrame(

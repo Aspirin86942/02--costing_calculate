@@ -45,9 +45,12 @@ class WorkbookIngestor:
         data_df = fallback_df.iloc[2:].reset_index(drop=True)
         columns = [f'column_{idx}' for idx in range(len(data_df.columns))]
         data_df.columns = columns
-        frame_dict = {column: data_df[column].tolist() for column in columns}
+        frame_dict = {
+            column: [None if pd.isna(value) else value for value in data_df[column].tolist()]
+            for column in columns
+        }
         return RawWorkbookFrame(
             sheet_name=sheet_name,
             header_rows=(header_top, header_bottom),
-            frame=pl.DataFrame(frame_dict),
+            frame=pl.DataFrame(frame_dict, strict=False),
         )

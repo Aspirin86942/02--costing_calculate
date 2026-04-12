@@ -248,7 +248,11 @@ def _to_polars_frame(frame: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
     if isinstance(frame, pl.DataFrame):
         return frame.clone()
     # 使用 to_dict(list) 保持 pyarrow-free，兼容 test 环境最小依赖。
-    return pl.DataFrame(frame.to_dict(orient='list'))
+    frame_dict = {
+        column_name: [None if pd.isna(value) else value for value in values]
+        for column_name, values in frame.to_dict(orient='list').items()
+    }
+    return pl.DataFrame(frame_dict, strict=False)
 
 
 def _resolve_qty_two_decimal_columns(columns: tuple[str, ...]) -> set[str]:

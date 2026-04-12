@@ -63,7 +63,6 @@ class CostingWorkbookWriter:
         analysis_tables: dict[str, list[SectionBlock]],
         work_order_sheet: FlatSheet,
         product_anomaly_sections: list[ProductAnomalySection],
-        error_log: pd.DataFrame,
     ) -> None:
         """按固定 sheet 顺序写出完整 workbook。"""
         with pd.ExcelWriter(
@@ -103,15 +102,6 @@ class CostingWorkbookWriter:
                 max_row=len(work_order_sheet.data) + 1,
             )
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
-            self.sheet_writer.write_dataframe_fast(
-                writer,
-                'error_log',
-                error_log,
-                numeric_columns=set(),
-                freeze_panes=None,
-                auto_filter=False,
-                apply_column_widths=False,
-            )
 
     def write_workbook_from_models(self, output_path: Path, *, sheet_models: Sequence[SheetModel]) -> None:
         """按 SheetModel 契约写出完整 workbook。"""

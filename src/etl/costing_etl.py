@@ -212,6 +212,7 @@ class CostingWorkbookETL:
         )
         self.last_quality_metrics: tuple[QualityMetric, ...] = ()
         self.last_error_log_count: int = 0
+        self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         ensure_directories()
 
     def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
@@ -383,6 +384,7 @@ class CostingWorkbookETL:
             total_start = perf_counter()
             self.last_quality_metrics = ()
             self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame()
             logger.info('Processing file: %s', input_path)
 
             payload = self.pipeline.build_workbook_payload(
@@ -392,6 +394,7 @@ class CostingWorkbookETL:
             )
             self.last_quality_metrics = payload.quality_metrics
             self.last_error_log_count = payload.error_log_count
+            self.last_error_log_frame = payload.error_log_export.copy()
             self._log_quality_metrics(self.last_quality_metrics)
             logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
             for stage_name, seconds in payload.stage_timings.items():
@@ -406,9 +409,13 @@ class CostingWorkbookETL:
             logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)
             logger.info('Output saved: %s', output_path)
             if self.last_error_log_count > 0:
-                logger.warning('Detected %s data quality issues, check sheet error_log', self.last_error_log_count)
+                logger.warning(
+                    'Detected %s data quality issues, error_log CSV export is required',
+                    self.last_error_log_count,
+                )
             return True
         except Exception as exc:
+            self.last_error_log_frame = pd.DataFrame()
             logger.error('Processing failed: %s', exc, exc_info=True)
             return False
 

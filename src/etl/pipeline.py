@@ -54,6 +54,14 @@ def _sanitize_error_log_frame(error_log: pd.DataFrame | pl.DataFrame) -> pd.Data
     return sanitized
 
 
+def _to_error_log_export_frame(error_log: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
+    """统一产出适合 CSV 导出的 pandas error_log。"""
+    sanitized = _sanitize_error_log_frame(error_log)
+    if isinstance(sanitized, pl.DataFrame):
+        return pd.DataFrame(sanitized.to_dict(as_series=False))
+    return sanitized
+
+
 class CostingEtlPipeline:
     """组合读取、清洗、拆表各阶段。"""
 
@@ -224,14 +232,12 @@ class CostingEtlPipeline:
         stage_timings['analysis'] = perf_counter() - analysis_start
 
         presentation_start = perf_counter()
-        sanitized_error_log = _sanitize_error_log_frame(artifacts.error_log)
         sheet_models = build_sheet_models(
             detail_df=split_result.detail_df,
             qty_sheet_df=artifacts.qty_sheet_df,
             fact_bundle=artifacts.fact_bundle,
             work_order_sheet=artifacts.work_order_sheet,
             product_anomaly_sections=artifacts.product_anomaly_sections,
-            error_log=sanitized_error_log,
         )
         stage_timings['presentation'] = perf_counter() - presentation_start
 
@@ -240,6 +246,7 @@ class CostingEtlPipeline:
             quality_metrics=artifacts.quality_metrics,
             error_log_count=len(artifacts.error_log),
             stage_timings=stage_timings,
+            error_log_export=_to_error_log_export_frame(artifacts.error_log),
         )
 
     def split_sheets(self, df_raw: pd.DataFrame, df_filled: pd.DataFrame) -> SplitResult:

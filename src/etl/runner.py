@@ -44,6 +44,12 @@ def build_quality_log_text(
     return '\n'.join(lines)
 
 
+def write_error_log_csv(*, output_path: Path, error_log_frame) -> None:
+    """将 error_log 明细独立导出为 CSV，避免拖慢 workbook 导出。"""
+    # 这里使用 utf-8-sig，是为了让业务侧直接用 Excel 打开 CSV 时保持中文列名不乱码。
+    error_log_frame.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+
 def run_pipeline(config: PipelineConfig) -> int:
     """执行指定管线，输出处理后的 workbook 和同名质量日志。"""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -56,6 +62,7 @@ def run_pipeline(config: PipelineConfig) -> int:
     config.processed_dir.mkdir(parents=True, exist_ok=True)
     output_file = config.processed_dir / f'{input_file.stem}_处理后.xlsx'
     log_file = config.processed_dir / f'{input_file.stem}_处理后.log'
+    error_log_csv_file = config.processed_dir / f'{input_file.stem}_处理后_error_log.csv'
     etl = CostingWorkbookETL(
         skip_rows=2,
         product_order=config.product_order,
@@ -66,6 +73,7 @@ def run_pipeline(config: PipelineConfig) -> int:
         logger.error('处理失败: %s', input_file.name)
         return 1
 
+    write_error_log_csv(output_path=error_log_csv_file, error_log_frame=etl.last_error_log_frame)
     quality_log = build_quality_log_text(
         pipeline_name=config.name,
         input_path=input_file,

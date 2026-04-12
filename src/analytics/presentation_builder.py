@@ -113,12 +113,10 @@ def build_sheet_models(
     fact_bundle: FactBundle | None,
     work_order_sheet: FlatSheet,
     product_anomaly_sections: list[ProductAnomalySection],
-    error_log: pd.DataFrame | pl.DataFrame,
 ) -> tuple[SheetModel, ...]:
-    """构建 workbook 的 8 张标准 SheetModel。"""
+    """构建 workbook 的 7 张标准 SheetModel。"""
     detail_frame = _to_polars_frame(detail_df)
     qty_frame = _to_polars_frame(qty_sheet_df)
-    error_frame = _to_polars_frame(error_log)
 
     summary_source = (
         fact_bundle.product_summary_fact
@@ -171,23 +169,12 @@ def build_sheet_models(
         freeze_panes='A6',
         fixed_width=15.0,
     )
-    error_log_model = dataframe_to_sheet_model(
-        sheet_name='error_log',
-        frame=error_frame,
-        column_types=dict.fromkeys(error_frame.columns, 'text'),
-        number_formats={},
-        freeze_panes=None,
-        auto_filter=False,
-        fixed_width=None,
-    )
-
     return (
         detail_model,
         qty_model,
         *analysis_models,
         work_order_model,
         product_anomaly_model,
-        error_log_model,
     )
 
 

@@ -7,8 +7,7 @@
       "直接人工_价量比",
       "制造费用_价量比",
       "按工单按产品异常值分析",
-      "按产品异常值分析",
-      "error_log"
+      "按产品异常值分析"
     ],
     "sheets": {
       "成本明细": {
@@ -293,31 +292,6 @@
         },
         "column_widths": {
           "A": 15.0
-        }
-      },
-      "error_log": {
-        "kind": "flat",
-        "freeze_panes": null,
-        "auto_filter": null,
-        "columns": [
-          "row_id",
-          "cost_bucket",
-          "product_code",
-          "product_name",
-          "period",
-          "issue_type",
-          "field_name",
-          "original_value",
-          "lhs",
-          "rhs",
-          "diff",
-          "reason",
-          "action",
-          "retryable"
-        ],
-        "number_formats": {},
-        "column_widths": {
-          "A": 9.14
         }
       }
     }

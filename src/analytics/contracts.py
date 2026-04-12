@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 import polars as pl
@@ -69,6 +69,7 @@ class WorkbookPayload:
     quality_metrics: tuple[QualityMetric, ...]
     error_log_count: int
     stage_timings: Mapping[str, float]
+    error_log_export: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @dataclass

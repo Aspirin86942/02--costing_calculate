@@ -83,7 +83,6 @@ def _build_workbook_payload_from_artifacts(
         fact_bundle=artifacts.fact_bundle,
         work_order_sheet=artifacts.work_order_sheet,
         product_anomaly_sections=artifacts.product_anomaly_sections,
-        error_log=error_log,
     )
     return WorkbookPayload(
         sheet_models=sheet_models,
@@ -97,6 +96,7 @@ def _build_workbook_payload_from_artifacts(
             'analysis': 4.0,
             'presentation': 5.0,
         },
+        error_log_export=error_log,
     )
 
 
@@ -304,7 +304,6 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
             }
         ]
     )
-    error_log_df = pd.DataFrame([{'error_code': 'E001', 'message': 'sample'}])
     work_order_sheet = FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'})
 
     with (
@@ -318,10 +317,9 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
             analysis_tables={},
             work_order_sheet=work_order_sheet,
             product_anomaly_sections=[],
-            error_log=error_log_df,
         )
 
-    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
+    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计']
     dataframe_writer_mock.assert_not_called()
 
 
@@ -430,10 +428,9 @@ def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> Non
             fact_bundle=None,
             work_order_sheet=work_order_sheet,
             product_anomaly_sections=product_sections,
-            error_log=pd.DataFrame(columns=['error_type', 'message']),
         )
 
-    assert len(models) == 8
+    assert len(models) == 7
     product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
     assert product_model.freeze_panes == 'A6'
     assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
@@ -454,7 +451,6 @@ def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_col
         fact_bundle=None,
         work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
         product_anomaly_sections=[],
-        error_log=pd.DataFrame(columns=['error_type', 'message']),
     )
 
     qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
@@ -483,7 +479,6 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
                 outlier_cells=set(),
             )
         ],
-        error_log=pd.DataFrame(columns=['error_type', 'message']),
     )
 
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
@@ -523,7 +518,6 @@ def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Pa
         fact_bundle=None,
         work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
         product_anomaly_sections=[],
-        error_log=pd.DataFrame(columns=['error_type', 'message']),
     )
 
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
@@ -579,7 +573,6 @@ def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> Non
             fact_bundle=fact_bundle,
             work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
             product_anomaly_sections=[],
-            error_log=pd.DataFrame(columns=['error_type', 'message']),
         )
 
     direct_material_model = next(model for model in models if model.sheet_name == '直接材料_价量比')
@@ -782,10 +775,9 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         '制造费用_价量比',
         '按工单按产品异常值分析',
         '按产品异常值分析',
-        'error_log',
     }
     assert set(xls.sheet_names) == expected_sheets
-    assert len(xls.sheet_names) == 8
+    assert len(xls.sheet_names) == 7
 
     wb = load_workbook(output_path)
     ws_detail = wb['成本明细']
@@ -854,10 +846,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_product['A3'].value == '产品编码'
     assert ws_product['A4'].value == 'GB_C.D.B0040AA'
     assert ws_product.freeze_panes == 'A6'
-
-    ws_error_log = wb['error_log']
-    assert ws_error_log.freeze_panes is None
-    assert ws_error_log.auto_filter.ref is None
+    assert 'error_log' not in wb.sheetnames
 
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
     assert '本期完工数量缺失率' not in quality_metrics
@@ -867,7 +856,9 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert str(quality_metrics['工单异常分析输出行数']) == '1'
     assert str(quality_metrics['因完工数量无效被过滤行数']) == '1'
     assert str(quality_metrics['因总完工成本为空被过滤行数']) == '1'
-    assert etl.last_error_log_count == wb['error_log'].max_row - 1
+    assert etl.last_error_log_count == len(etl.last_error_log_frame)
+    assert not etl.last_error_log_frame.empty
+    assert 'issue_type' in etl.last_error_log_frame.columns
 
 
 def test_process_file_logs_new_payload_stage_timings(caplog, tmp_path) -> None:
@@ -908,7 +899,7 @@ def test_process_file_logs_new_payload_stage_timings(caplog, tmp_path) -> None:
 
 
 def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
-    """轻量导出骨架：仍写出8张sheet，关键明细页保留A2冻结和数值格式。"""
+    """轻量导出骨架：仍写出7张sheet，关键明细页保留A2冻结和数值格式。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -954,7 +945,7 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    assert len(xls.sheet_names) == 8
+    assert len(xls.sheet_names) == 7
     assert set(xls.sheet_names) == {
         '成本明细',
         '产品数量统计',
@@ -963,7 +954,6 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         '制造费用_价量比',
         '按工单按产品异常值分析',
         '按产品异常值分析',
-        'error_log',
     }
 
     wb = load_workbook(output_path)

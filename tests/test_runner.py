@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
 from src.config.pipelines import PipelineConfig
 from src.etl.runner import find_input_files, run_pipeline
@@ -58,6 +60,7 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
                 QualityMetric('分析覆盖率', '可参与分析占比', '100.00%', '白名单工单覆盖率'),
             )
             self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame(columns=['row_id', 'issue_type', 'message'])
             captured['standalone_cost_items'] = standalone_cost_items
 
         def process_file(self, input_path: Path, output_path: Path) -> bool:
@@ -69,11 +72,17 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
     exit_code = run_pipeline(config)
     stdout = capsys.readouterr().out
     log_path = processed_dir / 'SK-成本计算单_处理后.log'
+    error_log_csv_path = processed_dir / 'SK-成本计算单_处理后_error_log.csv'
 
     assert exit_code == 0
     assert log_path.exists()
+    assert error_log_csv_path.exists()
     assert 'pipeline=sk' in stdout
     assert '可参与分析占比=100.00%' in log_path.read_text(encoding='utf-8')
+    pd.testing.assert_frame_equal(
+        pd.read_csv(error_log_csv_path, encoding='utf-8-sig'),
+        pd.DataFrame(columns=['row_id', 'issue_type', 'message']),
+    )
     assert captured['standalone_cost_items'] == config.standalone_cost_items
 
 
@@ -107,6 +116,12 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
         ),
         error_log_count=2,
         stage_timings={'ingest': 1.0, 'normalize': 2.0, 'fact': 3.0, 'analysis': 4.0, 'presentation': 5.0},
+        error_log_export=pd.DataFrame(
+            [
+                {'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT', 'message': 'missing amount'},
+                {'row_id': 'WO-002', 'issue_type': 'TOTAL_COST_MISMATCH', 'message': 'mismatch'},
+            ]
+        ),
     )
 
     def _fake_build_workbook_payload(
@@ -135,9 +150,11 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
     exit_code = run_pipeline(config)
     stdout = capsys.readouterr().out
     log_path = processed_dir / 'GB-成本计算单_处理后.log'
+    error_log_csv_path = processed_dir / 'GB-成本计算单_处理后_error_log.csv'
 
     assert exit_code == 0
     assert log_path.exists()
+    assert error_log_csv_path.exists()
     assert 'pipeline=gb' in stdout
     assert 'error_log_count=2' in stdout
     assert captured['input_path'] == input_file
@@ -145,3 +162,8 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
     assert captured['standalone_cost_items'] == ('委外加工费',)
     assert callable(captured['artifacts_transform'])
     assert captured['sheet_names'] == ['成本明细']
+    pd.testing.assert_frame_equal(
+        pd.read_csv(error_log_csv_path, encoding='utf-8-sig'),
+        payload.error_log_export,
+        check_dtype=False,
+    )

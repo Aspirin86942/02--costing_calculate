@@ -23,7 +23,9 @@ from src.analytics.contracts import (
     WorkbookPayload,
 )
 from src.etl.costing_etl import CostingWorkbookETL
+from src.etl.stages.normalizer import build_normalized_cost_frame
 from src.etl.stages.reader import load_raw_workbook
+from src.etl.stages.splitter import split_normalized_frames
 from src.etl.stages.workbook_ingestor import WorkbookIngestor
 
 
@@ -255,3 +257,99 @@ def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tm
         'falling back to openpyxl' in record.message and record.levelno >= logging.WARNING
         for record in caplog.records
     )
+
+
+def test_build_normalized_cost_frame_removes_totals_and_skips_integrated_vendor_fill() -> None:
+    raw = RawWorkbookFrame(
+        sheet_name='成本计算单',
+        header_rows=(
+            ('年期', '成本中心名称', '产品编码', '供应商编码', '成本项目名称', '工单编号', '子项物料编码', '本期完工金额'),
+            ('', '', '', '', '', '', '', ''),
+        ),
+        frame=pl.DataFrame(
+            {
+                'column_0': ['2025年1期', '2025年1期', '合计'],
+                'column_1': ['集成车间', '中心A', '中心A'],
+                'column_2': ['P001', 'P001', 'P001'],
+                'column_3': ['V001', None, 'V999'],
+                'column_4': [None, '直接材料', '直接材料'],
+                'column_5': ['WO-001', 'WO-001', 'WO-TOTAL'],
+                'column_6': [None, 'MAT-001', None],
+                'column_7': [None, 100, 100],
+            }
+        ),
+    )
+
+    normalized = build_normalized_cost_frame(
+        raw,
+        child_material_column='子项物料编码',
+        cost_item_column='成本项目名称',
+        period_column='年期',
+        fill_columns=['年期', '成本中心名称', '产品编码', '供应商编码'],
+        vendor_columns=['供应商编码'],
+        cost_center_column='成本中心名称',
+        integrated_workshop_name='集成车间',
+    )
+
+    rows = normalized.frame.select(['月份', '成本中心名称', '供应商编码']).to_dicts()
+    assert rows == [
+        {'月份': '2025年01期', '成本中心名称': '集成车间', '供应商编码': 'V001'},
+        {'月份': '2025年01期', '成本中心名称': '中心A', '供应商编码': None},
+    ]
+
+
+def test_split_normalized_frames_keeps_qty_and_detail_contracts() -> None:
+    normalized = build_normalized_cost_frame(
+        RawWorkbookFrame(
+            sheet_name='成本计算单',
+            header_rows=(
+                (
+                    '年期',
+                    '产品编码',
+                    '产品名称',
+                    '工单编号',
+                    '工单行号',
+                    '子项物料编码',
+                    '成本项目名称',
+                    '本期完工数量',
+                    '本期完工金额',
+                ),
+                ('', '', '', '', '', '', '', '', ''),
+            ),
+            frame=pl.DataFrame(
+                {
+                    'column_0': ['2025年1期', '2025年1期'],
+                    'column_1': ['P001', 'P001'],
+                    'column_2': ['产品A', '产品A'],
+                    'column_3': ['WO-001', 'WO-001'],
+                    'column_4': [1, 1],
+                    'column_5': [None, 'MAT-001'],
+                    'column_6': [None, '直接材料'],
+                    'column_7': [10, 10],
+                    'column_8': [100, 100],
+                }
+            ),
+        ),
+        child_material_column='子项物料编码',
+        cost_item_column='成本项目名称',
+        period_column='年期',
+        fill_columns=['年期', '产品编码', '产品名称', '工单编号', '工单行号'],
+        vendor_columns=[],
+        cost_center_column='成本中心名称',
+        integrated_workshop_name='集成车间',
+    )
+
+    split = split_normalized_frames(
+        normalized,
+        child_material_column='子项物料编码',
+        cost_item_column='成本项目名称',
+        order_number_column='工单编号',
+        filled_cost_item_column='Filled_成本项目',
+        qty_columns=['年期', '月份', '产品编码', '工单编号', '本期完工数量', '本期完工金额'],
+        detail_columns=['年期', '月份', '产品编码', '工单编号', '成本项目名称', '本期完工金额'],
+    )
+
+    assert split.qty_df.columns == ['年期', '月份', '产品编码', '工单编号', '本期完工数量', '本期完工金额']
+    assert split.detail_df.columns == ['年期', '月份', '产品编码', '工单编号', '成本项目名称', '本期完工金额']
+    assert split.qty_df.height == 1
+    assert split.detail_df.height == 1

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import polars as pl
 
-from src.analytics.contracts import SplitResult
+from src.analytics.contracts import NormalizedCostFrame, SplitResult
 from src.etl.utils import format_period_col
 
 
@@ -56,5 +57,57 @@ def split_detail_and_qty_sheets(
     actual_detail_columns = [column for column in detail_columns if column in detail_df.columns]
     if actual_detail_columns:
         detail_df = detail_df[actual_detail_columns]
+
+    return SplitResult(detail_df=detail_df, qty_df=qty_df)
+
+
+def split_normalized_frames(
+    normalized: NormalizedCostFrame,
+    *,
+    child_material_column: str,
+    cost_item_column: str,
+    order_number_column: str,
+    filled_cost_item_column: str,
+    qty_columns: list[str],
+    detail_columns: list[str],
+) -> SplitResult:
+    """基于标准化 Polars 数据拆出数量和明细契约。"""
+    frame = normalized.frame
+
+    if child_material_column in frame.columns:
+        material_tokens = pl.col(child_material_column).cast(pl.String).str.strip_chars()
+        has_material_mask = material_tokens.is_not_null() & material_tokens.ne('')
+        no_material_mask = material_tokens.is_null() | material_tokens.eq('')
+    else:
+        has_material_mask = pl.lit(False)
+        no_material_mask = pl.lit(True)
+
+    if cost_item_column in frame.columns:
+        cost_item_tokens = pl.col(cost_item_column).cast(pl.String).str.strip_chars()
+        no_cost_item_mask = cost_item_tokens.is_null() | cost_item_tokens.eq('')
+        expense_mask = no_material_mask & cost_item_tokens.is_not_null() & cost_item_tokens.ne('') & cost_item_tokens.ne('直接材料')
+    else:
+        no_cost_item_mask = pl.lit(True)
+        expense_mask = pl.lit(False)
+
+    if order_number_column in frame.columns:
+        order_tokens = pl.col(order_number_column).cast(pl.String).str.strip_chars()
+        has_order_mask = order_tokens.is_not_null() & order_tokens.ne('')
+    else:
+        has_order_mask = pl.lit(True)
+
+    qty_df = frame.filter(no_material_mask & no_cost_item_mask & has_order_mask)
+    detail_df = frame.filter(has_material_mask | expense_mask)
+
+    if filled_cost_item_column in detail_df.columns and cost_item_column in detail_df.columns:
+        detail_df = detail_df.with_columns(pl.col(filled_cost_item_column).alias(cost_item_column))
+
+    actual_qty_columns = [column for column in qty_columns if column in qty_df.columns]
+    if actual_qty_columns:
+        qty_df = qty_df.select(actual_qty_columns)
+
+    actual_detail_columns = [column for column in detail_columns if column in detail_df.columns]
+    if actual_detail_columns:
+        detail_df = detail_df.select(actual_detail_columns)
 
     return SplitResult(detail_df=detail_df, qty_df=qty_df)

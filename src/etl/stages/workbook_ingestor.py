@@ -36,14 +36,18 @@ class WorkbookIngestor:
         return RawWorkbookFrame(sheet_name=sheet.name, header_rows=(header_top, header_bottom), frame=frame)
 
     def _load_with_openpyxl(self, input_path: Path, *, skip_rows: int) -> RawWorkbookFrame:
-        fallback_df = pd.read_excel(input_path, header=None, skiprows=skip_rows, engine='openpyxl')
         # openpyxl 路径仅用于兼容，仍需保证列名格式一致
+        with pd.ExcelFile(input_path, engine='openpyxl') as excel:
+            sheet_name = excel.sheet_names[0]
+            fallback_df = excel.parse(sheet_name=0, header=None, skiprows=skip_rows)
         header_top = tuple('' if pd.isna(value) else str(value).strip() for value in fallback_df.iloc[0].tolist())
         header_bottom = tuple('' if pd.isna(value) else str(value).strip() for value in fallback_df.iloc[1].tolist())
         data_df = fallback_df.iloc[2:].reset_index(drop=True)
-        data_df.columns = [f'column_{idx}' for idx in range(len(data_df.columns))]
+        columns = [f'column_{idx}' for idx in range(len(data_df.columns))]
+        data_df.columns = columns
+        frame_dict = {column: data_df[column].tolist() for column in columns}
         return RawWorkbookFrame(
-            sheet_name='Sheet1',
+            sheet_name=sheet_name,
             header_rows=(header_top, header_bottom),
-            frame=pl.from_pandas(data_df, include_index=False),
+            frame=pl.DataFrame(frame_dict),
         )

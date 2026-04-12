@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import polars as pl
+from openpyxl import Workbook
 
 from src.analytics.contracts import (
     AnalysisArtifacts,
@@ -204,3 +205,23 @@ def test_load_raw_workbook_delegates_to_workbook_ingestor(tmp_path: Path) -> Non
 
     assert result is raw
     load_mock.assert_called_once_with(tmp_path / 'input.xlsx', skip_rows=2)
+
+
+def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'fallback.xlsx'
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = 'FallbackSheet'
+    worksheet.append(['metadata'])
+    worksheet.append(['unused'])
+    worksheet.append(['主表头', '产品编码'])
+    worksheet.append(['次表头', '产品名称'])
+    worksheet.append(['2025年1期', 'P001'])
+    workbook.save(workbook_path)
+
+    ingestor = WorkbookIngestor()
+    with patch.object(ingestor, '_load_with_calamine', side_effect=RuntimeError('boom')):
+        result = ingestor.load(workbook_path, skip_rows=2)
+
+    assert result.sheet_name == 'FallbackSheet'
+    assert result.header_rows == (('主表头', '产品编码'), ('次表头', '产品名称'))

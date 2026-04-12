@@ -5,9 +5,17 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
 from src.etl.costing_etl import CostingWorkbookETL
+from src.excel.workbook_writer import CostingWorkbookWriter
+from src.excel.workbook_writer import CostingWorkbookWriter
+from src.excel.workbook_writer import CostingWorkbookWriter
 
 
 def _build_header_map(worksheet, header_row: int = 1) -> dict[str, int]:
@@ -313,11 +321,45 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         ]
     )
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
-        assert etl.process_file(input_path, output_path) is True
+        with (
+            patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+            patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+        ):
+            assert etl.process_file(input_path, output_path) is True
+
+    def test_lightweight_export_uses_fixed_width_and_number_formats(self, tmp_path) -> None:
+        """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
+        writer = CostingWorkbookWriter()
+        detail_df = pd.DataFrame(
+            {
+                '本期完工单位成本': [111.11],
+                '本期完工金额': [222.22],
+                '产品编码': ['P001'],
+            }
+        )
+        qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
+        work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
+        output_path = tmp_path / 'lightweight.xlsx'
+        writer.write_workbook(
+            output_path,
+            detail_df=detail_df,
+            qty_sheet_df=qty_sheet_df,
+            analysis_tables={},
+            work_order_sheet=work_order_sheet,
+            product_anomaly_sections=[],
+            error_log=pd.DataFrame(columns=['code']),
+        )
+
+        workbook = load_workbook(output_path)
+        for sheet_name in ('成本明细', '产品数量统计'):
+            worksheet = workbook[sheet_name]
+            assert worksheet.freeze_panes == 'A2'
+            header_map = _build_header_map(worksheet)
+            number_column = header_map['本期完工金额']
+            assert worksheet.cell(2, number_column).number_format == '#,##0.00'
+            for col_idx in range(1, len(worksheet[1]) + 1):
+                width = worksheet.column_dimensions[get_column_letter(col_idx)].width
+                assert width == 15.0
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
     expected_sheets = {
@@ -397,6 +439,41 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_work_order.max_row == 2
     assert ws_work_order.freeze_panes == 'A2'
     assert ws_work_order.auto_filter.ref is not None
+
+
+def test_lightweight_export_uses_fixed_width_and_number_formats(tmp_path) -> None:
+    """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
+    writer = CostingWorkbookWriter()
+    detail_df = pd.DataFrame(
+        {
+            '本期完工单位成本': [111.11],
+            '本期完工金额': [222.22],
+            '产品编码': ['P001'],
+        }
+    )
+    qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
+    work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
+    output_path = tmp_path / 'lightweight.xlsx'
+    writer.write_workbook(
+        output_path,
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        analysis_tables={},
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=[],
+        error_log=pd.DataFrame(columns=['code']),
+    )
+
+    workbook = load_workbook(output_path)
+    for sheet_name in ('成本明细', '产品数量统计'):
+        worksheet = workbook[sheet_name]
+        assert worksheet.freeze_panes == 'A2'
+        header_map = _build_header_map(worksheet)
+        number_column = header_map['本期完工金额']
+        assert worksheet.cell(2, number_column).number_format == '#,##0.00'
+        for col_idx in range(1, worksheet.max_column + 1):
+            width = worksheet.column_dimensions[get_column_letter(col_idx)].width
+            assert width == 15.0
 
     ws_product = wb['按产品异常值分析']
     assert ws_product['A1'].value == '四、按单个产品异常值分析'
@@ -768,3 +845,38 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     gb_work_order_headers = _build_header_map(gb_work_order_ws)
     assert '软件费用合计完工金额' not in gb_work_order_headers
     assert '软件费用单位完工成本' not in gb_work_order_headers
+
+
+def test_lightweight_export_uses_fixed_width_and_number_formats(tmp_path) -> None:
+    """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
+    writer = CostingWorkbookWriter()
+    detail_df = pd.DataFrame(
+        {
+            '本期完工单位成本': [111.11],
+            '本期完工金额': [222.22],
+            '产品编码': ['P001'],
+        }
+    )
+    qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
+    work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
+    output_path = tmp_path / 'lightweight.xlsx'
+    writer.write_workbook(
+        output_path,
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        analysis_tables={},
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=[],
+        error_log=pd.DataFrame(columns=['code']),
+    )
+
+    workbook = load_workbook(output_path)
+    for sheet_name in ('成本明细', '产品数量统计'):
+        worksheet = workbook[sheet_name]
+        assert worksheet.freeze_panes == 'A2'
+        header_map = _build_header_map(worksheet)
+        number_column = header_map['本期完工金额']
+        assert worksheet.cell(2, number_column).number_format == '#,##0.00'
+        for col_idx in range(1, worksheet.max_column + 1):
+            width = worksheet.column_dimensions[get_column_letter(col_idx)].width
+            assert width == 15.0

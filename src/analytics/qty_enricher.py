@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import polars as pl
 
 from src.analytics.anomaly import ANOMALY_METRICS, build_anomaly_sheet
 from src.analytics.contracts import AnalysisArtifacts
@@ -29,8 +30,11 @@ from src.analytics.fact_builder import (
     QTY_MOH_UNIT_COST,
     QTY_MOH_UTILITIES_AMOUNT,
     QTY_MOH_UTILITIES_UNIT_COST,
+    QTY_OUTSOURCE_AMOUNT,
+    QTY_OUTSOURCE_UNIT_COST,
     WORK_ORDER_KEY_COLS,
     ZERO,
+    build_fact_bundle,
     StandaloneCostItemMeta,
     add_decimal,
     build_fact_table,
@@ -38,6 +42,8 @@ from src.analytics.fact_builder import (
     build_total_match_column_name,
     build_total_mismatch_error_reason,
     build_total_mismatch_reason,
+    normalize_money_expr,
+    MONEY_DTYPE,
     is_positive_decimal,
     map_broad_cost_bucket,
     map_component_bucket,
@@ -54,56 +60,97 @@ from src.analytics.table_rendering import build_product_anomaly_sections, build_
 
 
 def build_report_artifacts(
-    df_detail: pd.DataFrame,
-    df_qty: pd.DataFrame,
+    df_detail: pd.DataFrame | pl.DataFrame,
+    df_qty: pd.DataFrame | pl.DataFrame,
     standalone_cost_items: tuple[str, ...] | list[str] | None = DEFAULT_STANDALONE_COST_ITEMS,
 ) -> AnalysisArtifacts:
-    """构建 V3 报表所需的全部分析产物。"""
-    detail_period_col, qty_period_col = _validate_input_frames(df_detail, df_qty)
+    """构建 V3 报表所需的全部分析产物（Polars 构建 + pandas 兼容输出）。"""
+    detail_pl = _to_polars_frame(df_detail)
+    qty_pl = _to_polars_frame(df_qty)
+    detail_pd = _to_pandas_frame(df_detail)
+    qty_pd = _to_pandas_frame(df_qty)
+
     standalone_metas = resolve_standalone_cost_item_metas(standalone_cost_items)
     total_match_column = build_total_match_column_name(standalone_metas)
-    total_mismatch_reason = build_total_mismatch_reason(standalone_metas)
-    total_mismatch_error_reason = build_total_mismatch_error_reason(standalone_metas)
+    fact_bundle = build_fact_bundle(
+        detail_pl,
+        qty_pl,
+        standalone_cost_items=tuple(meta.cost_item for meta in standalone_metas),
+    )
+    qty_output_columns = _build_qty_output_columns(qty_pl.columns, standalone_metas, total_match_column)
+    qty_sheet_with_key = _select_columns_with_fallback(
+        fact_bundle.qty_fact,
+        qty_output_columns + ['_join_key'],
+    )
+    qty_sheet_with_key_pd = _polars_to_pandas(qty_sheet_with_key)
+    work_order_source_pd = _polars_to_pandas(fact_bundle.work_order_fact)
 
     error_frames: list[pd.DataFrame] = []
-    detail = _prepare_detail_frame(df_detail, detail_period_col, error_frames, standalone_metas)
-    work_order_amounts = _aggregate_work_order_amounts(detail, standalone_metas)
-    qty_sheet_df, filtered_invalid_qty_count, filtered_missing_total_amount_count = _prepare_qty_sheet_base(
-        df_qty,
-        qty_period_col,
+    error_fact_pd = _polars_to_pandas(fact_bundle.error_fact)
+    if not error_fact_pd.empty:
+        error_frames.append(error_fact_pd)
+    _append_non_positive_unit_cost_errors(work_order_source_pd, error_frames)
+
+    work_order_sheet = build_anomaly_sheet(work_order_source_pd, standalone_metas=standalone_metas)
+    product_summary_df = build_product_summary_df(work_order_source_pd)
+    fact_df = _polars_to_pandas(fact_bundle.detail_fact)
+    filtered_invalid_qty_count, filtered_missing_total_amount_count = _count_filtered_qty_rows(qty_pl)
+    quality_metrics = build_quality_metrics(
+        detail_pd,
+        qty_pd,
+        qty_sheet_with_key_pd,
+        work_order_sheet.data,
+        filtered_invalid_qty_count,
+        filtered_missing_total_amount_count,
+    )
+    error_log = concat_error_logs(error_frames)
+
+    qty_sheet_output = qty_sheet_with_key_pd.drop(columns=['_join_key'])
+    return AnalysisArtifacts(
+        fact_df=fact_df,
+        qty_sheet_df=qty_sheet_output,
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=build_product_anomaly_sections(product_summary_df),
+        quality_metrics=quality_metrics,
+        error_log=error_log,
+        fact_bundle=fact_bundle,
     )
 
-    duplicate_qty_mask = qty_sheet_df['_join_key'].duplicated(keep=False)
-    if duplicate_qty_mask.any():
-        error_frames.append(
-            build_error_frame(
-                qty_sheet_df.loc[
-                    duplicate_qty_mask, ['product_code', 'product_name', 'period', 'order_no', 'order_line']
-                ],
-                issue_type='DUPLICATE_WORK_ORDER_KEY',
-                field_name='工单主键',
-                reason='数量页存在重复工单主键',
-                action='数量页原样保留，异常分析按首条记录去重',
-                row_id_fields=WORK_ORDER_KEY_COLS,
-            )
-        )
 
-    qty_sheet_df = _enrich_qty_sheet(
-        qty_sheet_df,
-        work_order_amounts,
-        standalone_metas,
-        total_match_column=total_match_column,
-        total_mismatch_reason=total_mismatch_reason,
-    )
-    error_frames.extend(
-        _build_qty_reconciliation_errors(
-            qty_sheet_df,
-            total_match_column=total_match_column,
-            total_mismatch_error_reason=total_mismatch_error_reason,
-        )
-    )
+def _to_polars_frame(frame: pd.DataFrame | pl.DataFrame) -> pl.DataFrame:
+    if isinstance(frame, pl.DataFrame):
+        return frame.clone()
+    return pl.DataFrame(frame.to_dict(orient='list'))
 
-    qty_output_columns = list(df_qty.columns) + [
+
+def _to_pandas_frame(frame: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
+    if isinstance(frame, pd.DataFrame):
+        return frame.copy()
+    return pd.DataFrame(frame.to_dicts())
+
+
+def _polars_to_pandas(frame: pl.DataFrame) -> pd.DataFrame:
+    if frame.is_empty():
+        return pd.DataFrame(columns=frame.columns)
+    return pd.DataFrame(frame.to_dicts())
+
+
+def _select_columns_with_fallback(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
+    exprs: list[pl.Expr] = []
+    for column in columns:
+        if column in frame.columns:
+            exprs.append(pl.col(column))
+        else:
+            exprs.append(pl.lit(None).alias(column))
+    return frame.select(exprs)
+
+
+def _build_qty_output_columns(
+    qty_source_columns: list[str],
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
+    total_match_column: str,
+) -> list[str]:
+    return qty_source_columns + [
         QTY_DM_AMOUNT,
         QTY_DL_AMOUNT,
         QTY_MOH_AMOUNT,
@@ -127,31 +174,45 @@ def build_report_artifacts(
         QTY_CHECK_STATUS,
         QTY_CHECK_REASON,
     ]
-    qty_sheet_output = qty_sheet_df[qty_output_columns + ['_join_key']].copy()
 
-    analysis_source = _build_analysis_source(qty_sheet_df, error_frames, standalone_metas)
-    fact_df = build_fact_table(analysis_source)
-    product_summary_df = build_product_summary_df(analysis_source)
-    work_order_sheet = build_anomaly_sheet(analysis_source, standalone_metas=standalone_metas)
-    quality_metrics = build_quality_metrics(
-        df_detail,
-        df_qty,
-        qty_sheet_output,
-        work_order_sheet.data,
-        filtered_invalid_qty_count,
-        filtered_missing_total_amount_count,
-    )
-    error_log = concat_error_logs(error_frames)
 
-    qty_sheet_output = qty_sheet_output.drop(columns=['_join_key'])
-    return AnalysisArtifacts(
-        fact_df=fact_df,
-        qty_sheet_df=qty_sheet_output,
-        work_order_sheet=work_order_sheet,
-        product_anomaly_sections=build_product_anomaly_sections(product_summary_df),
-        quality_metrics=quality_metrics,
-        error_log=error_log,
+def _count_filtered_qty_rows(qty_df: pl.DataFrame) -> tuple[int, int]:
+    qty_with_flags = qty_df.with_columns(
+        [
+            normalize_money_expr('本期完工数量').alias('completed_qty'),
+            normalize_money_expr('本期完工金额').alias('completed_amount_total'),
+        ]
+    ).with_columns(
+        (pl.col('completed_qty').is_not_null() & (pl.col('completed_qty') > pl.lit(ZERO).cast(MONEY_DTYPE))).alias(
+            '_valid_completed_qty'
+        )
     )
+    filtered_invalid_qty_count = qty_with_flags.filter(~pl.col('_valid_completed_qty')).height
+    filtered_missing_total_amount_count = qty_with_flags.filter(
+        pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_null()
+    ).height
+    return filtered_invalid_qty_count, filtered_missing_total_amount_count
+
+
+def _append_non_positive_unit_cost_errors(work_order_df: pd.DataFrame, error_frames: list[pd.DataFrame]) -> None:
+    for metric_key, display_name, _flag_column, _reason in ANOMALY_METRICS:
+        if metric_key not in work_order_df.columns:
+            continue
+        mask = work_order_df[metric_key].map(lambda value: value is not None and value <= ZERO)
+        if mask.any():
+            error_frames.append(
+                build_error_frame(
+                    work_order_df.loc[
+                        mask, ['product_code', 'product_name', 'period', 'order_no', 'order_line', metric_key]
+                    ],
+                    issue_type='NON_POSITIVE_UNIT_COST',
+                    field_name=display_name,
+                    reason='单位成本小于等于 0，不参与 log 与 Modified Z-score',
+                    action='保留在异常分析页并标记复核原因',
+                    original_column=metric_key,
+                    row_id_fields=WORK_ORDER_KEY_COLS,
+                )
+            )
 
 
 def _validate_input_frames(df_detail: pd.DataFrame, df_qty: pd.DataFrame) -> tuple[str, str]:

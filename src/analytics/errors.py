@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import polars as pl
 
 ERROR_LOG_COLUMNS = [
     'row_id',
@@ -34,6 +35,28 @@ LEGACY_ISSUE_TYPES = ['MISSING_QTY', 'PRICE_MISMATCH']
 def empty_error_log() -> pd.DataFrame:
     """返回固定列序的空 error_log。"""
     return pd.DataFrame(columns=ERROR_LOG_COLUMNS)
+
+
+def empty_error_log_polars() -> pl.DataFrame:
+    """返回固定列序的空 Polars error_log。"""
+    return pl.DataFrame(
+        schema={
+            'row_id': pl.String,
+            'cost_bucket': pl.String,
+            'product_code': pl.String,
+            'product_name': pl.String,
+            'period': pl.String,
+            'issue_type': pl.String,
+            'field_name': pl.String,
+            'original_value': pl.Object,
+            'lhs': pl.Object,
+            'rhs': pl.Object,
+            'diff': pl.Object,
+            'reason': pl.String,
+            'action': pl.String,
+            'retryable': pl.Boolean,
+        }
+    ).select(ERROR_LOG_COLUMNS)
 
 
 def build_error_frame(

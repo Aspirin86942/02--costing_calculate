@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import polars as pl
+
 from src.analytics.qty_enricher import build_report_artifacts
 from tests.contracts._workbook_contract_helper import (
     _build_default_detail_df,
@@ -31,3 +33,15 @@ def test_error_log_issue_types_remain_within_contract_sets() -> None:
         'TOTAL_COST_MISMATCH',
         'NON_POSITIVE_UNIT_COST',
     ]
+
+
+def test_error_log_contract_remains_stable_with_polars_inputs() -> None:
+    baseline = load_contract_baseline('error_log_contract.json')
+    artifacts = build_report_artifacts(
+        pl.DataFrame(_build_default_detail_df().to_dict(orient='list')),
+        pl.DataFrame(_build_default_qty_df().to_dict(orient='list')),
+    )
+
+    assert artifacts.fact_bundle is not None
+    assert artifacts.error_log.columns.tolist() == baseline['columns']
+    assert artifacts.error_log['retryable'].dropna().eq(baseline['retryable_default']).all()

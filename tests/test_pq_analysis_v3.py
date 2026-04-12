@@ -226,6 +226,16 @@ def test_build_report_artifacts_keeps_total_cost_mismatch_for_retained_rows() ->
     assert 'MISSING_REQUIRED_VALUE' not in set(artifacts.error_log['issue_type'])
 
 
+def test_build_report_artifacts_exposes_fact_bundle_and_preserves_contracts() -> None:
+    artifacts = build_report_artifacts(_build_base_detail_df(), _build_base_qty_df(total_amount=999))
+
+    assert artifacts.fact_bundle is not None
+    assert artifacts.fact_bundle.qty_fact.height == 1
+    qty_row = artifacts.qty_sheet_df.iloc[0]
+    assert qty_row['本期完工直接材料合计完工金额'] == Decimal('100')
+    assert 'TOTAL_COST_MISMATCH' in set(artifacts.error_log['issue_type'])
+
+
 def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
     """测试 Modified Z-score 按产品总体计算，而不是按月份拆池。"""
     df_detail = pd.DataFrame(

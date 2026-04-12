@@ -278,6 +278,88 @@ def test_build_report_artifacts_preserves_non_terminating_decimal_division_preci
     assert qty_row[QTY_DM_UNIT_COST] == expected
 
 
+def test_build_report_artifacts_fact_bundle_preserves_non_terminating_decimal_division_precision() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '100',
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': '3',
+                '本期完工金额': '100',
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    assert artifacts.fact_bundle is not None
+    qty_row = artifacts.fact_bundle.qty_fact.select([QTY_DM_UNIT_COST]).to_dicts()[0]
+
+    assert qty_row[QTY_DM_UNIT_COST] == (Decimal('100') / Decimal('3'))
+
+
+def test_build_report_artifacts_fact_bundle_preserves_decimal_division_for_fractional_values() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '0.1',
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': '0.03',
+                '本期完工金额': '0.1',
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    assert artifacts.fact_bundle is not None
+    qty_row = artifacts.fact_bundle.qty_fact.select([QTY_DM_UNIT_COST]).to_dicts()[0]
+
+    assert qty_row[QTY_DM_UNIT_COST] == (Decimal('0.1') / Decimal('0.03'))
+
+
 def test_build_report_artifacts_preserves_small_positive_quantity() -> None:
     df_detail = pd.DataFrame(
         [

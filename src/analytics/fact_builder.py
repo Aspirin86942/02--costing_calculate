@@ -15,8 +15,6 @@ from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars, norm
 ZERO = Decimal('0')
 # Fact 层保留较高小数精度，避免在兼容边界前过早量化。
 MONEY_DTYPE = pl.Decimal(38, 28)
-# 除法结果使用较低 scale，避免极小分母时触发 Decimal overflow。
-DIVISION_DTYPE = pl.Decimal(38, 18)
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 WORK_ORDER_KEY_COLS = ['period', 'product_code', 'order_no', 'order_line']
 
@@ -325,15 +323,13 @@ def _money_zero_expr() -> pl.Expr:
 
 
 def _safe_divide_expr(numerator_column: str, denominator_column: str, alias: str) -> pl.Expr:
+    # 使用 Decimal 语义逐行计算，避免 Float64 近似误差污染 fact bundle。
     return (
-        pl.when(pl.col(denominator_column).is_not_null() & (pl.col(denominator_column) != _money_zero_expr()))
-        .then(
-            (
-                pl.col(numerator_column).cast(pl.Float64, strict=False)
-                / pl.col(denominator_column).cast(pl.Float64, strict=False)
-            ).cast(DIVISION_DTYPE, strict=False)
+        pl.struct([pl.col(numerator_column), pl.col(denominator_column)])
+        .map_elements(
+            lambda row: safe_divide(row[numerator_column], row[denominator_column]),
+            return_dtype=pl.Object,
         )
-        .otherwise(None)
         .alias(alias)
     )
 

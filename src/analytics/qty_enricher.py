@@ -232,14 +232,22 @@ def _restore_work_order_precision(
         return work_order_df
 
     restored = work_order_df.copy()
-    completed_qty = restored['completed_qty'].map(to_decimal)
+    completed_qty_source = (
+        restored['completed_qty_raw'] if 'completed_qty_raw' in restored.columns else restored['completed_qty']
+    )
+    completed_qty = completed_qty_source.map(to_decimal)
+    restored['completed_qty'] = completed_qty
 
     amount_columns = ['dm_amount', 'dl_amount', 'moh_amount', *[meta.amount_key for meta in standalone_metas]]
     for column in amount_columns:
         if column in restored.columns:
             restored[column] = restored[column].map(_decimal_or_zero)
-    if 'completed_amount_total' in restored.columns:
-        restored['completed_amount_total'] = restored['completed_amount_total'].map(to_decimal)
+    completed_amount_source = (
+        restored['completed_amount_total_raw']
+        if 'completed_amount_total_raw' in restored.columns
+        else restored['completed_amount_total']
+    )
+    restored['completed_amount_total'] = completed_amount_source.map(to_decimal)
 
     restored['total_unit_cost'] = restored['completed_amount_total'].combine(completed_qty, safe_divide)
     restored['dm_unit_cost'] = restored['dm_amount'].combine(completed_qty, safe_divide)

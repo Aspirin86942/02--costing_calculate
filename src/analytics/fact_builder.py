@@ -14,7 +14,9 @@ from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars, norm
 
 ZERO = Decimal('0')
 # Fact 层保留较高小数精度，避免在兼容边界前过早量化。
-MONEY_DTYPE = pl.Decimal(38, 18)
+MONEY_DTYPE = pl.Decimal(38, 28)
+# 除法结果使用较低 scale，避免极小分母时触发 Decimal overflow。
+DIVISION_DTYPE = pl.Decimal(38, 18)
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 WORK_ORDER_KEY_COLS = ['period', 'product_code', 'order_no', 'order_line']
 
@@ -325,7 +327,12 @@ def _money_zero_expr() -> pl.Expr:
 def _safe_divide_expr(numerator_column: str, denominator_column: str, alias: str) -> pl.Expr:
     return (
         pl.when(pl.col(denominator_column).is_not_null() & (pl.col(denominator_column) != _money_zero_expr()))
-        .then((pl.col(numerator_column) / pl.col(denominator_column)).cast(MONEY_DTYPE))
+        .then(
+            (
+                pl.col(numerator_column).cast(pl.Float64, strict=False)
+                / pl.col(denominator_column).cast(pl.Float64, strict=False)
+            ).cast(DIVISION_DTYPE, strict=False)
+        )
         .otherwise(None)
         .alias(alias)
     )
@@ -333,6 +340,10 @@ def _safe_divide_expr(numerator_column: str, denominator_column: str, alias: str
 
 def _normalize_key_expr(column_name: str) -> pl.Expr:
     return pl.col(column_name).map_elements(normalize_key_value, return_dtype=pl.String)
+
+
+def _is_missing_decimal_value(value: object) -> bool:
+    return to_decimal(value) is None
 
 
 def _build_error_frame_polars(
@@ -618,6 +629,8 @@ def build_fact_bundle(
                 pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
                 pl.col('工单编号').alias('order_no'),
                 pl.col('工单行号').alias('order_line'),
+                pl.col('本期完工数量').alias('completed_qty_raw'),
+                pl.col('本期完工金额').alias('completed_amount_total_raw'),
                 normalize_money_expr('本期完工数量').alias('completed_qty'),
                 normalize_money_expr('本期完工金额').alias('completed_amount_total'),
             ]
@@ -627,16 +640,18 @@ def build_fact_bundle(
                 pl.concat_str([_normalize_key_expr(column) for column in WORK_ORDER_KEY_COLS], separator='|').alias(
                     '_join_key'
                 ),
-                (pl.col('completed_qty').is_not_null() & (pl.col('completed_qty') > _money_zero_expr())).alias(
-                    '_valid_completed_qty'
-                ),
+                pl.col('completed_qty_raw')
+                .map_elements(is_positive_decimal, return_dtype=pl.Boolean)
+                .fill_null(False)
+                .alias('_valid_completed_qty'),
+                pl.col('completed_amount_total_raw')
+                .map_elements(_is_missing_decimal_value, return_dtype=pl.Boolean)
+                .fill_null(True)
+                .alias('_missing_total_amount'),
             ]
         )
-        .with_columns(
-            (pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_null()).alias('_missing_total_amount')
-        )
     )
-    qty_fact = qty_fact.filter(pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_not_null())
+    qty_fact = qty_fact.filter(pl.col('_valid_completed_qty') & ~pl.col('_missing_total_amount'))
 
     qty_fact = qty_fact.join(work_order_amounts.select(['_join_key', *amount_columns]), on='_join_key', how='left')
     qty_fact = qty_fact.with_columns(
@@ -856,6 +871,8 @@ def build_fact_bundle(
         'cost_center',
         'spec',
         'unit',
+        'completed_qty_raw',
+        'completed_amount_total_raw',
         'completed_qty',
         'completed_amount_total',
         'dm_amount',

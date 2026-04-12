@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import polars as pl
 
 from src.analytics.contracts import ProductAnomalySection, SectionBlock
 from src.analytics.fact_builder import (
@@ -31,6 +32,59 @@ PRODUCT_ANALYSIS_FIELDS = [
     ('moh_unit_cost', '单位制造费用成本', 'price', False),
     ('moh_contrib', '制造费用贡献率', 'pct', False),
 ]
+PRODUCT_SUMMARY_SHEET_RENAME_MAP: dict[str, str] = {
+    'product_code': '产品编码',
+    'product_name': '产品名称',
+    'period_display': '月份',
+    'total_cost': '总成本',
+    'completed_qty': '完工数量',
+    'unit_cost': '单位成本',
+    'dm_cost': '直接材料成本',
+    'dm_unit_cost': '单位直接材料成本',
+    'dm_contrib': '直接材料贡献率',
+    'dl_cost': '直接人工成本',
+    'dl_unit_cost': '单位直接人工成本',
+    'dl_contrib': '直接人工贡献率',
+    'moh_cost': '制造费用成本',
+    'moh_unit_cost': '单位制造费用成本',
+    'moh_contrib': '制造费用贡献率',
+}
+PRODUCT_SUMMARY_SHEET_COLUMNS: tuple[str, ...] = tuple(PRODUCT_SUMMARY_SHEET_RENAME_MAP.values())
+PRODUCT_SUMMARY_SHEET_COLUMN_TYPES: dict[str, str] = {
+    '产品编码': 'text',
+    '产品名称': 'text',
+    '月份': 'text',
+    '总成本': 'amount',
+    '完工数量': 'qty',
+    '单位成本': 'price',
+    '直接材料成本': 'amount',
+    '单位直接材料成本': 'price',
+    '直接材料贡献率': 'pct',
+    '直接人工成本': 'amount',
+    '单位直接人工成本': 'price',
+    '直接人工贡献率': 'pct',
+    '制造费用成本': 'amount',
+    '单位制造费用成本': 'price',
+    '制造费用贡献率': 'pct',
+}
+
+
+def build_product_summary_sheet_frame(summary_frame: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
+    """把产品汇总事实转换为展示层列名。"""
+    if isinstance(summary_frame, pl.DataFrame):
+        if summary_frame.is_empty():
+            frame = pd.DataFrame(columns=summary_frame.columns)
+        else:
+            frame = pd.DataFrame(summary_frame.to_dicts())
+    else:
+        frame = summary_frame.copy()
+
+    if frame.empty:
+        return pd.DataFrame(columns=PRODUCT_SUMMARY_SHEET_COLUMNS)
+
+    renamed = frame.rename(columns=PRODUCT_SUMMARY_SHEET_RENAME_MAP)
+    output_columns = [column for column in PRODUCT_SUMMARY_SHEET_COLUMNS if column in renamed.columns]
+    return renamed.reindex(columns=output_columns)
 
 
 def build_pivot(bucket_df: pd.DataFrame, value_col: str, period_columns: list[str]) -> pd.DataFrame:

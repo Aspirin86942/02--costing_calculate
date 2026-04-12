@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
 
-from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock
+from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock, SheetModel
 from src.excel.fast_writer import FastSheetWriter
 
 DETAIL_TWO_DECIMAL_COLUMNS = {'本期完工单位成本', '本期完工金额'}
@@ -111,3 +112,13 @@ class CostingWorkbookWriter:
                 auto_filter=False,
                 apply_column_widths=False,
             )
+
+    def write_workbook_from_models(self, output_path: Path, *, sheet_models: Sequence[SheetModel]) -> None:
+        """按 SheetModel 契约写出完整 workbook。"""
+        with pd.ExcelWriter(
+            output_path,
+            engine='xlsxwriter',
+            engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+        ) as writer:
+            for model in sheet_models:
+                self.sheet_writer.write_sheet_model(writer, model)

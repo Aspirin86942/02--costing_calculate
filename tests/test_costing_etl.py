@@ -8,7 +8,14 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
+from src.analytics.contracts import (
+    AnalysisArtifacts,
+    ConditionalFormatRule,
+    FlatSheet,
+    ProductAnomalySection,
+    QualityMetric,
+    SheetModel,
+)
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
@@ -262,6 +269,38 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
 
     assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
     dataframe_writer_mock.assert_not_called()
+
+
+def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_models.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='按工单按产品异常值分析',
+            columns=('直接材料单位完工成本', '直接材料异常标记'),
+            rows_factory=lambda: iter([(18.0, '关注')]),
+            column_types={'直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
+            number_formats={'直接材料单位完工成本': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            conditional_formats=(
+                ConditionalFormatRule(
+                    target_range='A2:A1048576',
+                    formula='=$B2="关注"',
+                    format_key='attention',
+                ),
+            ),
+        ),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['按工单按产品异常值分析']
+    assert worksheet.freeze_panes == 'A2'
+    assert worksheet['A2'].number_format == '#,##0.00'
+    assert worksheet.conditional_formatting
 
 
 def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:

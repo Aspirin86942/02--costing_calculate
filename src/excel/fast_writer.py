@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from numbers import Real
 from typing import Any
 
 import pandas as pd
 from xlsxwriter.utility import xl_col_to_name
 
-from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock
+from src.analytics.anomaly import WORK_ORDER_HIGHLIGHT_COLUMNS
+from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock, SheetModel
 from src.excel.styles import (
     EXCEL_TWO_DECIMAL_FORMAT,
     estimate_analysis_column_widths,
@@ -21,16 +23,6 @@ from src.excel.styles import (
 _FREEZE_PANES_PATTERN = re.compile(r'^([A-Z]+)([1-9]\d*)$')
 # xlsxwriter 与 openpyxl 的列宽刻度不同，这里做最小换算以保持既有契约读取值为 15.0。
 _XLSXWRITER_WIDTH_FOR_FIXED_15 = 14.3
-WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
-    ('直接材料单位完工成本', '直接材料异常标记'),
-    ('直接人工单位完工成本', '直接人工异常标记'),
-    ('制造费用单位完工成本', '制造费用异常标记'),
-    ('制造费用_其他单位完工成本', '制造费用_其他异常标记'),
-    ('制造费用_人工单位完工成本', '制造费用_人工异常标记'),
-    ('制造费用_机物料及低耗单位完工成本', '制造费用_机物料及低耗异常标记'),
-    ('制造费用_折旧单位完工成本', '制造费用_折旧异常标记'),
-    ('制造费用_水电费单位完工成本', '制造费用_水电费异常标记'),
-)
 HIGHLIGHT_STYLE_MAP: dict[str, dict[str, str]] = {
     '关注': {'fill': '#DDEBF7'},
     '高度可疑': {'fill': '#4472C4', 'font_color': '#FFFFFF'},
@@ -60,11 +52,11 @@ def _is_blank_excel_value(value: object) -> bool:
         return False
 
 
-def _resolve_fixed_width(fixed_width: int | None) -> float | None:
+def _resolve_fixed_width(fixed_width: int | float | None) -> float | None:
     """统一固定列宽输入，兼容 xlsxwriter 与现有 openpyxl 断言。"""
     if fixed_width is None:
         return None
-    if fixed_width == 15:
+    if float(fixed_width) == 15.0:
         return _XLSXWRITER_WIDTH_FOR_FIXED_15
     return float(fixed_width)
 
@@ -84,6 +76,9 @@ def _write_cell(worksheet: Any, row_idx: int, col_idx: int, value: object, cell_
     if isinstance(value, bool):
         worksheet.write_boolean(row_idx, col_idx, value, cell_format)
         return
+    if isinstance(value, Decimal):
+        worksheet.write_number(row_idx, col_idx, float(value), cell_format)
+        return
     if isinstance(value, Real):
         worksheet.write_number(row_idx, col_idx, float(value), cell_format)
         return
@@ -96,6 +91,8 @@ def _coerce_row_value_for_excel(value: object) -> object:
         return None
     if isinstance(value, bool):
         return value
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, Real):
         return float(value)
     return value
@@ -164,6 +161,67 @@ class FastSheetWriter:
             auto_filter=auto_filter,
             apply_column_widths=apply_column_widths,
         )
+
+    def _build_formats(self, workbook: Any) -> dict[str, Any]:
+        return {
+            'header': workbook.add_format(
+                {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
+            ),
+            'attention': workbook.add_format({'bg_color': '#DDEBF7'}),
+            'suspicious': workbook.add_format({'bg_color': '#4472C4', 'font_color': '#FFFFFF'}),
+            'text': workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1}),
+        }
+
+    def _resolve_number_format(self, number_format: str | None, workbook: Any) -> Any:
+        if number_format is None:
+            return workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
+        return workbook.add_format({'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format})
+
+    def write_sheet_model(self, writer: pd.ExcelWriter, model: SheetModel) -> Any:
+        """按 SheetModel 契约写出单个 sheet。"""
+        workbook = writer.book
+        worksheet = workbook.add_worksheet(model.sheet_name)
+        writer.sheets[model.sheet_name] = worksheet
+
+        formats = self._build_formats(workbook)
+        number_format_cache: dict[str | None, Any] = {}
+        fixed_width = _resolve_fixed_width(model.fixed_width)
+        for col_idx, column_name in enumerate(model.columns):
+            worksheet.write(0, col_idx, column_name, formats['header'])
+
+            number_format = model.number_formats.get(column_name)
+            cell_format = number_format_cache.get(number_format)
+            if cell_format is None:
+                cell_format = self._resolve_number_format(number_format, workbook)
+                number_format_cache[number_format] = cell_format
+
+            if fixed_width is not None:
+                worksheet.set_column(col_idx, col_idx, fixed_width, cell_format)
+
+        last_row = 0
+        for row_idx, row in enumerate(model.rows_factory(), start=1):
+            for col_idx, value in enumerate(row):
+                number_format = model.number_formats.get(model.columns[col_idx])
+                cell_format = number_format_cache[number_format]
+                _write_cell(worksheet, row_idx, col_idx, value, cell_format)
+            last_row = row_idx
+
+        if model.freeze_panes is not None:
+            freeze_row, freeze_col = _freeze_panes_to_rc(model.freeze_panes)
+            worksheet.freeze_panes(freeze_row, freeze_col)
+        if model.auto_filter and model.columns:
+            worksheet.autofilter(0, 0, max(last_row, 1), len(model.columns) - 1)
+
+        for rule in model.conditional_formats:
+            highlight_format = formats.get(rule.format_key)
+            if highlight_format is None:
+                raise ValueError(f'Unknown conditional format key: {rule.format_key}')
+            worksheet.conditional_format(
+                rule.target_range,
+                {'type': 'formula', 'criteria': rule.formula, 'format': highlight_format},
+            )
+
+        return worksheet
 
     def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
         """写入三段分析块（Task 1 不迁移高亮/条件格式）。"""

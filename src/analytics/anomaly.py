@@ -6,7 +6,7 @@ import math
 
 import pandas as pd
 
-from src.analytics.contracts import FlatSheet
+from src.analytics.contracts import ConditionalFormatRule, FlatSheet
 from src.analytics.errors import append_reason
 from src.analytics.fact_builder import (
     DEFAULT_STANDALONE_COST_ITEMS,
@@ -31,6 +31,20 @@ ANOMALY_METRICS = [
     ('moh_depreciation_unit_cost', '制造费用_折旧单位完工成本', '制造费用_折旧异常标记', '折旧异常'),
     ('moh_utilities_unit_cost', '制造费用_水电费单位完工成本', '制造费用_水电费异常标记', '水电费异常'),
 ]
+WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ('直接材料单位完工成本', '直接材料异常标记'),
+    ('直接人工单位完工成本', '直接人工异常标记'),
+    ('制造费用单位完工成本', '制造费用异常标记'),
+    ('制造费用_其他单位完工成本', '制造费用_其他异常标记'),
+    ('制造费用_人工单位完工成本', '制造费用_人工异常标记'),
+    ('制造费用_机物料及低耗单位完工成本', '制造费用_机物料及低耗异常标记'),
+    ('制造费用_折旧单位完工成本', '制造费用_折旧异常标记'),
+    ('制造费用_水电费单位完工成本', '制造费用_水电费异常标记'),
+)
+ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
+    '关注': 'attention',
+    '高度可疑': 'suspicious',
+}
 
 WORK_ORDER_OUTPUT_COLUMNS = [
     '月份',
@@ -153,6 +167,47 @@ WORK_ORDER_COLUMN_TYPES = {
     '异常主要来源': 'text',
     '复核原因': 'text',
 }
+
+
+def _excel_column_name(column_idx: int) -> str:
+    """把 0-based 列下标转换为 Excel 列名。"""
+    result = ''
+    current = column_idx + 1
+    while current > 0:
+        current, remainder = divmod(current - 1, 26)
+        result = chr(ord('A') + remainder) + result
+    return result
+
+
+def _build_ascii_safe_excel_text(text: str) -> str:
+    """把中文文本转成 ASCII 公式，避免 xlsxwriter 兼容差异。"""
+    return '&'.join(f'UNICHAR({ord(char)})' for char in text)
+
+
+def build_work_order_conditional_formats(columns: list[str]) -> tuple[ConditionalFormatRule, ...]:
+    """按工单异常页列布局生成条件格式契约。"""
+    header_map = {column_name: idx for idx, column_name in enumerate(columns)}
+    rules: list[ConditionalFormatRule] = []
+
+    for value_column, flag_column in WORK_ORDER_HIGHLIGHT_COLUMNS:
+        value_idx = header_map.get(value_column)
+        flag_idx = header_map.get(flag_column)
+        if value_idx is None or flag_idx is None:
+            continue
+
+        flag_col_letter = _excel_column_name(flag_idx)
+        for flag_label, format_key in ANOMALY_FLAG_FORMAT_KEYS.items():
+            formula = f'=EXACT(${flag_col_letter}2,{_build_ascii_safe_excel_text(flag_label)})'
+            for target_idx in (value_idx, flag_idx):
+                target_col_letter = _excel_column_name(target_idx)
+                rules.append(
+                    ConditionalFormatRule(
+                        target_range=f'{target_col_letter}2:{target_col_letter}1048576',
+                        formula=formula,
+                        format_key=format_key,
+                    )
+                )
+    return tuple(rules)
 
 
 def grade_score(score: float | None) -> str:

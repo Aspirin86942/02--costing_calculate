@@ -50,8 +50,12 @@ class CostingEtlPipeline:
         self.integrated_workshop_name = integrated_workshop_name
         self.logger = logger
 
-    def load_raw_dataframe(self, input_path: Path) -> RawWorkbookFrame:
-        """读取原始 workbook。"""
+    def load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
+        """读取旧 ETL 路径需要的 pandas DataFrame。"""
+        return pd.read_excel(input_path, header=[0, 1], skiprows=self.skip_rows)
+
+    def load_raw_workbook_frame(self, input_path: Path) -> RawWorkbookFrame:
+        """读取 Task 3 Polars 路径需要的 workbook 契约。"""
         return load_raw_workbook(input_path, skip_rows=self.skip_rows)
 
     def infer_rename_map(self, df: pd.DataFrame) -> dict[str, str]:
@@ -73,12 +77,13 @@ class CostingEtlPipeline:
     def remove_total_rows(self, df: pd.DataFrame | pl.DataFrame) -> pd.DataFrame | pl.DataFrame:
         """删除汇总行。"""
         if isinstance(df, pd.DataFrame):
-            cleaned = remove_total_rows(
-                pl.from_pandas(df),
-                period_column=self.period_column,
-                cost_center_column=self.cost_center_column,
-            )
-            return cleaned.to_pandas()
+            columns_to_check = [column for column in (self.period_column, self.cost_center_column) if column in df.columns]
+            if not columns_to_check:
+                return df
+            keep_mask = pd.Series([True] * len(df), index=df.index)
+            for column in columns_to_check:
+                keep_mask &= ~df[column].astype(str).str.contains('合计', na=False)
+            return df[keep_mask].copy()
         return remove_total_rows(
             df,
             period_column=self.period_column,
@@ -88,14 +93,29 @@ class CostingEtlPipeline:
     def forward_fill_with_rules(self, df_raw: pd.DataFrame | pl.DataFrame) -> pd.DataFrame | pl.DataFrame:
         """按业务规则向下填充。"""
         if isinstance(df_raw, pd.DataFrame):
-            filled = forward_fill_with_rules(
-                pl.from_pandas(df_raw),
-                fill_columns=self.fill_columns,
-                vendor_columns=self.vendor_columns,
-                cost_center_column=self.cost_center_column,
-                integrated_workshop_name=self.integrated_workshop_name,
-            )
-            return filled.to_pandas()
+            df_filled = df_raw.copy()
+            columns_to_fill = [column for column in df_filled.columns if column in self.fill_columns]
+            if not columns_to_fill:
+                return df_filled
+
+            actual_vendor_columns = [column for column in self.vendor_columns if column in columns_to_fill]
+            normal_fill_columns = [column for column in columns_to_fill if column not in actual_vendor_columns]
+            if normal_fill_columns:
+                df_filled[normal_fill_columns] = df_filled[normal_fill_columns].ffill()
+
+            if not actual_vendor_columns:
+                return df_filled
+            if self.cost_center_column not in df_filled.columns:
+                df_filled[actual_vendor_columns] = df_filled[actual_vendor_columns].ffill()
+                return df_filled
+
+            vendor_filled = df_filled[actual_vendor_columns].ffill()
+            # 这里保留集成车间的原值，避免把上一个工单的供应商错误继承到当前行。
+            integrated_mask = df_filled[self.cost_center_column].astype(str).str.strip().eq(self.integrated_workshop_name)
+            df_filled.loc[~integrated_mask, actual_vendor_columns] = vendor_filled.loc[
+                ~integrated_mask, actual_vendor_columns
+            ]
+            return df_filled
         return forward_fill_with_rules(
             df_raw,
             fill_columns=self.fill_columns,

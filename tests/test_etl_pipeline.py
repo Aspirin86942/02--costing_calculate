@@ -353,3 +353,50 @@ def test_split_normalized_frames_keeps_qty_and_detail_contracts() -> None:
     assert split.detail_df.columns == ['年期', '月份', '产品编码', '工单编号', '成本项目名称', '本期完工金额']
     assert split.qty_df.height == 1
     assert split.detail_df.height == 1
+
+
+def test_pipeline_load_raw_dataframe_keeps_legacy_pandas_contract(tmp_path: Path) -> None:
+    legacy_df = pd.DataFrame(
+        [['2025年1期', 'P001']],
+        columns=pd.Index([('年期', ''), ('产品编码', '产品名称')]),
+    )
+    etl = CostingWorkbookETL(skip_rows=2)
+
+    with patch('src.etl.pipeline.pd.read_excel', return_value=legacy_df):
+        loaded = etl.pipeline.load_raw_dataframe(tmp_path / 'input.xlsx')
+
+    assert isinstance(loaded, pd.DataFrame)
+    assert list(loaded.columns) == [('年期', ''), ('产品编码', '产品名称')]
+    assert loaded.iloc[0, 0] == '2025年1期'
+
+
+def test_pipeline_remove_total_rows_pandas_path_does_not_call_pl_from_pandas() -> None:
+    etl = CostingWorkbookETL(skip_rows=2)
+    frame = pd.DataFrame({'年期': ['2025年01期', '合计'], '成本中心名称': ['中心A', '中心A']})
+
+    with patch('src.etl.pipeline.pl.from_pandas', side_effect=AssertionError('should not be called')):
+        result = etl.pipeline.remove_total_rows(frame)
+
+    assert isinstance(result, pd.DataFrame)
+    assert result['年期'].tolist() == ['2025年01期']
+
+
+def test_pipeline_forward_fill_with_rules_pandas_path_does_not_call_pl_from_pandas() -> None:
+    etl = CostingWorkbookETL(skip_rows=2)
+    frame = pd.DataFrame(
+        {
+            '成本中心名称': ['集成车间', None],
+            '产品编码': ['P001', None],
+            '供应商编码': ['V001', None],
+            '供应商名称': ['供应商A', None],
+        }
+    )
+
+    with patch('src.etl.pipeline.pl.from_pandas', side_effect=AssertionError('should not be called')):
+        result = etl.pipeline.forward_fill_with_rules(frame)
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.loc[1, '成本中心名称'] == '集成车间'
+    assert result.loc[1, '产品编码'] == 'P001'
+    assert pd.isna(result.loc[1, '供应商编码'])
+    assert pd.isna(result.loc[1, '供应商名称'])

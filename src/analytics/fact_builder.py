@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 
 import pandas as pd
 import polars as pl
@@ -15,6 +15,8 @@ from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars, norm
 ZERO = Decimal('0')
 # Fact 层保留较高小数精度，避免在兼容边界前过早量化。
 MONEY_DTYPE = pl.Decimal(38, 28)
+DIVISION_QUANTIZER = Decimal('1E-28')
+MAX_DECIMAL_INTEGER_DIGITS = 10
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 WORK_ORDER_KEY_COLS = ['period', 'product_code', 'order_no', 'order_line']
 
@@ -323,12 +325,12 @@ def _money_zero_expr() -> pl.Expr:
 
 
 def _safe_divide_expr(numerator_column: str, denominator_column: str, alias: str) -> pl.Expr:
-    # 使用 Decimal 语义逐行计算，避免 Float64 近似误差污染 fact bundle。
+    # 使用 Decimal 语义逐行计算，并统一到 fact 层固定 scale，避免 float 近似误差。
     return (
         pl.struct([pl.col(numerator_column), pl.col(denominator_column)])
         .map_elements(
-            lambda row: safe_divide(row[numerator_column], row[denominator_column]),
-            return_dtype=pl.Object,
+            lambda row: _safe_divide_decimal(row[numerator_column], row[denominator_column]),
+            return_dtype=MONEY_DTYPE,
         )
         .alias(alias)
     )
@@ -340,6 +342,23 @@ def _normalize_key_expr(column_name: str) -> pl.Expr:
 
 def _is_missing_decimal_value(value: object) -> bool:
     return to_decimal(value) is None
+
+
+def _safe_divide_decimal(numerator: object, denominator: object) -> Decimal | None:
+    value = safe_divide(numerator, denominator)
+    if value is None:
+        return None
+    try:
+        with localcontext() as ctx:
+            ctx.prec = 80
+            quantized = value.quantize(DIVISION_QUANTIZER)
+        if quantized.is_zero():
+            return quantized
+        if quantized.adjusted() + 1 > MAX_DECIMAL_INTEGER_DIGITS:
+            return None
+        return quantized
+    except InvalidOperation:
+        return None
 
 
 def _build_error_frame_polars(

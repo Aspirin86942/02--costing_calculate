@@ -360,6 +360,18 @@ def test_build_report_artifacts_fact_bundle_preserves_decimal_division_for_fract
     assert qty_row[QTY_DM_UNIT_COST] == (Decimal('0.1') / Decimal('0.03'))
 
 
+def test_build_report_artifacts_fact_bundle_division_columns_keep_polars_decimal_dtype() -> None:
+    artifacts = build_report_artifacts(_build_base_detail_df(), _build_base_qty_df(total_amount=165))
+
+    assert artifacts.fact_bundle is not None
+    qty_schema = artifacts.fact_bundle.qty_fact.schema
+    work_order_schema = artifacts.fact_bundle.work_order_fact.schema
+
+    assert qty_schema[QTY_DM_UNIT_COST] == pl.Decimal(38, 28)
+    assert qty_schema[QTY_OUTSOURCE_UNIT_COST] == pl.Decimal(38, 28)
+    assert work_order_schema['dm_unit_cost'] == pl.Decimal(38, 28)
+
+
 def test_build_report_artifacts_preserves_small_positive_quantity() -> None:
     df_detail = pd.DataFrame(
         [

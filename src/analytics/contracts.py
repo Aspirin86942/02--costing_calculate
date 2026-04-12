@@ -2,9 +2,73 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 import pandas as pd
+import polars as pl
+
+
+@dataclass(frozen=True)
+class RawWorkbookFrame:
+    """Polars 首选的原始 workbook 片段。"""
+
+    sheet_name: str
+    header_rows: tuple[tuple[str, ...], tuple[str, ...]]
+    frame: pl.DataFrame
+
+
+@dataclass(frozen=True)
+class NormalizedCostFrame:
+    """标准化成本表，供后续聚合使用。"""
+
+    frame: pl.DataFrame
+    key_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FactBundle:
+    """按 downstream 需要封装的多表事实集。"""
+
+    detail_fact: pl.DataFrame
+    qty_fact: pl.DataFrame
+    work_order_fact: pl.DataFrame
+    product_summary_fact: pl.DataFrame
+    error_fact: pl.DataFrame
+
+
+@dataclass(frozen=True)
+class ConditionalFormatRule:
+    """控制 workbook 写出时的条件格式规则。"""
+
+    target_range: str
+    formula: str
+    format_key: str
+
+
+@dataclass(frozen=True)
+class SheetModel:
+    """单张 sheet 的列/格式定义。"""
+
+    sheet_name: str
+    columns: tuple[str, ...]
+    rows_factory: Callable[[], Iterator[tuple[object, ...]]]
+    column_types: Mapping[str, str]
+    number_formats: Mapping[str, str]
+    freeze_panes: str | None = 'A2'
+    auto_filter: bool = True
+    fixed_width: float | None = 15.0
+    conditional_formats: tuple[ConditionalFormatRule, ...] = ()
+
+
+@dataclass(frozen=True)
+class WorkbookPayload:
+    """分析完成后要写出的 workbook 元数据。"""
+
+    sheet_models: tuple[SheetModel, ...]
+    quality_metrics: tuple[QualityMetric, ...]
+    error_log_count: int
+    stage_timings: Mapping[str, float]
 
 
 @dataclass
@@ -49,7 +113,7 @@ class QualityMetric:
 
 @dataclass
 class AnalysisArtifacts:
-    """V3 分析输出产物。"""
+    """V3 分析输出产物，额外保留 fact bundle 供 downstream 重用。"""
 
     fact_df: pd.DataFrame
     qty_sheet_df: pd.DataFrame
@@ -57,6 +121,7 @@ class AnalysisArtifacts:
     product_anomaly_sections: list[ProductAnomalySection]
     quality_metrics: tuple[QualityMetric, ...]
     error_log: pd.DataFrame
+    fact_bundle: FactBundle | None = None
 
 
 @dataclass

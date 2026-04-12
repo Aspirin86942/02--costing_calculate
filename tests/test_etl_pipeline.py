@@ -3,9 +3,53 @@
 from __future__ import annotations
 
 import pandas as pd
+import polars as pl
 
-from src.analytics.contracts import ResolvedColumns, SplitResult
+from src.analytics.contracts import (
+    ConditionalFormatRule,
+    NormalizedCostFrame,
+    RawWorkbookFrame,
+    SheetModel,
+    WorkbookPayload,
+    ResolvedColumns,
+    SplitResult,
+)
 from src.etl.costing_etl import CostingWorkbookETL
+
+
+def test_polars_pipeline_contract_objects_are_constructible() -> None:
+    raw = RawWorkbookFrame(
+        sheet_name='成本计算单',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年1期'], 'column_1': ['P001']}),
+    )
+    normalized = NormalizedCostFrame(
+        frame=pl.DataFrame({'年期': ['2025-01'], '产品编码': ['P001']}),
+        key_columns=('年期', '产品编码'),
+    )
+    model = SheetModel(
+        sheet_name='成本明细',
+        columns=('年期', '产品编码'),
+        rows_factory=lambda: iter([('2025-01', 'P001')]),
+        column_types={'年期': 'text', '产品编码': 'text'},
+        number_formats={},
+        freeze_panes='A2',
+        auto_filter=True,
+        fixed_width=15.0,
+        conditional_formats=(
+            ConditionalFormatRule(
+                target_range='A2:A1048576',
+                formula='=$B2="高度可疑"',
+                format_key='suspicious',
+            ),
+        ),
+    )
+    payload = WorkbookPayload(sheet_models=(model,), quality_metrics=(), error_log_count=0, stage_timings={})
+
+    assert raw.sheet_name == '成本计算单'
+    assert normalized.key_columns == ('年期', '产品编码')
+    assert list(model.rows_factory()) == [('2025-01', 'P001')]
+    assert payload.sheet_models[0].sheet_name == '成本明细'
 
 
 def test_pipeline_resolve_columns_returns_resolved_columns_contract() -> None:

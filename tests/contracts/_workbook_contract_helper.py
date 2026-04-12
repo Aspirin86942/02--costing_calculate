@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import polars as pl
 from openpyxl import load_workbook
 
-from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric, WorkbookPayload
-from src.analytics.presentation_builder import build_sheet_models
-from src.analytics.qty_enricher import build_report_artifacts
+from src.analytics.contracts import (
+    AnalysisArtifacts,
+    FlatSheet,
+    NormalizedCostFrame,
+    ProductAnomalySection,
+    QualityMetric,
+    RawWorkbookFrame,
+    SplitResult,
+)
 from src.etl.costing_etl import CostingWorkbookETL
 
 DEFAULT_WORKBOOK_BASENAME = 'workbook_contract_default.xlsx'
@@ -43,10 +49,15 @@ def build_default_contract_workbook(tmp_path: Path) -> Path:
 
     df_detail = _build_default_detail_df()
     df_qty = _build_default_qty_df()
-    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=etl.standalone_cost_items)
-    payload = _build_workbook_payload(detail_df=df_detail, artifacts=artifacts)
-
-    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
+    with (
+        patch.object(etl.pipeline, 'load_raw_workbook_frame', return_value=_build_stub_raw_workbook()),
+        patch.object(etl.pipeline, 'build_normalized_cost_frame', return_value=_build_stub_normalized_frame()),
+        patch.object(
+            etl.pipeline,
+            'split_normalized_frames',
+            return_value=SplitResult(detail_df=df_detail, qty_df=df_qty),
+        ),
+    ):
         assert etl.process_file(input_path, output_path) is True
 
     return output_path
@@ -184,55 +195,35 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
         ),
         error_log=pd.DataFrame(),
     )
-    payload = _build_workbook_payload(detail_df=df_detail, artifacts=artifacts)
 
-    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
+    with (
+        patch.object(etl.pipeline, 'load_raw_workbook_frame', return_value=_build_stub_raw_workbook()),
+        patch.object(etl.pipeline, 'build_normalized_cost_frame', return_value=_build_stub_normalized_frame()),
+        patch.object(
+            etl.pipeline,
+            'split_normalized_frames',
+            return_value=SplitResult(detail_df=df_detail, qty_df=df_qty),
+        ),
+        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts),
+    ):
         assert etl.process_file(input_path, output_path) is True
 
     return output_path
 
 
-def _build_workbook_payload(*, detail_df: pd.DataFrame, artifacts: AnalysisArtifacts) -> WorkbookPayload:
-    error_log = artifacts.error_log.copy()
-    for column_name in error_log.columns:
-        error_log[column_name] = pd.Series(
-            [_normalize_error_log_value(value) for value in error_log[column_name].tolist()],
-            dtype='object',
-        )
-
-    sheet_models = build_sheet_models(
-        detail_df=detail_df,
-        qty_sheet_df=artifacts.qty_sheet_df,
-        fact_bundle=artifacts.fact_bundle,
-        work_order_sheet=artifacts.work_order_sheet,
-        product_anomaly_sections=artifacts.product_anomaly_sections,
-        error_log=error_log,
-    )
-    return WorkbookPayload(
-        sheet_models=sheet_models,
-        quality_metrics=artifacts.quality_metrics,
-        error_log_count=len(artifacts.error_log),
-        stage_timings={
-            'ingest': 1.0,
-            'normalize': 2.0,
-            'fact': 3.0,
-            'analysis': 4.0,
-            'presentation': 5.0,
-        },
+def _build_stub_raw_workbook() -> RawWorkbookFrame:
+    return RawWorkbookFrame(
+        sheet_name='成本计算单',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年1月'], 'column_1': ['GB_C.D.B0040AA']}),
     )
 
 
-def _normalize_error_log_value(value: object) -> object:
-    if value is None:
-        return None
-    if isinstance(value, Decimal):
-        return format(value, 'f')
-    try:
-        if pd.isna(value):
-            return None
-    except TypeError:
-        pass
-    return str(value)
+def _build_stub_normalized_frame() -> NormalizedCostFrame:
+    return NormalizedCostFrame(
+        frame=pl.DataFrame({'月份': ['2025年01月'], '产品编码': ['GB_C.D.B0040AA']}),
+        key_columns=('月份', '产品编码'),
+    )
 
 
 def extract_workbook_semantics(workbook_path: Path) -> dict[str, object]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.analytics.contracts import QualityMetric
+from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
 from src.config.pipelines import PipelineConfig
 from src.etl.runner import find_input_files, run_pipeline
 
@@ -75,3 +75,65 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
     assert 'pipeline=sk' in stdout
     assert '可参与分析占比=100.00%' in log_path.read_text(encoding='utf-8')
     assert captured['standalone_cost_items'] == config.standalone_cost_items
+
+
+def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.touch()
+    processed_dir = tmp_path / 'processed'
+    processed_dir.mkdir()
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        standalone_cost_items=('委外加工费',),
+    )
+
+    captured: dict[str, object] = {}
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('GB_C.D.B0040AA',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(
+            QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),
+        ),
+        error_log_count=2,
+        stage_timings={'ingest': 1.0, 'normalize': 2.0, 'fact': 3.0, 'analysis': 4.0, 'presentation': 5.0},
+    )
+
+    def _fake_build_workbook_payload(self, input_path: Path, *, standalone_cost_items: tuple[str, ...]):
+        captured['input_path'] = input_path
+        captured['standalone_cost_items'] = standalone_cost_items
+        return payload
+
+    def _fake_write_workbook_from_models(self, output_path: Path, *, sheet_models) -> None:
+        captured['output_path'] = output_path
+        captured['sheet_names'] = [model.sheet_name for model in sheet_models]
+        output_path.write_text('ok', encoding='utf-8')
+
+    monkeypatch.setattr('src.etl.pipeline.CostingEtlPipeline.build_workbook_payload', _fake_build_workbook_payload)
+    monkeypatch.setattr(
+        'src.excel.workbook_writer.CostingWorkbookWriter.write_workbook_from_models',
+        _fake_write_workbook_from_models,
+    )
+
+    exit_code = run_pipeline(config)
+    stdout = capsys.readouterr().out
+    log_path = processed_dir / 'GB-成本计算单_处理后.log'
+
+    assert exit_code == 0
+    assert log_path.exists()
+    assert 'pipeline=gb' in stdout
+    assert 'error_log_count=2' in stdout
+    assert captured['input_path'] == input_file
+    assert captured['output_path'] == processed_dir / 'GB-成本计算单_处理后.xlsx'
+    assert captured['standalone_cost_items'] == ('委外加工费',)
+    assert captured['sheet_names'] == ['成本明细']

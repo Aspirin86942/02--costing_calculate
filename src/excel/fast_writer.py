@@ -177,8 +177,47 @@ class FastSheetWriter:
             return workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
         return workbook.add_format({'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format})
 
+    def _build_product_anomaly_sections_from_model(self, model: SheetModel) -> list[ProductAnomalySection]:
+        if len(model.columns) < 2:
+            return []
+
+        table_columns = list(model.columns[2:])
+        grouped_rows: dict[tuple[str, str], list[tuple[object, ...]]] = {}
+        group_order: list[tuple[str, str]] = []
+        for row in model.rows_factory():
+            if len(row) < 2:
+                continue
+            product_code = '' if row[0] is None else str(row[0])
+            product_name = '' if row[1] is None else str(row[1])
+            key = (product_code, product_name)
+            if key not in grouped_rows:
+                grouped_rows[key] = []
+                group_order.append(key)
+            grouped_rows[key].append(tuple(row[2 : 2 + len(table_columns)]))
+
+        sections: list[ProductAnomalySection] = []
+        for product_code, product_name in group_order:
+            section_data = pd.DataFrame(grouped_rows[(product_code, product_name)], columns=table_columns)
+            section_column_types = {column: model.column_types.get(column, 'text') for column in table_columns}
+            sections.append(
+                ProductAnomalySection(
+                    product_code=product_code,
+                    product_name=product_name,
+                    data=section_data,
+                    column_types=section_column_types,
+                    amount_columns=[],
+                    outlier_cells=set(),
+                )
+            )
+        return sections
+
     def write_sheet_model(self, writer: pd.ExcelWriter, model: SheetModel) -> Any:
         """按 SheetModel 契约写出单个 sheet。"""
+        if model.sheet_name == '按产品异常值分析':
+            sections = self._build_product_anomaly_sections_from_model(model)
+            self.write_product_anomaly_sheet(writer, model.sheet_name, sections)
+            return writer.sheets[model.sheet_name]
+
         workbook = writer.book
         worksheet = workbook.add_worksheet(model.sheet_name)
         writer.sheets[model.sheet_name] = worksheet

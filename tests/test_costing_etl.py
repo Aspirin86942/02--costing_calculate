@@ -16,6 +16,7 @@ from src.analytics.contracts import (
     QualityMetric,
     SheetModel,
 )
+from src.analytics.presentation_builder import build_sheet_models
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
@@ -301,6 +302,82 @@ def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_pa
     assert worksheet.freeze_panes == 'A2'
     assert worksheet['A2'].number_format == '#,##0.00'
     assert worksheet.conditional_formatting
+
+
+def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> None:
+    detail_df = pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}])
+    qty_sheet_df = pd.DataFrame(
+        [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+    )
+    work_order_sheet = FlatSheet(
+        data=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '直接材料单位完工成本': 10.0, '直接材料异常标记': '关注'}]
+        ),
+        column_types={'月份': 'text', '产品编码': 'text', '直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
+    )
+    product_sections = [
+        ProductAnomalySection(
+            product_code='P001',
+            product_name='产品A',
+            data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+            column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+            amount_columns=['总成本'],
+            outlier_cells=set(),
+        )
+    ]
+
+    with patch(
+        'src.analytics.presentation_builder.pl.from_pandas',
+        side_effect=AssertionError('should not use pyarrow'),
+    ):
+        models = build_sheet_models(
+            detail_df=detail_df,
+            qty_sheet_df=qty_sheet_df,
+            fact_bundle=None,
+            work_order_sheet=work_order_sheet,
+            product_anomaly_sections=product_sections,
+            error_log=pd.DataFrame(columns=['error_type', 'message']),
+        )
+
+    assert len(models) == 8
+    product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    assert product_model.freeze_panes == 'A6'
+    assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
+
+
+def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
+    output_path = tmp_path / 'product_anomaly_model.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        qty_sheet_df=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+            )
+        ],
+        error_log=pd.DataFrame(columns=['error_type', 'message']),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['按产品异常值分析']
+    assert worksheet['A1'].value == '四、按单个产品异常值分析'
+    assert worksheet['A3'].value == '产品编码'
+    assert worksheet['A4'].value == 'P001'
+    assert worksheet['B3'].value == '产品名称'
+    assert worksheet['B4'].value == '产品A'
+    assert worksheet.freeze_panes == 'A6'
 
 
 def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:

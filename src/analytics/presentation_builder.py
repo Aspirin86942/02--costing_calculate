@@ -142,6 +142,7 @@ def build_sheet_models(
         frame=product_anomaly_frame,
         column_types=product_anomaly_column_types,
         number_formats=product_anomaly_number_formats,
+        freeze_panes='A6',
         fixed_width=15.0,
     )
     error_log_model = dataframe_to_sheet_model(
@@ -220,7 +221,5 @@ def _build_number_formats(column_types: Mapping[str, str]) -> dict[str, str]:
 def _to_polars_frame(frame: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
     if isinstance(frame, pl.DataFrame):
         return frame.clone()
-    if frame.empty:
-        schema = dict.fromkeys(frame.columns, pl.String)
-        return pl.DataFrame(schema=schema)
-    return pl.from_pandas(frame, include_index=False)
+    # 使用 to_dict(list) 保持 pyarrow-free，兼容 test 环境最小依赖。
+    return pl.DataFrame(frame.to_dict(orient='list'))

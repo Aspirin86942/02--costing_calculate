@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_args, get_origin, get_type_hints
 from unittest.mock import patch
 
 import logging
@@ -353,6 +354,21 @@ def test_split_normalized_frames_keeps_qty_and_detail_contracts() -> None:
     assert split.detail_df.columns == ['年期', '月份', '产品编码', '工单编号', '成本项目名称', '本期完工金额']
     assert split.qty_df.height == 1
     assert split.detail_df.height == 1
+    assert isinstance(split.qty_df, pl.DataFrame)
+    assert isinstance(split.detail_df, pl.DataFrame)
+
+
+def test_split_result_contract_accepts_pandas_and_polars_frames() -> None:
+    type_hints = get_type_hints(SplitResult)
+    detail_type = type_hints['detail_df']
+    qty_type = type_hints['qty_df']
+
+    assert get_origin(detail_type) is not None
+    assert get_origin(qty_type) is not None
+    assert pd.DataFrame in get_args(detail_type)
+    assert pl.DataFrame in get_args(detail_type)
+    assert pd.DataFrame in get_args(qty_type)
+    assert pl.DataFrame in get_args(qty_type)
 
 
 def test_pipeline_load_raw_dataframe_keeps_legacy_pandas_contract(tmp_path: Path) -> None:

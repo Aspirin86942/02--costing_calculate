@@ -137,5 +137,5 @@ class ResolvedColumns:
 class SplitResult:
     """拆表阶段输出。"""
 
-    detail_df: pd.DataFrame
-    qty_df: pd.DataFrame
+    detail_df: pd.DataFrame | pl.DataFrame
+    qty_df: pd.DataFrame | pl.DataFrame

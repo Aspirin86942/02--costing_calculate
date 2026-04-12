@@ -1,662 +1,701 @@
-# 终极性能优化方案设计（全链路）
+# 终极性能优化方案设计（全链路 Polars 一次性迁移）
 
 ## 1. 背景
 
-当前正在实施的轻量 Excel 导出优化（`2026-04-12-lightweight-excel-export-design.md`）采用 xlsxwriter + 条件格式方案，预期可将导出耗时从 230 秒降至 30-60 秒。
+截至 **2026-04-12**，主线已经完成一轮轻量 Excel 导出优化，核心内容包括：
 
-但在实际生产场景中，单个成本计算单文件可能包含 **20 万行以上**的成本明细数据。基于当前实测数据（38s 读取 + 10s 计算 + 230s 导出），即使导出层优化到 30 秒，总耗时仍需 78 秒。
+- `xlsxwriter` 替代原有重样式写出路径
+- 热点 sheet 改为 `constant_memory + write_row()`
+- `按工单按产品异常值分析` 的异常高亮改为条件格式
+- `process_file()` 增加 `read / transform / export / total` 四段耗时日志
 
-**全链路瓶颈分析**：
+基于真实样本的当前主线实测基线如下：
 
-### 1.1 读取阶段（38 秒）
+| 管线 | 读取 | 计算/转换 | 导出 | 程序总耗时 | 外层墙钟 |
+|------|------|-----------|------|-----------|---------|
+| `gb` | `32.874s` | `6.040s` | `40.735s` | `79.649s` | `81.645s` |
+| `sk` | `32.942s` | `5.937s` | `40.797s` | `79.677s` | `81.714s` |
 
-- `openpyxl` 读取 20 万行 Excel 需要构建完整 DOM 树
-- 每个单元格都是 Python 对象，内存占用高
-- 读取后还需要做列名清洗、类型推断
+这说明当前真正的瓶颈已经稳定暴露为：
 
-### 1.2 计算阶段（10 秒）
+- 读取阶段约 `33s`
+- 导出阶段约 `41s`
+- 计算阶段仅约 `6s`
 
-- `fact_builder.py:278` 使用 `iterrows()` 遍历 grouped 结果（热点）
-- `analytics/table_rendering.py` 中有多处 `apply()` 调用
-- Decimal 精度计算虽然正确，但比 float 慢 10-50 倍
-- pandas 的 groupby + agg 对大数据集有对象分配开销
+用户已明确本轮目标不是继续做局部打补丁，而是：
 
-### 1.3 导出阶段（230 秒 → 30 秒）
+- **一次性切换主路径**
+- **允许重做内部架构**
+- **仍然必须导出 Excel**
+- **允许牺牲一部分样式/兼容性换速度**
+- 但最终 workbook 仍需保留：
+  - 必要表头
+  - 数字格式
+  - 自动筛选
+  - 冻结窗格
+  - 异常高亮颜色
 
-- 当前优化方案已经解决大部分问题
-- 但 pandas → xlsxwriter 的数据转换仍有开销
+同时，用户在设计讨论中已经确认本轮迁移策略为：
 
-本文档描述一个**终极性能方案**，目标是将**读取、计算、导出**三个阶段都优化到极致，实现 20 万行数据在 **20 秒以内**完成全流程处理。
+- **强兼容**
+- **一次性切换**
+- **采用方案 C：全链路 Polars 化**
 
-## 2. 目标
+因此，本文档不再讨论“是否继续沿用 pandas 主干”或“是否只做读取层 PoC”。本文档定义的是：
 
-本方案的目标是：
+- 一次性切换到 **全链路 Polars / 列式数据主干**
+- 同时保留当前 workbook 契约、异常高亮和审计输出
+- 以架构重组换取显著的全流程性能提升
 
-- **读取阶段**：从 38 秒降至 **8-10 秒**
-- **计算阶段**：从 10 秒降至 **2-3 秒**
-- **导出阶段**：从 230 秒降至 **10-15 秒**
-- **总耗时**：从 278 秒（4 分 38 秒）降至 **20-28 秒以内**
-- **内存占用**：降低 60% 以上（从 2GB 降至 800MB 以内）
-- 保持与当前方案相同的业务输出（sheet 数量、数据完整性、异常高亮）
-- 不改变业务计算口径和数据契约
+## 2. 目标与非目标
 
-## 3. 非目标
+### 2.1 目标
 
-本方案明确不作为目标的事项：
+本次迁移的目标是：
 
-- 不改变最终交付格式（仍然是 `.xlsx`）
-- 不重构 ETL 业务计算逻辑（读取、清洗、聚合、异常分析保持不变）
-- 不引入 Rust/C++ 等编译型语言（保持纯 Python 实现）
-- 不改为异步导出或后台任务（保持同步导出流程）
+1. 把内部主数据流从 `pandas DataFrame` 串联改为 **列式数据流**
+2. 把读、算、展示、导出明确拆层，消除当前跨层耦合
+3. 在保持外部 workbook 契约稳定的前提下，大幅压缩 `gb/sk` 真实样本的总耗时
+4. 为后续继续扩展大样本体量和新增分析口径提供稳定架构边界
 
-## 4. 核心技术选型
+### 2.2 性能目标
 
-### 4.1 Polars 替代 pandas（全链路）
+基于当前主线约 `80s` 的真实样本基线，本次迁移设定两档目标。
 
-**为什么选择 Polars**：
+**务实目标**
 
-- 基于 Rust + Apache Arrow，DataFrame 操作比 pandas 快 5-10 倍
-- 内存占用降低 50-60%（Arrow 列式存储 vs pandas 行式存储）
-- 原生支持并行计算（自动利用多核 CPU）
-- `iter_rows()` 直接返回 tuple，无 Python 对象转换开销
-- 与 pandas 互操作零拷贝（`polars.from_pandas()` 只是换视图）
+- `gb/sk total <= 35s`
+- `read <= 10s`
+- `export <= 15s`
 
-**全链路使用策略**：
+**拉伸目标**
 
-- **读取层**：使用 `polars.read_excel()` 替代 `openpyxl`（基于 calamine 引擎，比 openpyxl 快 3-5 倍）
-- **计算层**：核心聚合、分组、异常判定改用 Polars 表达式（lazy evaluation + 查询优化）
-- **导出层**：使用 `polars.iter_rows()` + xlsxwriter 原生流式写入
+- `gb/sk total <= 25s`
 
-**为什么全链路迁移**：
+### 2.3 兼容目标
 
-- 如果只在导出层用 Polars，读取和计算阶段仍是瓶颈
-- Polars 的 lazy evaluation 可以跨阶段优化（如 filter pushdown、projection pushdown）
-- 一次性迁移比分阶段迁移的总工作量更小
+本次迁移采用 **强兼容** 口径，要求最终 `.xlsx` 继续满足：
 
-### 4.2 xlsxwriter 原生流式写入
+- 8 张 sheet 名称和顺序保持不变
+- 关键列名、列顺序、核心数字格式保持不变
+- 自动筛选、冻结窗格保持不变
+- `按工单按产品异常值分析` 的异常高亮继续存在
+- `error_log` 的字段契约与审计语义保持不变
+- `按产品异常值分析` 继续作为兼容摘要页存在，不恢复旧 IQR 检测
 
-**为什么不用 pandas.to_excel()**：
+### 2.4 非目标
 
-- `pandas.to_excel()` 会先构建完整的内存结构，再序列化
-- 对 20 万行数据，会产生大量临时 Python 对象
-- 无法利用 `constant_memory` 模式的流式写入优势
+本次迁移明确不做以下事情：
 
-**为什么用原生 API**：
+- 不放弃 `.xlsx` 作为最终交付格式
+- 不缩减现有 8 张 sheet
+- 不取消异常高亮
+- 不改变现有业务勾稽口径、白名单规则、异常等级阈值
+- 不为了追求速度而允许账面金额精度漂移
+- 不把旧业务链路长期保留为并行双轨
 
-- 直接调用 `worksheet.write_row()` 流式写入
-- `constant_memory` 模式下，写完的行立即序列化到磁盘，内存恒定
-- 避免 pandas → openpyxl/xlsxwriter 的中间转换层开销
+## 3. 推荐方案
 
-### 4.3 条件格式替代逐格着色
+本次采用 **方案 C：全链路 Polars 化 + 极薄 Excel 契约边界**。
 
-这一点与当前优化方案一致，但在终极方案中更为关键：
+该方案的核心不是简单“把 pandas 换成 Polars”，而是把现有链路：
 
-- 20 万行 × 8 对异常列 = 160 万次单元格访问
-- 逐格着色需要 160 万次 Python 函数调用 + 样式对象序列化
-- 条件格式只需写入 8 条规则，由 Excel 引擎执行
+`Excel -> pandas 清洗 -> pandas 聚合 -> pandas 渲染 -> xlsxwriter`
 
-## 5. 架构设计
+改造为：
 
-### 5.1 数据流
+`Excel -> 列式读取 -> Polars 规范化 -> Polars 事实层/分析层 -> SheetModel -> xlsxwriter 流式写出`
 
-```
-原始 Excel
-    ↓
-【读取层】polars.read_excel() (calamine 引擎，8-10 秒)
-    ↓
-Polars LazyFrame (列名清洗、类型推断)
-    ↓
-【计算层】Polars 表达式 (聚合、分组、异常判定，2-3 秒)
-    ↓
-Polars DataFrame (collect 后的结果)
-    ↓
-【导出层】xlsxwriter 原生流式写入 (constant_memory 模式，10-15 秒)
-    ↓
-最终 .xlsx (总耗时 20-28 秒)
-```
+推荐该方案的原因如下：
 
-**关键点**：
+- 当前瓶颈主要集中在 **读取 + 导出准备**，而不是计算层本身
+- 用户已明确要求“全链路迁移、重新优化整个架构”，保守改造不足以满足目标
+- 通过把兼容锁点收敛到 `SheetModel`，可以在内部彻底重写的同时维持外部 workbook 契约稳定
+- 该方案后续仍有继续压性能的空间，不会再被 `pandas` 的对象列、重复复制和展示前拼表拖住
 
-- 全链路使用 Polars，避免 pandas ↔ Polars 转换开销
-- Lazy evaluation 允许跨阶段查询优化
-- 内存占用恒定（Arrow 列式存储 + constant_memory 写入）
+## 4. 总体架构
 
-### 5.2 模块职责
+新架构分为 5 个清晰层级：
 
-#### A. 需要重构的模块（全链路 Polars 化）
-
-**读取层**：
-
-- `src/excel/reader.py`：新增 `load_raw_workbook_polars()` 方法
-  - 使用 `polars.read_excel(engine='calamine')` 替代 `openpyxl`
-  - 返回 `polars.LazyFrame` 而不是 `pd.DataFrame`
-
-**计算层**：
-
-- `src/analytics/fact_builder.py`：核心聚合逻辑改用 Polars 表达式
-  - `build_fact_table()` 中的 `iterrows()` 改为 Polars `group_by().agg()`
-  - Decimal 计算保留在关键金额字段，其他字段用 float64
-- `src/analytics/qty_enricher.py`：聚合逻辑改用 Polars
-  - `groupby().agg()` 改为 Polars 原生表达式
-  - 避免 `apply()` 和 `iterrows()`
-- `src/analytics/anomaly.py`：异常判定改用 Polars 条件表达式
-  - `df.apply(lambda row: ...)` 改为 `pl.when().then().otherwise()`
+### 4.1 ingest
 
-**导出层**：
+职责：
 
-- 新增 `src/excel/fast_writer.py`：终极性能导出器
-  - 接收 `polars.DataFrame` 而不是 `pd.DataFrame`
-  - 使用 `pl.iter_rows()` + xlsxwriter 原生流式写入
-
-#### B. 保持不变的模块
-
-以下模块的业务逻辑保持不变，只是底层从 pandas 换成 Polars：
-
-- `src/etl/costing_etl.py`：主流程编排
-- `src/etl/pipeline.py`：清洗、拆表逻辑
-- `src/analytics/contracts.py`：数据契约定义
-
-#### C. 兼容层设计
-
-为了降低迁移风险，增加一个兼容层：
-
-```python
-# src/compat/polars_pandas.py
-"""Polars ↔ pandas 兼容层，用于渐进式迁移。"""
-
-def to_pandas_if_needed(df: pl.DataFrame | pd.DataFrame) -> pd.DataFrame:
-    """如果是 Polars DataFrame，转为 pandas。"""
-    if isinstance(df, pl.DataFrame):
-        return df.to_pandas()
-    return df
-
-def to_polars_if_needed(df: pd.DataFrame | pl.DataFrame) -> pl.DataFrame:
-    """如果是 pandas DataFrame，转为 Polars。"""
-    if isinstance(df, pd.DataFrame):
-        return pl.from_pandas(df)
-    return df
-```
-
-这样可以支持：
-
-- 部分模块先迁移到 Polars，其他模块仍用 pandas
-- 通过环境变量控制是否启用 Polars 路径
-- 如果 Polars 路径出问题，可以快速回退到 pandas
-
-### 5.3 依赖变化
-
-需要新增依赖：
-
-```toml
-# pyproject.toml
-dependencies = [
-    "pandas>=2.0.0",      # 保留（用于兼容层和回退）
-    "polars[all]>=1.0.0", # 新增（包含 calamine 引擎）
-    "xlsxwriter>=3.2.0",  # 已有（当前优化方案已引入）
-    "openpyxl>=3.1.0",    # 保留（用于回退）
-    "numpy>=1.24.0",
-    "beautifulsoup4>=4.12.0",
-]
-```
-
-**风险评估**：
-
-- Polars 是纯 Python 包（通过 PyO3 绑定 Rust），无需编译环境
-- `polars[all]` 包含 calamine 引擎（Excel 读取）和其他可选依赖
-- 安装体积约 30MB，对部署环境无特殊要求
-- 与 pandas 互操作成熟，不会引入兼容性问题
-- 保留 pandas 和 openpyxl 依赖，用于兼容层和回退
-
-## 6. 核心实现要点
-
-### 6.1 读取层优化
-
-使用 Polars 的 `calamine` 引擎读取 Excel：
-
-```python
-# src/excel/reader.py
-import polars as pl
-
-def load_raw_workbook_polars(file_path: Path, skip_rows: int = 2) -> pl.LazyFrame:
-    """使用 Polars 读取原始 Excel（比 openpyxl 快 3-5 倍）。"""
-    # calamine 是 Rust 实现的 Excel 解析器，比 openpyxl 快得多
-    df = pl.read_excel(
-        file_path,
-        sheet_name=0,  # 读取第一个 sheet
-        engine='calamine',
-        read_options={'skip_rows': skip_rows},
-    )
-    
-    # 返回 LazyFrame，延迟执行（允许查询优化）
-    return df.lazy()
-```
-
-**性能关键点**：
-
-- `calamine` 引擎基于 Rust，比 Python 的 openpyxl 快 3-5 倍
-- 返回 `LazyFrame` 而不是 `DataFrame`，允许跨阶段查询优化
-- 列名清洗、类型推断可以在 lazy 阶段完成，避免中间物化
-
-### 6.2 计算层优化
-
-#### A. 消除 iterrows() 热点
-
-当前代码 `fact_builder.py:278` 使用 `iterrows()` 遍历 grouped 结果：
-
-```python
-# 当前实现（慢）
-for _, row in grouped.iterrows():
-    for cost_bucket, amount_column in bucket_map.items():
-        amount = row[amount_column]
-        qty = row['qty']
-        rows.append({...})
-```
-
-改为 Polars 表达式（快 10-20 倍）：
-
-```python
-# 终极实现（快）
-fact_df = (
-    work_order_df
-    .group_by(['product_code', 'product_name', 'period'])
-    .agg([
-        pl.col('dm_amount').sum().alias('dm_amount'),
-        pl.col('dl_amount').sum().alias('dl_amount'),
-        pl.col('moh_amount').sum().alias('moh_amount'),
-        pl.col('completed_qty').sum().alias('qty'),
-    ])
-    .unpivot(
-        index=['product_code', 'product_name', 'period', 'qty'],
-        on=['dm_amount', 'dl_amount', 'moh_amount'],
-        variable_name='cost_bucket',
-        value_name='amount',
-    )
-    .with_columns([
-        pl.col('cost_bucket').str.replace('_amount', ''),
-        (pl.col('amount') / pl.col('qty')).alias('price'),
-    ])
-)
-```
-
-**性能关键点**：
-
-- `unpivot()` 替代 Python 循环，由 Rust 引擎执行
-- 所有计算都是向量化的，无 Python 对象分配
-- 自动并行执行（利用多核 CPU）
-
-#### B. 消除 apply() 调用
-
-当前代码中有多处 `df.apply(lambda row: ...)`，改为 Polars 条件表达式：
-
-```python
-# 当前实现（慢）
-df['异常标记'] = df.apply(
-    lambda row: '高度可疑' if row['单位成本'] > threshold * 2 else '关注' if row['单位成本'] > threshold else '',
-    axis=1
-)
-
-# 终极实现（快）
-df = df.with_columns([
-    pl.when(pl.col('单位成本') > threshold * 2)
-      .then(pl.lit('高度可疑'))
-      .when(pl.col('单位成本') > threshold)
-      .then(pl.lit('关注'))
-      .otherwise(pl.lit(''))
-      .alias('异常标记')
-])
-```
-
-**性能关键点**：
-
-- `when().then().otherwise()` 是向量化的，比 `apply()` 快 50-100 倍
-- 无 Python 函数调用开销
-- 自动利用 SIMD 指令
-
-#### C. Decimal vs float64 权衡
-
-当前代码全部使用 `Decimal` 保证精度，但 Decimal 比 float64 慢 10-50 倍。
-
-**优化策略**：
-
-- **关键金额字段**（如 `本期完工金额`、`单位成本`）保留 Decimal
-- **中间计算字段**（如 `price`、`qty`）使用 float64
-- 在最终输出前，将 float64 转回 Decimal 并格式化
-
-```python
-# 中间计算用 float64
-fact_df = fact_df.with_columns([
-    (pl.col('amount').cast(pl.Float64) / pl.col('qty').cast(pl.Float64)).alias('price')
-])
-
-# 导出前转回 Decimal（仅关键字段）
-fact_df = fact_df.with_columns([
-    pl.col('amount').map_elements(lambda x: Decimal(str(x)), return_dtype=pl.Object).alias('amount')
-])
-```
-
-### 6.3 导出层优化
-
-对 `成本明细`、`产品数量统计`、`error_log` 等大 sheet，使用流式写入：
-
-```python
-def _write_large_dataframe(
-    self,
-    sheet_name: str,
-    df: pd.DataFrame,
-    *,
-    numeric_columns: set[str],
-) -> None:
-    """流式写入大 DataFrame（热点路径）。"""
-    # 1. 零拷贝转换为 Polars
-    pl_df = pl.from_pandas(df)
-    
-    worksheet = self.workbook.add_worksheet(sheet_name)
-    
-    # 2. 写表头
-    worksheet.write_row(0, 0, pl_df.columns, self.formats['header'])
-    
-    # 3. 流式写数据（关键：iter_rows 直接返回 tuple）
-    for row_idx, row_tuple in enumerate(pl_df.iter_rows(), start=1):
-        worksheet.write_row(row_idx, 0, row_tuple)
-    
-    # 4. 批量设置数字列格式（不逐单元格）
-    for col_idx, col_name in enumerate(pl_df.columns):
-        if col_name in numeric_columns:
-            col_letter = xl_col_to_name(col_idx)
-            worksheet.set_column(f'{col_letter}:{col_letter}', 12, self.formats['number'])
-    
-    # 5. 冻结窗格 + 筛选
-    worksheet.freeze_panes(1, 0)
-    if len(pl_df) > 0:
-        worksheet.autofilter(0, 0, len(pl_df), len(pl_df.columns) - 1)
-```
-
-**性能关键点**：
-
-- `pl_df.iter_rows()` 比 `pd_df.itertuples()` 快 2-3 倍（无 Python 对象转换）
-- `worksheet.write_row()` 比逐单元格 `write()` 快 3-5 倍
-- `set_column()` 批量设置格式，比逐单元格快 100 倍
-
-### 6.2 条件格式高亮
-
-对 `按工单按产品异常值分析` sheet，使用条件格式替代逐格着色：
-
-```python
-def _apply_conditional_highlights(
-    self,
-    worksheet: xlsxwriter.worksheet.Worksheet,
-    columns: list[str],
-    data_rows: int,
-) -> None:
-    """应用条件格式高亮（核心性能优化点）。"""
-    header_map = {col_name: idx for idx, col_name in enumerate(columns)}
-    
-    for value_col, flag_col in WORK_ORDER_HIGHLIGHT_COLUMNS:
-        value_idx = header_map.get(value_col)
-        flag_idx = header_map.get(flag_col)
-        if value_idx is None or flag_idx is None:
-            continue
-        
-        value_col_letter = xl_col_to_name(value_idx)
-        flag_col_letter = xl_col_to_name(flag_idx)
-        
-        # 关注：黄色
-        worksheet.conditional_format(
-            f'{value_col_letter}2:{value_col_letter}{data_rows + 1}',
-            {
-                'type': 'formula',
-                'criteria': f'=${flag_col_letter}2="关注"',
-                'format': self.formats['attention'],
-            },
-        )
-        
-        # 高度可疑：红底白字
-        worksheet.conditional_format(
-            f'{value_col_letter}2:{value_col_letter}{data_rows + 1}',
-            {
-                'type': 'formula',
-                'criteria': f'=${flag_col_letter}2="高度可疑"',
-                'format': self.formats['suspicious'],
-            },
-        )
-```
-
-**性能关键点**：
-
-- 20 万行只需写入 8 × 2 = 16 条规则
-- 替代了 20 万 × 8 × 2 = 320 万次单元格访问
-- 高亮由 Excel 引擎执行，打开文件时才计算
-
-### 6.3 格式对象复用
-
-所有格式对象在 workbook 初始化时集中创建：
-
-```python
-def _init_formats(self) -> None:
-    """预创建所有格式对象（只创建一次）。"""
-    wb = self.workbook
-    self.formats = {
-        'header': wb.add_format({'bold': True, 'bg_color': '#D9D9D9', 'align': 'center'}),
-        'number': wb.add_format({'num_format': '#,##0.00', 'align': 'right'}),
-        'section_title': wb.add_format({'bold': True, 'bg_color': '#4472C4', 'font_color': '#FFFFFF'}),
-        'attention': wb.add_format({'bg_color': '#FFFF00'}),
-        'suspicious': wb.add_format({'bg_color': '#FF0000', 'font_color': '#FFFFFF'}),
-    }
-```
-
-**性能关键点**：
-
-- 禁止在行循环或单元格循环内创建格式对象
-- xlsxwriter 内部会对格式对象做哈希去重，但创建本身有开销
-- 预创建可以避免 20 万次格式对象创建
-
-### 6.4 删除所有边框
-
-与当前优化方案一致，删除所有 `cell.border = THIN_BORDER`：
-
-- 20 万行 × 10 列 = 200 万次边框赋值
-- 每次赋值需要序列化边框样式对象
-- 删除后可节省约 30-40 秒
-
-## 7. 性能预期
-
-### 7.1 理论分析
-
-| 优化点 | 当前方案 | 终极方案 | 提速倍数 |
-|--------|---------|---------|---------|
-| DataFrame 迭代 | pandas.itertuples | polars.iter_rows | 2-3x |
-| 单元格写入 | write() 逐格 | write_row() 批量 | 3-5x |
-| 异常高亮 | 逐格着色 | 条件格式 | 100x+ |
-| 内存占用 | 1.5GB | 800MB | 0.5x |
-
-### 7.2 预期耗时（20 万行）
-
-| 阶段 | 当前实现 | 近期优化（xlsxwriter） | 终极方案（全链路 Polars） |
-|------|---------|---------------------|----------------------|
-| 读取 | 38 秒 | 38 秒 | **8-10 秒** |
-| 计算 | 10 秒 | 10 秒 | **2-3 秒** |
-| 导出 | 230 秒 | 30-60 秒 | **10-15 秒** |
-| **总计** | **278 秒** | **78-108 秒** | **20-28 秒** |
-
-**保守估计**：总耗时降至 30 秒以内，相比当前实现提速 **9-10 倍**。
-
-### 7.3 实测验证要求
-
-实施时必须记录以下指标：
-
-- **分阶段耗时**：读取、计算、导出各阶段耗时（精确到毫秒）
-- **分 sheet 耗时**：各 sheet 写出耗时（用于定位热点）
-- **内存峰值**：使用 `tracemalloc` 或 `memory_profiler` 记录
-- **CPU 利用率**：验证 Polars 是否正确利用多核
-- **磁盘 I/O**：使用 `time.perf_counter()` 对比 CPU 时间和墙钟时间
-
-验收标准：
-
-- **总耗时**：20 万行样本 < 30 秒（目标 20-28 秒）
-- **内存峰值**：< 1GB（目标 800MB）
-- **数据一致性**：所有 sheet 行数、关键金额列总和与当前方案一致
-- **异常高亮**：工单异常页的黄色/红色高亮正确显示
-- **回归测试**：`pytest` 全量通过
-
-## 8. 风险与缓解
-
-### 8.1 主要风险
-
-**风险 1：Polars 与 pandas 互操作兼容性**
-
-- 风险描述：某些 pandas 特有的数据类型（如 `pd.Categorical`、`pd.Period`）可能无法直接转换
-- 缓解措施：在转换前做类型检查，必要时先转为基础类型（`str`、`float`、`int`）
-
-**风险 2：条件格式公式引用错误**
-
-- 风险描述：如果公式引用写错（如相对引用变成绝对引用），会导致整列高亮失效
-- 缓解措施：增加条件格式验证函数，在 workbook 保存前检查规则数量和应用范围
-
-**风险 3：xlsxwriter constant_memory 模式的顺序写约束**
-
-- 风险描述：`constant_memory` 模式要求按行号递增顺序写入，不能跳行或回头修改
-- 缓解措施：确保所有 sheet 都是"先写表头，再按行顺序写数据"，不做回溯修改
-
-**风险 4：精确耗时改善幅度不确定**
-
-- 风险描述：实际提速受磁盘写入、ZIP 压缩和 Python 对象转换开销影响
-- 缓解措施：不承诺固定秒数，只承诺"明显快于当前方案"，并以实测数据为准
-
-### 8.2 回滚预案
-
-如果终极方案出现问题，可以快速回退：
-
-```bash
-# 回退到当前优化方案
-USE_FAST_WRITER=false python -m src.etl.costing_etl
-```
-
-保留当前优化方案的代码不删除，作为稳定基线。
-
-## 9. 实施边界
-
-### 9.1 允许修改的文件
-
-**读取层**：
-- 新增 `src/excel/reader_polars.py`（Polars 读取器）
-- 修改 `src/excel/reader.py`（增加引擎切换逻辑）
-
-**计算层**：
-- 修改 `src/analytics/fact_builder.py`（消除 iterrows，改用 Polars 表达式）
-- 修改 `src/analytics/qty_enricher.py`（消除 apply，改用 Polars 聚合）
-- 修改 `src/analytics/anomaly.py`（消除 apply，改用 Polars 条件表达式）
-- 修改 `src/analytics/table_rendering.py`（改用 Polars）
-
-**导出层**：
-- 新增 `src/excel/fast_writer.py`（终极导出器）
-- 修改 `src/excel/workbook_writer.py`（增加引擎切换逻辑）
-
-**兼容层**：
-- 新增 `src/compat/polars_pandas.py`（Polars ↔ pandas 兼容层）
-
-**配置**：
-- 修改 `pyproject.toml`（新增 polars 依赖）
-
-### 9.2 不允许修改的内容
-
-- **业务口径**：异常判定阈值、金额聚合规则、产品白名单
-- **数据契约**：字段名、sheet 名称、输出行数
-- **测试基线**：`tests/contracts/baselines/` 中的真值（除非为了反映"性能优化但数据不变"的新预期）
-
-### 9.3 测试要求
-
-必须通过以下测试：
-
-- `pytest` 全量通过
-- 真实 `gb`、`sk` 样本都能成功导出
-- 导出的 9 张 sheet 都存在
-- 关键业务数据与当前方案一致（使用 `pd.read_excel` 读回来对比）
-- `按工单按产品异常值分析` 的异常高亮存在（手工打开 Excel 验证）
-
-## 10. 后续演进路径
-
-如果终极方案实施后，性能仍不满足需求（如需要 5 秒以内导出 20 万行），可以考虑：
-
-### 10.1 Rust 原生导出（需要编译环境）
-
-- 使用 `rust_xlsxwriter` + PyO3 封装
-- 预期耗时：5-8 秒
-- 但需要 Rust 编译环境，部署复杂度高
-
-### 10.2 先导出 Parquet，按需转 Excel
-
-- 导出 Parquet：2 秒
-- 用户需要时再转 Excel：`polars.read_parquet().write_excel()`
-- 但改变了交付格式，需要业务方接受
-
-### 10.3 异步导出 + 进度通知
-
-- 导出任务放入后台队列
-- 用户可以继续其他工作，导出完成后通知
-- 但需要引入任务队列（如 Celery），架构复杂度高
-
-## 11. 实施策略
-
-### 11.1 渐进式迁移路径
-
-为了降低风险，建议分三个阶段实施：
-
-**阶段 1：导出层 Polars 化（低风险）**
-- 只改 `src/excel/fast_writer.py`
-- 上游仍用 pandas，导出前做一次 `pl.from_pandas()` 转换
-- 预期提速：230 秒 → 10-15 秒（导出阶段）
-- 总耗时：278 秒 → 58-63 秒
-
-**阶段 2：读取层 Polars 化（中风险）**
-- 改 `src/excel/reader.py`，使用 `polars.read_excel()`
-- 读取后转为 pandas，保持计算层不变
-- 预期提速：38 秒 → 8-10 秒（读取阶段）
-- 总耗时：58-63 秒 → 28-33 秒
-
-**阶段 3：计算层 Polars 化（高风险）**
-- 改 `src/analytics/` 下所有模块
-- 全链路使用 Polars，无 pandas 转换
-- 预期提速：10 秒 → 2-3 秒（计算阶段）
-- 总耗时：28-33 秒 → **20-28 秒**
-
-### 11.2 回退预案
-
-每个阶段都保留环境变量开关：
-
-```bash
-# 阶段 1：启用 Polars 导出
-USE_POLARS_WRITER=true python -m src.etl.costing_etl
-
-# 阶段 2：启用 Polars 读取
-USE_POLARS_READER=true python -m src.etl.costing_etl
-
-# 阶段 3：全链路 Polars
-USE_POLARS_FULL=true python -m src.etl.costing_etl
-
-# 回退到 pandas
-USE_POLARS_FULL=false python -m src.etl.costing_etl
-```
-
-## 12. 总结
-
-本方案是一个**终极性能方案**，目标是将 20 万行数据的全流程处理从 4 分 38 秒降至 **20-28 秒以内**。
-
-核心优势：
-
-- **全链路优化**：读取、计算、导出三个阶段都优化到极致
-- **提速 9-10 倍**：从 278 秒降至 20-28 秒
-- **内存降低 60%**：从 2GB 降至 800MB
-- **保持纯 Python**：无需 Rust 编译环境
-- **渐进式迁移**：分三个阶段实施，每个阶段都可独立验收和回退
-
-实施时机：
-
-- **近期**：先完成当前优化方案（xlsxwriter + 条件格式）
-- **中期**：当业务规模增长到 30 万行以上，或用户明确要求"更快"时
-- **长期**：作为技术储备，持续跟进 Polars 生态发展
-
-实施优先级：
-
-- 优先级：**中**（比 Rust 方案更现实，比当前方案更快）
-- 建议在当前优化方案实施完成后 3-6 个月内启动
-- 优先实施阶段 1（导出层），风险最低、收益最大
+- 读取原始 Excel
+- 保留 workbook / 表头元信息
+- 统一输出列式原始数据对象
+
+约束：
+
+- 不在本层做业务填充、异常判断或聚合
+- 只负责“把 Excel 可靠读进来”
+
+### 4.2 normalize
+
+职责：
+
+- 双层表头扁平化
+- 关键列识别与重命名
+- 汇总行删除
+- 规则化向下填充
+- 主键字段标准化
+- 类型收敛
+
+约束：
+
+- 本层结束后必须形成稳定、可复用的规范化明细表
+- 后续 `fact` 层一律只消费规范化结果，不再回头操作原始 Excel 结构
+
+### 4.3 fact
+
+职责：
+
+- 从规范化明细表生成稳定的业务事实表
+- 把“展示前临时 groupby”前移成明确的业务中间层
+
+约束：
+
+- 每张事实表只服务一类业务输出
+- 不在本层考虑 Excel 展示样式
+
+### 4.4 presentation
+
+职责：
+
+- 把事实表和分析结果组装为 `SheetModel`
+- 锁定 sheet 顺序、列顺序、列类型、数字格式、冻结窗格、筛选和条件格式
+
+约束：
+
+- 该层是 **兼容锁点**
+- 不在本层重新做重聚合
+
+### 4.5 export
+
+职责：
+
+- 将 `SheetModel` 用 `xlsxwriter` 流式写成 `.xlsx`
+- 应用必要的数字格式、自动筛选、冻结窗格和条件格式
+
+约束：
+
+- 导出层不再知道业务计算细节
+- 导出层不再直接接受业务 `DataFrame`
+
+## 5. 核心数据模型
+
+为了彻底摆脱“DataFrame 到处传”的旧模式，本次迁移只保留 4 类核心对象。
+
+### 5.1 `RawWorkbookFrame`
+
+表示刚读入的原始双层表头数据。
+
+要求：
+
+- 保留原始列层级信息
+- 不承诺业务列名
+- 只保证可以被 `normalize` 层稳定消费
+
+### 5.2 `NormalizedCostFrame`
+
+表示完成列解析、汇总行删除、规则填充、类型收敛后的规范化明细表。
+
+要求：
+
+- 字段名稳定
+- 主键稳定
+- 数值字段类型稳定
+- 后续业务层一律只消费该对象
+
+### 5.3 `FactFrame`
+
+不是单张表，而是一组稳定事实表：
+
+- `detail_fact`
+- `qty_fact`
+- `work_order_fact`
+- `product_summary_fact`
+- `error_fact`
+
+这样可以确保：
+
+- 异常分析、价量分析、质量校验不再偷用彼此的中间表
+- 每张表都能单独打性能点和做回归对比
+
+### 5.4 `SheetModel`
+
+表示最终可导出的 workbook sheet 描述对象。
+
+至少包含：
+
+- `sheet_name`
+- `columns`
+- `rows`
+- `column_types`
+- `number_formats`
+- `freeze_panes`
+- `auto_filter`
+- `fixed_width`
+- `conditional_formats`
+
+`SheetModel` 是本次迁移的核心兼容锁点。只要它稳定，内部实现可以重做而不影响最终 workbook 契约。
+
+## 6. 目标模块替换与职责重切
+
+本次迁移不是在旧模块上继续堆功能，而是按职责重切。
+
+### 6.1 `src/etl/stages/reader.py`
+
+从“直接 `pd.read_excel()`”改为读取适配层：
+
+- 主实现切到 `calamine / polars`
+- 输出 `RawWorkbookFrame`
+- 对外隐藏底层读取实现差异
+
+### 6.2 `src/etl/pipeline.py`
+
+从简单的 pandas 阶段串联，升级为真正的流程编排器：
+
+- `ingest -> normalize -> fact -> presentation -> export`
+
+### 6.3 `src/analytics/fact_builder.py`
+
+保留“业务口径定义”职责，但实现改为：
+
+- Polars 表达式主导
+- 明确生成多张 `FactFrame`
+- 不再混合展示逻辑
+
+### 6.4 `src/analytics/qty_enricher.py`
+
+拆解其当前“既做业务计算又准备展示字段”的混合职责，重构为：
+
+- `fact` 层的一部分
+- 或拆成 `fact` + `analysis` 两层能力
+
+### 6.5 `src/analytics/table_rendering.py`
+
+从“渲染 pandas DataFrame”改成：
+
+- 面向 `SheetModel` 的分段组织器
+- 只负责 section / rows / 列展示契约，不再负责重计算
+
+### 6.6 `src/excel/workbook_writer.py`
+
+继续保留，但职责收缩为：
+
+- 只接收 `SheetModel`
+- 编排固定 sheet 顺序
+- 不再知道 `detail_df`、`qty_df` 等业务中间表
+
+### 6.7 `src/excel/fast_writer.py`
+
+继续保留，作为最底层写出器：
+
+- 处理流式写行
+- 应用格式
+- 应用条件格式
+
+不在本层引入业务规则。
+
+## 7. 关键数据流
+
+本次迁移后，完整链路固定为以下 7 步，不允许跨层偷用数据。
+
+### 7.1 `WorkbookIngestor`
+
+输入：原始 `.xlsx`  
+输出：`RawWorkbookFrame`
+
+职责：
+
+- 读取双层表头
+- 保留表头层级和原始 workbook 元信息
+- 不做业务判断
+
+### 7.2 `HeaderNormalizer`
+
+输入：`RawWorkbookFrame`  
+输出：`NormalizedCostFrame`
+
+职责：
+
+- 扁平化双层表头
+- 列名识别与重命名
+- 汇总行删除
+- 规则化向下填充
+- 主键标准化
+
+### 7.3 `TypeCaster`
+
+输入：`NormalizedCostFrame`  
+输出：稳定类型版本的 `NormalizedCostFrame`
+
+职责：
+
+- 文本列统一成稳定字符串
+- 周期列统一成标准 `period`
+- 金额 / 数量列统一成精确数值表示
+- 明确哪些字段允许空，哪些必须进入 `error_log`
+
+### 7.4 `FactBuilder`
+
+输入：稳定类型的规范化表  
+输出：多张 `FactFrame`
+
+职责：
+
+- 生成 `detail_fact`
+- 生成 `qty_fact`
+- 生成 `work_order_fact`
+- 生成 `product_summary_fact`
+- 生成 `error_fact`
+
+### 7.5 `AnalysisEngine`
+
+输入：`FactFrame` 组  
+输出：异常分数、价量分析结果、质量指标
+
+职责：
+
+- Modified Z-score 计算
+- 白名单过滤
+- 勾稽状态和异常原因生成
+- 质量指标生成
+
+### 7.6 `PresentationBuilder`
+
+输入：事实表 + 分析结果  
+输出：`SheetModel[]`
+
+职责：
+
+- 锁定 sheet 顺序
+- 锁定列顺序与列类型
+- 锁定数字格式、冻结窗格、筛选和条件格式规则
+
+### 7.7 `WorkbookExporter`
+
+输入：`SheetModel[]`  
+输出：最终 `.xlsx`
+
+职责：
+
+- 流式写行
+- 应用格式与条件格式
+- 不执行业务计算
+
+## 8. 性能抓手
+
+本次迁移的性能收益并不依赖单点微优化，而是依赖下面几项结构性变化。
+
+### 8.1 读入从对象表改为列式表
+
+当前 `openpyxl + pandas MultiIndex` 路径会产生大量 Python 对象分配、列名整理和中间拷贝成本。
+
+切到列式读入后，读取阶段预期将显著下降。
+
+### 8.2 规范化只做一次
+
+当前链路存在重复的：
+
+- `copy`
+- `rename`
+- 重复类型转换
+- 展示前再次清洗
+
+迁移后，`normalize` 层产出的稳定表将成为唯一主输入，后续所有阶段共用，不允许重复清洗。
+
+### 8.3 事实表前移
+
+当前部分汇总逻辑仍然在展示前临时组织。
+
+迁移后，一次性生成 `detail_fact / qty_fact / work_order_fact / product_summary_fact`，后续分析与展示直接消费事实表，避免重复 `groupby`。
+
+### 8.4 展示层不再创建重 DataFrame
+
+当前“导出慢”并不只是 Excel 写文件慢，很多时间耗在导出前的大量表拼装上。
+
+迁移后：
+
+- `presentation` 层直接生成 `rows iterator`
+- `export` 层只做流式吐行
+
+### 8.5 条件格式继续替代逐格着色
+
+现有异常高亮已经证明：
+
+- 条件格式比逐格着色更快
+- 语义上也更适合异常页
+
+因此本次迁移保留该策略，不回退。
+
+### 8.6 分阶段观测成为固定能力
+
+迁移后至少固定记录以下阶段耗时：
+
+- `ingest`
+- `normalize`
+- `fact`
+- `analysis`
+- `presentation`
+- `export`
+- `total`
+
+这样后续任何新瓶颈都能快速定位到具体层级，而不是继续停留在“感觉 Excel 慢”的黑盒状态。
+
+## 9. 精度与类型约束
+
+该项目属于核算型 ETL，本次迁移必须把精度约束写死，避免性能优化破坏账面可信度。
+
+### 9.1 账面金额链路禁止使用 `float`
+
+以下字段禁止以 `float` 作为账面计算载体：
+
+- 金额
+- 数量
+- 单位成本
+- 勾稽相关派生字段
+
+### 9.2 允许 `float` 的范围
+
+只有以下统计型派生值允许使用浮点：
+
+- `log_*`
+- `Modified Z-score_*`
+- 中位数 / MAD 等统计中间量
+
+这些字段本身不承担账面金额语义。
+
+### 9.3 金额表示优先级
+
+热路径推荐优先级如下：
+
+1. 优先采用 Polars 可稳定支持的精确数值表示
+2. 若 Polars Decimal 支撑不足，则使用 **缩放整数** 作为物理存储
+
+例如：
+
+- 金额统一按分或更细粒度缩放为整数
+- 单位成本在进入展示层前再格式化回最终显示精度
+
+该方案可同时满足：
+
+- 保证精度
+- 避免 Python `Decimal` 对象列导致性能回落
+
+## 10. 强兼容锁点
+
+本次迁移采用 **强兼容**，但兼容不是要求“内部代码长得像旧实现”，而是要求“外部产物契约稳定”。
+
+兼容锁点明确放在：
+
+- `PresentationBuilder -> SheetModel`
+
+只要 `SheetModel` 稳定，内部算子和存储实现都可以重做。
+
+### 10.1 必须锁死的兼容项
+
+- 8 张 sheet 名称与顺序
+- 每张 sheet 的关键列名和列顺序
+- 数字格式
+- 自动筛选行为
+- 冻结窗格行为
+- 异常高亮规则
+- `error_log` 字段集合与语义
+- `按产品异常值分析` 的兼容摘要页定位
+
+### 10.2 兼容不要求的内容
+
+在不影响核心语义的前提下，以下内容允许有受控变化：
+
+- 非关键样式细节
+- 内部实现依赖
+- 中间对象结构
+- 非关键列宽估算策略
+
+## 11. 风险与缓解
+
+### 风险 1：`calamine / polars` 对脏 Excel 的兼容性不足
+
+风险描述：
+
+- 双层表头层级信息可能不完整
+- 空列、异常标题、格式脏数据处理方式可能与旧读取器不同
+- 文本列可能被误推断为数值列
+
+缓解措施：
+
+- `ingest` 层设计为 **主读取器 + 单一回退读取器**
+- 回退仅发生在读取入口，不保留双轨业务逻辑
+- 用真实 `gb/sk` 样本做列级、行级对比
+
+### 风险 2：金额精度和列式类型体系冲突
+
+风险描述：
+
+- Polars 路径若对精确数值支持不稳，可能引入账面偏差
+
+缓解措施：
+
+- 明确账面金额链路禁止 `float`
+- 必要时采用缩放整数
+- 金额、单价、勾稽字段全部做产物对比
+
+### 风险 3：一次性切主路径导致回归面过大
+
+风险描述：
+
+- 本次变化不只影响 sheet 内容，还会影响：
+  - 白名单顺序
+  - 独立成本项口径
+  - `error_log` 语义
+  - 条件格式范围
+  - 质量指标口径
+
+缓解措施：
+
+- 迁移过程按内部阶段收口
+- 每阶段都做与旧链路的真实样本对比
+- 最终以 workbook 契约验收为准，而不是只看单测是否通过
+
+## 12. 切换策略
+
+用户要求的是“一次性切换”，因此最终交付时不保留长期并行主路径。
+
+但实现顺序仍应分为 3 个内部里程碑：
+
+### 12.1 里程碑 A：`ingest + normalize`
+
+目标：
+
+- 新链路稳定产出 `NormalizedCostFrame`
+- 与旧链路做列级、行级对比
+
+### 12.2 里程碑 B：`fact + analysis`
+
+目标：
+
+- `qty_fact / work_order_fact / product_summary_fact / error_fact` 全部从新主干产出
+- 与旧链路对比关键汇总、异常等级、错误类型和质量指标
+
+### 12.3 里程碑 C：`presentation + export`
+
+目标：
+
+- 用 `SheetModel` 接管 workbook 输出
+- 完成真正的主路径切换
+
+该策略对用户表现为一次性切换，对研发实现则表现为分层收口，以降低迁移风险。
+
+## 13. 验收标准
+
+本次迁移必须同时通过以下四类验收。
+
+### 13.1 契约验收
+
+- 8 张 sheet 名称和顺序完全一致
+- 关键表头、列顺序一致
+- 数字格式、自动筛选、冻结窗格保留
+- 异常页高亮继续存在
+- `error_log` 必备字段和错误类型保留
+
+### 13.2 数据验收
+
+- 关键金额汇总一致
+- 行数勾稽一致
+- 白名单产品顺序一致
+- 独立成本项口径一致
+- 异常等级和异常主要来源一致
+
+对于极少数边界值，如果因底层统计实现差异触发人工复核，必须满足：
+
+- 差异范围极小
+- 原因可解释
+- 不影响账面金额与业务口径
+
+### 13.3 性能验收
+
+基线使用 **2026-04-12** 当前主线真实样本：
+
+- `gb total = 79.649s`
+- `sk total = 79.677s`
+
+验收目标：
+
+- 务实目标：`gb/sk total <= 35s`
+- 务实目标：`read <= 10s`
+- 务实目标：`export <= 15s`
+- 拉伸目标：`gb/sk total <= 25s`
+
+### 13.4 回归验收
+
+- `conda run -n test python -m pytest tests -q`
+- `conda run -n test python -m ruff check src tests`
+- 真实 `gb/sk` 各执行一次
+- 对输出 workbook 做契约检查
+
+## 14. 测试策略
+
+为支撑一次性主路径切换，本次迁移应补齐以下测试层次。
+
+### 14.1 单元测试
+
+覆盖：
+
+- 列识别
+- 双层表头扁平化
+- 向下填充规则
+- 成本项映射
+- 勾稽字段计算
+- 异常等级计算
+
+### 14.2 事实层测试
+
+覆盖：
+
+- `detail_fact`
+- `qty_fact`
+- `work_order_fact`
+- `product_summary_fact`
+- `error_fact`
+
+重点检查：
+
+- 行数
+- 汇总金额
+- 关键字段唯一性
+- 空值与错误归档语义
+
+### 14.3 产物契约测试
+
+新增 workbook 外部行为测试，直接校验：
+
+- sheet 顺序
+- 表头
+- 关键列格式
+- 冻结窗格
+- 自动筛选
+- 条件格式存在性
+
+### 14.4 真实样本回归
+
+对 `gb/sk` 真实样本执行全链路跑数，对比：
+
+- 总耗时
+- 分阶段耗时
+- 输出 workbook 契约
+- 关键金额汇总
+- `error_log` 异常类型和数量
+
+## 15. 最终结论
+
+本次“终极性能优化”不再采用保守的局部 patch 路线，而是明确采用：
+
+- **方案 C：全链路 Polars 化**
+- **一次性切换主路径**
+- **强兼容 workbook 契约**
+- **极薄的 `xlsxwriter` 导出边界**
+- **单一入口回退机制，但不保留长期双轨业务链路**
+
+最终目标是在守住 workbook 契约、异常高亮和审计输出的前提下，把当前约 `80s` 的全流程压缩到 **25-35s** 区间，并为后续继续扩展性能和业务规则提供可维护的列式架构基础。

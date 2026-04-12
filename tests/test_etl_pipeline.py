@@ -232,6 +232,40 @@ def test_workbook_ingestor_calamine_fast_path_preserves_contract(tmp_path: Path)
     assert result.frame.row(0) == ('2026年3期', 'P002')
 
 
+def test_workbook_ingestor_calamine_fast_path_handles_late_blank_cells_without_fallback(tmp_path: Path) -> None:
+    class _FakeSheet:
+        name = 'FastSheet'
+
+        def to_python(self, skip_empty_area: bool = False) -> list[list[object]]:
+            return [
+                ['metadata'],
+                ['metadata2'],
+                ['本期完工数量'],
+                ['数量'],
+                *[[index] for index in range(1, 151)],
+                [''],
+            ]
+
+    class _FakeWorkbook:
+        def get_sheet_by_index(self, index: int) -> _FakeSheet:
+            assert index == 0
+            return _FakeSheet()
+
+    ingestor = WorkbookIngestor()
+    with (
+        patch('src.etl.stages.workbook_ingestor.CalamineWorkbook.from_path', return_value=_FakeWorkbook()),
+        patch.object(ingestor, '_load_with_openpyxl', side_effect=AssertionError('should not fallback')),
+    ):
+        result = ingestor.load(tmp_path / 'input.xlsx', skip_rows=2)
+
+    assert result.sheet_name == 'FastSheet'
+    assert result.header_rows == (('本期完工数量',), ('数量',))
+    assert result.frame.columns == ['column_0']
+    assert result.frame.row(0) == (1,)
+    assert result.frame.row(149) == (150,)
+    assert result.frame.row(150) == (None,)
+
+
 def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tmp_path: Path, caplog) -> None:
     workbook_path = tmp_path / 'fallback.xlsx'
     workbook = Workbook()

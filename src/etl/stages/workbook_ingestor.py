@@ -12,6 +12,17 @@ from src.analytics.contracts import RawWorkbookFrame
 logger = logging.getLogger(__name__)
 
 
+def _normalize_calamine_cell(value: object) -> object:
+    """快路径下仅清洗会干扰 schema 推断的空值形态。"""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if pd.isna(value):
+        return None
+    return value
+
+
 class WorkbookIngestor:
     def load(self, input_path: Path, *, skip_rows: int) -> RawWorkbookFrame:
         # 先走 calamine 快速路径，若失败则用 openpyxl 兼容避免阻断
@@ -31,8 +42,12 @@ class WorkbookIngestor:
         data_rows = rows[skip_rows + 2 :]
         width = max(len(header_top), len(header_bottom))
         columns = [f'column_{idx}' for idx in range(width)]
-        padded_rows = [list(row) + [None] * (width - len(row)) for row in data_rows]
-        frame = pl.DataFrame(padded_rows, schema=columns, orient='row')
+        padded_rows = [
+            [_normalize_calamine_cell(value) for value in list(row) + [None] * (width - len(row))]
+            for row in data_rows
+        ]
+        # 允许扫描整列后再推断 schema，避免前段全是数值、后段才出现空字符串时误退回 fallback。
+        frame = pl.DataFrame(padded_rows, schema=columns, orient='row', infer_schema_length=None)
         return RawWorkbookFrame(sheet_name=sheet.name, header_rows=(header_top, header_bottom), frame=frame)
 
     def _load_with_openpyxl(self, input_path: Path, *, skip_rows: int) -> RawWorkbookFrame:

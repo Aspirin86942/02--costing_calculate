@@ -6,13 +6,16 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.contracts import (
+    AnalysisArtifacts,
     ConditionalFormatRule,
+    FactBundle,
+    FlatSheet,
     NormalizedCostFrame,
     RawWorkbookFrame,
-    SheetModel,
-    WorkbookPayload,
     ResolvedColumns,
+    SheetModel,
     SplitResult,
+    WorkbookPayload,
 )
 from src.etl.costing_etl import CostingWorkbookETL
 
@@ -50,6 +53,66 @@ def test_polars_pipeline_contract_objects_are_constructible() -> None:
     assert normalized.key_columns == ('年期', '产品编码')
     assert list(model.rows_factory()) == [('2025-01', 'P001')]
     assert payload.sheet_models[0].sheet_name == '成本明细'
+
+
+def test_fact_bundle_is_constructible_and_exposes_expected_frames() -> None:
+    bundle = FactBundle(
+        detail_fact=pl.DataFrame({'detail_id': ['D-001']}),
+        qty_fact=pl.DataFrame({'qty_id': ['Q-001']}),
+        work_order_fact=pl.DataFrame({'work_order_id': ['WO-001']}),
+        product_summary_fact=pl.DataFrame({'product_id': ['P-001']}),
+        error_fact=pl.DataFrame({'error_code': ['MISSING_AMOUNT']}),
+    )
+
+    assert bundle.detail_fact.columns == ['detail_id']
+    assert bundle.qty_fact.item(0, 'qty_id') == 'Q-001'
+    assert bundle.work_order_fact.item(0, 'work_order_id') == 'WO-001'
+    assert bundle.product_summary_fact.item(0, 'product_id') == 'P-001'
+    assert bundle.error_fact.item(0, 'error_code') == 'MISSING_AMOUNT'
+
+
+def test_analysis_artifacts_remains_constructible_without_fact_bundle() -> None:
+    artifacts = AnalysisArtifacts(
+        fact_df=pd.DataFrame({'产品编码': ['P001']}),
+        qty_sheet_df=pd.DataFrame({'产品编码': ['P001']}),
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame({'工单编号': ['WO-001']}),
+            column_types={'工单编号': 'text'},
+        ),
+        product_anomaly_sections=[],
+        quality_metrics=(),
+        error_log=pd.DataFrame({'错误码': ['MISSING_AMOUNT']}),
+    )
+
+    assert artifacts.fact_bundle is None
+    assert artifacts.work_order_sheet.column_types == {'工单编号': 'text'}
+    assert artifacts.error_log.iloc[0]['错误码'] == 'MISSING_AMOUNT'
+
+
+def test_analysis_artifacts_accepts_fact_bundle_without_breaking_existing_fields() -> None:
+    bundle = FactBundle(
+        detail_fact=pl.DataFrame({'detail_id': ['D-001']}),
+        qty_fact=pl.DataFrame({'qty_id': ['Q-001']}),
+        work_order_fact=pl.DataFrame({'work_order_id': ['WO-001']}),
+        product_summary_fact=pl.DataFrame({'product_id': ['P-001']}),
+        error_fact=pl.DataFrame({'error_code': ['MISSING_AMOUNT']}),
+    )
+    artifacts = AnalysisArtifacts(
+        fact_df=pd.DataFrame({'产品编码': ['P001']}),
+        qty_sheet_df=pd.DataFrame({'产品编码': ['P001']}),
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame({'工单编号': ['WO-001']}),
+            column_types={'工单编号': 'text'},
+        ),
+        product_anomaly_sections=[],
+        quality_metrics=(),
+        error_log=pd.DataFrame({'错误码': ['MISSING_AMOUNT']}),
+        fact_bundle=bundle,
+    )
+
+    assert artifacts.fact_bundle is bundle
+    assert artifacts.fact_df.iloc[0]['产品编码'] == 'P001'
+    assert artifacts.fact_bundle.error_fact.item(0, 'error_code') == 'MISSING_AMOUNT'
 
 
 def test_pipeline_resolve_columns_returns_resolved_columns_contract() -> None:

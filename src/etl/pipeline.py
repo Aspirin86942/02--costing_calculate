@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 from time import perf_counter
@@ -11,6 +12,7 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.contracts import (
+    AnalysisArtifacts,
     NormalizedCostFrame,
     RawWorkbookFrame,
     ResolvedColumns,
@@ -194,6 +196,7 @@ class CostingEtlPipeline:
         input_path: Path,
         *,
         standalone_cost_items: tuple[str, ...],
+        artifacts_transform: Callable[[AnalysisArtifacts], AnalysisArtifacts] | None = None,
     ) -> WorkbookPayload:
         """按全链路 Polars 路径构建 workbook payload。"""
         stage_timings: dict[str, float] = {}
@@ -216,6 +219,8 @@ class CostingEtlPipeline:
             split_result.qty_df,
             standalone_cost_items=standalone_cost_items,
         )
+        if artifacts_transform is not None:
+            artifacts = artifacts_transform(artifacts)
         stage_timings['analysis'] = perf_counter() - analysis_start
 
         presentation_start = perf_counter()

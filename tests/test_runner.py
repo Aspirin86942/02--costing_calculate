@@ -109,9 +109,16 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
         stage_timings={'ingest': 1.0, 'normalize': 2.0, 'fact': 3.0, 'analysis': 4.0, 'presentation': 5.0},
     )
 
-    def _fake_build_workbook_payload(self, input_path: Path, *, standalone_cost_items: tuple[str, ...]):
+    def _fake_build_workbook_payload(
+        self,
+        input_path: Path,
+        *,
+        standalone_cost_items: tuple[str, ...],
+        artifacts_transform=None,
+    ):
         captured['input_path'] = input_path
         captured['standalone_cost_items'] = standalone_cost_items
+        captured['artifacts_transform'] = artifacts_transform
         return payload
 
     def _fake_write_workbook_from_models(self, output_path: Path, *, sheet_models) -> None:
@@ -136,4 +143,5 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
     assert captured['input_path'] == input_file
     assert captured['output_path'] == processed_dir / 'GB-成本计算单_处理后.xlsx'
     assert captured['standalone_cost_items'] == ('委外加工费',)
+    assert callable(captured['artifacts_transform'])
     assert captured['sheet_names'] == ['成本明细']

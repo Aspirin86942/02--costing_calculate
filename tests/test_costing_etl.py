@@ -3,7 +3,7 @@
 import logging
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import polars as pl
@@ -1146,6 +1146,166 @@ def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(t
 
     assert payload_mock.call_count == 1
     assert payload_mock.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
+
+
+def test_process_file_filters_whitelist_before_presentation_and_preserves_numeric_order_line_sort(tmp_path) -> None:
+    etl = CostingWorkbookETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    detail_df = pd.DataFrame([{'月份': '2025年01期', '产品编码': 'GB_C.D.B0040AA', '本期完工金额': 100.0}])
+    qty_df = pd.DataFrame([{'月份': '2025年01期', '产品编码': 'GB_C.D.B0040AA', '本期完工金额': 100.0}])
+    work_order_df = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '工单编号': 'WO-001',
+                '工单行': 10,
+            },
+            {
+                '月份': '2025年01期',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '工单编号': 'WO-001',
+                '工单行': 2,
+            },
+            {
+                '月份': '2025年01期',
+                '产品编码': 'CUSTOM-001',
+                '产品名称': '非白名单产品',
+                '工单编号': 'WO-002',
+                '工单行': 1,
+            },
+        ]
+    )
+    artifacts = AnalysisArtifacts(
+        fact_df=pd.DataFrame(
+            [
+                {
+                    'period': '2025-01',
+                    'product_code': 'GB_C.D.B0040AA',
+                    'product_name': 'BMS-750W驱动器',
+                    'cost_bucket': 'direct_material',
+                    'amount': 100.0,
+                    'qty': 10.0,
+                    'price': 10.0,
+                },
+                {
+                    'period': '2025-01',
+                    'product_code': 'CUSTOM-001',
+                    'product_name': '非白名单产品',
+                    'cost_bucket': 'direct_material',
+                    'amount': 50.0,
+                    'qty': 5.0,
+                    'price': 10.0,
+                },
+            ]
+        ),
+        qty_sheet_df=qty_df,
+        work_order_sheet=FlatSheet(
+            data=work_order_df,
+            column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text', '工单编号': 'text', '工单行': 'text'},
+        ),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='GB_C.D.B0040AA',
+                product_name='BMS-750W驱动器',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0}]),
+                column_types={'月份': 'text', '总成本': 'amount'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+            ),
+            ProductAnomalySection(
+                product_code='CUSTOM-001',
+                product_name='非白名单产品',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 50.0}]),
+                column_types={'月份': 'text', '总成本': 'amount'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+            ),
+        ],
+        quality_metrics=(),
+        error_log=pd.DataFrame(),
+        fact_bundle=FactBundle(
+            detail_fact=pl.DataFrame(),
+            qty_fact=pl.DataFrame(),
+            work_order_fact=pl.DataFrame(),
+            product_summary_fact=pl.DataFrame(
+                [
+                    {
+                        'product_code': 'GB_C.D.B0040AA',
+                        'product_name': 'BMS-750W驱动器',
+                        'period': '2025-01',
+                        'period_display': '2025年01期',
+                        'total_cost': 100.0,
+                        'completed_qty': 10.0,
+                        'unit_cost': 10.0,
+                        'dm_cost': 100.0,
+                        'dm_unit_cost': 10.0,
+                        'dm_contrib': 1.0,
+                        'dl_cost': 0.0,
+                        'dl_unit_cost': 0.0,
+                        'dl_contrib': 0.0,
+                        'moh_cost': 0.0,
+                        'moh_unit_cost': 0.0,
+                        'moh_contrib': 0.0,
+                    },
+                    {
+                        'product_code': 'CUSTOM-001',
+                        'product_name': '非白名单产品',
+                        'period': '2025-01',
+                        'period_display': '2025年01期',
+                        'total_cost': 50.0,
+                        'completed_qty': 5.0,
+                        'unit_cost': 10.0,
+                        'dm_cost': 50.0,
+                        'dm_unit_cost': 10.0,
+                        'dm_contrib': 1.0,
+                        'dl_cost': 0.0,
+                        'dl_unit_cost': 0.0,
+                        'dl_contrib': 0.0,
+                        'moh_cost': 0.0,
+                        'moh_unit_cost': 0.0,
+                        'moh_contrib': 0.0,
+                    },
+                ]
+            ),
+            error_fact=pl.DataFrame(),
+        ),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'load_raw_workbook_frame', return_value=Mock()),
+        patch.object(etl.pipeline, 'build_normalized_cost_frame', return_value=Mock()),
+        patch.object(etl.pipeline, 'split_normalized_frames', return_value=Mock(detail_df=detail_df, qty_df=qty_df)),
+        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts),
+        patch(
+            'src.etl.pipeline.build_sheet_models',
+            return_value=(
+                SheetModel(
+                    sheet_name='成本明细',
+                    columns=('产品编码',),
+                    rows_factory=lambda: iter([('GB_C.D.B0040AA',)]),
+                    column_types={'产品编码': 'text'},
+                    number_formats={},
+                ),
+            ),
+        ) as build_models_mock,
+        patch.object(etl.workbook_writer, 'write_workbook_from_models'),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    work_order_arg = build_models_mock.call_args.kwargs['work_order_sheet'].data
+    assert work_order_arg['产品编码'].tolist() == ['GB_C.D.B0040AA', 'GB_C.D.B0040AA']
+    assert work_order_arg['工单行'].tolist() == [2, 10]
+    product_summary_arg = build_models_mock.call_args.kwargs['fact_bundle'].product_summary_fact
+    assert product_summary_arg['product_code'].to_list() == ['GB_C.D.B0040AA']
+    product_sections_arg = build_models_mock.call_args.kwargs['product_anomaly_sections']
+    assert [(section.product_code, section.product_name) for section in product_sections_arg] == [
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器')
+    ]
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:

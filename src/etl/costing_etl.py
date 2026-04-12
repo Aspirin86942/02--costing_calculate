@@ -10,9 +10,10 @@ from pathlib import Path
 from time import perf_counter
 
 import pandas as pd
+import polars as pl
 
 try:
-    from src.analytics.contracts import ProductAnomalySection, QualityMetric, SheetModel, WorkbookPayload
+    from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
@@ -23,7 +24,7 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.contracts import ProductAnomalySection, QualityMetric, SheetModel, WorkbookPayload
+    from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
@@ -312,120 +313,57 @@ class CostingWorkbookETL:
             key=lambda section: self._product_order_index[(str(section.product_code), str(section.product_name))],
         )
 
-    def _filter_sheet_model_by_whitelist(
-        self,
-        model: SheetModel,
-        *,
-        code_col: str,
-        name_col: str,
-        sort_cols: tuple[str, ...] = (),
-    ) -> SheetModel:
-        """按白名单过滤展示层 SheetModel。"""
+    def _filter_fact_bundle_for_whitelist(self, fact_bundle: FactBundle | None) -> FactBundle | None:
+        """在 presentation 前裁剪产品汇总事实，避免 SheetModel 层整表物化。"""
+        if fact_bundle is None or not self.product_order:
+            return fact_bundle
+
+        summary_frame = fact_bundle.product_summary_fact
+        if summary_frame.is_empty():
+            return fact_bundle
+
+        summary_df = pd.DataFrame(summary_frame.to_dicts())
+        filtered_summary_df = self._filter_dataframe_by_whitelist(
+            summary_df,
+            code_col='product_code',
+            name_col='product_name',
+            sort_cols=['period'],
+        )
+        filtered_summary_frame = (
+            pl.DataFrame(schema=summary_frame.schema)
+            if filtered_summary_df.empty
+            else pl.DataFrame(filtered_summary_df.to_dict(orient='list'))
+        )
+        return FactBundle(
+            detail_fact=fact_bundle.detail_fact,
+            qty_fact=fact_bundle.qty_fact,
+            work_order_fact=fact_bundle.work_order_fact,
+            product_summary_fact=filtered_summary_frame,
+            error_fact=fact_bundle.error_fact,
+        )
+
+    def _filter_analysis_artifacts_by_whitelist(self, artifacts: AnalysisArtifacts) -> AnalysisArtifacts:
+        """在 presentation 前对白名单相关展示数据裁剪，避免后续重复物化。"""
         if not self.product_order:
-            return model
+            return artifacts
 
-        header_map = {column_name: idx for idx, column_name in enumerate(model.columns)}
-        if code_col not in header_map or name_col not in header_map:
-            missing_cols = [column for column in (code_col, name_col) if column not in header_map]
-            logger.warning('Skip analysis whitelist filter: missing columns=%s', missing_cols)
-            return model
-
-        rows = tuple(model.rows_factory())
-        if not rows:
-            return model
-
-        code_idx = header_map[code_col]
-        name_idx = header_map[name_col]
-        filtered_rows = [
-            row
-            for row in rows
-            if (str(row[code_idx]), str(row[name_idx])) in self.product_whitelist
-        ]
-        if not filtered_rows:
-            return SheetModel(
-                sheet_name=model.sheet_name,
-                columns=model.columns,
-                rows_factory=lambda: iter(()),
-                column_types=model.column_types,
-                number_formats=model.number_formats,
-                freeze_panes=model.freeze_panes,
-                auto_filter=model.auto_filter,
-                fixed_width=model.fixed_width,
-                conditional_formats=model.conditional_formats,
-            )
-
-        order_map = self._product_order_index
-
-        def _sort_key(row: tuple[object, ...]) -> tuple[object, ...]:
-            key: list[object] = [order_map[(str(row[code_idx]), str(row[name_idx]))]]
-            for column_name in sort_cols:
-                if column_name in header_map:
-                    value = row[header_map[column_name]]
-                    key.append('' if value is None else str(value))
-            return tuple(key)
-
-        filtered_rows.sort(key=_sort_key)
-        logger.info(
-            'Analysis product whitelist filter applied: rows %s -> %s, products %s -> %s',
-            len(rows),
-            len(filtered_rows),
-            len({(str(row[code_idx]), str(row[name_idx])) for row in rows}),
-            len({(str(row[code_idx]), str(row[name_idx])) for row in filtered_rows}),
+        filtered_work_order_sheet = FlatSheet(
+            data=self._filter_dataframe_by_whitelist(
+                artifacts.work_order_sheet.data,
+                code_col='产品编码',
+                name_col='产品名称',
+                sort_cols=['月份', '工单编号', '工单行'],
+            ),
+            column_types=artifacts.work_order_sheet.column_types,
         )
-        frozen_rows = tuple(filtered_rows)
-        return SheetModel(
-            sheet_name=model.sheet_name,
-            columns=model.columns,
-            rows_factory=lambda rows=frozen_rows: iter(rows),
-            column_types=model.column_types,
-            number_formats=model.number_formats,
-            freeze_panes=model.freeze_panes,
-            auto_filter=model.auto_filter,
-            fixed_width=model.fixed_width,
-            conditional_formats=model.conditional_formats,
-        )
-
-    def _filter_workbook_payload_by_whitelist(self, payload: WorkbookPayload) -> WorkbookPayload:
-        """只对白名单相关分析页应用过滤与排序。"""
-        filtered_models: list[SheetModel] = []
-        for model in payload.sheet_models:
-            if model.sheet_name in {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}:
-                filtered_models.append(
-                    self._filter_sheet_model_by_whitelist(
-                        model,
-                        code_col='产品编码',
-                        name_col='产品名称',
-                        sort_cols=('月份',),
-                    )
-                )
-                continue
-            if model.sheet_name == '按工单按产品异常值分析':
-                filtered_models.append(
-                    self._filter_sheet_model_by_whitelist(
-                        model,
-                        code_col='产品编码',
-                        name_col='产品名称',
-                        sort_cols=('月份', '工单编号', '工单行'),
-                    )
-                )
-                continue
-            if model.sheet_name == '按产品异常值分析':
-                filtered_models.append(
-                    self._filter_sheet_model_by_whitelist(
-                        model,
-                        code_col='产品编码',
-                        name_col='产品名称',
-                        sort_cols=('月份',),
-                    )
-                )
-                continue
-            filtered_models.append(model)
-
-        return WorkbookPayload(
-            sheet_models=tuple(filtered_models),
-            quality_metrics=payload.quality_metrics,
-            error_log_count=payload.error_log_count,
-            stage_timings=payload.stage_timings,
+        return AnalysisArtifacts(
+            fact_df=self._filter_fact_df_for_analysis(artifacts.fact_df),
+            qty_sheet_df=artifacts.qty_sheet_df,
+            work_order_sheet=filtered_work_order_sheet,
+            product_anomaly_sections=self._filter_product_anomaly_sections(artifacts.product_anomaly_sections),
+            quality_metrics=artifacts.quality_metrics,
+            error_log=artifacts.error_log,
+            fact_bundle=self._filter_fact_bundle_for_whitelist(artifacts.fact_bundle),
         )
 
     def _split_sheets(
@@ -450,19 +388,19 @@ class CostingWorkbookETL:
             payload = self.pipeline.build_workbook_payload(
                 input_path,
                 standalone_cost_items=self.standalone_cost_items,
+                artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
-            filtered_payload = self._filter_workbook_payload_by_whitelist(payload)
-            self.last_quality_metrics = filtered_payload.quality_metrics
-            self.last_error_log_count = filtered_payload.error_log_count
+            self.last_quality_metrics = payload.quality_metrics
+            self.last_error_log_count = payload.error_log_count
             self._log_quality_metrics(self.last_quality_metrics)
             logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
-            for stage_name, seconds in filtered_payload.stage_timings.items():
+            for stage_name, seconds in payload.stage_timings.items():
                 logger.info('Timing | stage=%s | seconds=%.3f', stage_name, seconds)
 
             export_start = perf_counter()
             self.workbook_writer.write_workbook_from_models(
                 output_path,
-                sheet_models=filtered_payload.sheet_models,
+                sheet_models=payload.sheet_models,
             )
             logger.info('Timing | stage=export | seconds=%.3f', perf_counter() - export_start)
             logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)

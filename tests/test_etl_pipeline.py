@@ -207,6 +207,27 @@ def test_load_raw_workbook_delegates_to_workbook_ingestor(tmp_path: Path) -> Non
     load_mock.assert_called_once_with(tmp_path / 'input.xlsx', skip_rows=2)
 
 
+def test_workbook_ingestor_calamine_fast_path_preserves_contract(tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'fast.xlsx'
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = 'FastSheet'
+    worksheet.append(['metadata'])
+    worksheet.append(['metadata2'])
+    worksheet.append(['年期', '产品编码'])
+    worksheet.append(['', '产品名称'])
+    worksheet.append(['2026年3期', 'P002'])
+    workbook.save(workbook_path)
+
+    ingestor = WorkbookIngestor()
+    result = ingestor.load(workbook_path, skip_rows=2)
+
+    assert result.sheet_name == 'FastSheet'
+    assert result.header_rows == (('年期', '产品编码'), ('', '产品名称'))
+    assert result.frame.columns == ['column_0', 'column_1']
+    assert result.frame.row(0) == ('2026年3期', 'P002')
+
+
 def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tmp_path: Path) -> None:
     workbook_path = tmp_path / 'fallback.xlsx'
     workbook = Workbook()

@@ -224,6 +224,8 @@ class FastSheetWriter:
 
         formats = self._build_formats(workbook)
         number_format_cache: dict[str | None, Any] = {}
+        numeric_format_by_col: dict[int, Any] = {}
+        text_format = formats['text']
         fixed_width = _resolve_fixed_width(model.fixed_width)
         for col_idx, column_name in enumerate(model.columns):
             worksheet.write(0, col_idx, column_name, formats['header'])
@@ -234,15 +236,16 @@ class FastSheetWriter:
                 cell_format = self._resolve_number_format(number_format, workbook)
                 number_format_cache[number_format] = cell_format
 
-            if fixed_width is not None:
-                worksheet.set_column(col_idx, col_idx, fixed_width, cell_format)
+            if number_format is not None:
+                numeric_format_by_col[col_idx] = cell_format
+            worksheet.set_column(col_idx, col_idx, fixed_width, cell_format)
 
         last_row = 0
         for row_idx, row in enumerate(model.rows_factory(), start=1):
-            for col_idx, value in enumerate(row):
-                number_format = model.number_formats.get(model.columns[col_idx])
-                cell_format = number_format_cache[number_format]
-                _write_cell(worksheet, row_idx, col_idx, value, cell_format)
+            coerced_row_data = tuple(_coerce_row_value_for_excel(value) for value in row)
+            worksheet.write_row(row_idx, 0, coerced_row_data, text_format)
+            for col_idx, numeric_format in numeric_format_by_col.items():
+                _write_cell(worksheet, row_idx, col_idx, coerced_row_data[col_idx], numeric_format)
             last_row = row_idx
 
         if model.freeze_panes is not None:

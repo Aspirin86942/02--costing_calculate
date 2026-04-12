@@ -27,6 +27,29 @@ _NUMBER_FORMAT_BY_TYPE: dict[str, str] = {
     'score': '0.0000',
     'pct': '0.00%',
 }
+_DETAIL_TWO_DECIMAL_COLUMNS: set[str] = {'本期完工单位成本', '本期完工金额'}
+_QTY_TWO_DECIMAL_COLUMNS: set[str] = {
+    '本期完工单位成本',
+    '本期完工金额',
+    '本期完工直接材料合计完工金额',
+    '本期完工直接人工合计完工金额',
+    '本期完工制造费用合计完工金额',
+    '本期完工制造费用_其他合计完工金额',
+    '本期完工制造费用_人工合计完工金额',
+    '本期完工制造费用_机物料及低耗合计完工金额',
+    '本期完工制造费用_折旧合计完工金额',
+    '本期完工制造费用_水电费合计完工金额',
+    '本期完工委外加工费合计完工金额',
+    '直接材料单位完工金额',
+    '直接人工单位完工金额',
+    '制造费用单位完工金额',
+    '制造费用_其他单位完工成本',
+    '制造费用_人工单位完工成本',
+    '制造费用_机物料及低耗单位完工成本',
+    '制造费用_折旧单位完工成本',
+    '制造费用_水电费单位完工成本',
+    '委外加工费单位完工成本',
+}
 _ANALYSIS_SHEET_COLUMN_LAYOUT: dict[str, tuple[str, ...]] = {
     '直接材料_价量比': (
         '产品编码',
@@ -116,13 +139,16 @@ def build_sheet_models(
         sheet_name='成本明细',
         frame=detail_frame,
         column_types=dict.fromkeys(detail_frame.columns, 'text'),
-        number_formats={},
+        number_formats={
+            column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS
+        },
     )
+    qty_two_decimal_columns = _resolve_qty_two_decimal_columns(tuple(qty_frame.columns))
     qty_model = dataframe_to_sheet_model(
         sheet_name='产品数量统计',
         frame=qty_frame,
         column_types=dict.fromkeys(qty_frame.columns, 'text'),
-        number_formats={},
+        number_formats={column: '#,##0.00' for column in qty_frame.columns if column in qty_two_decimal_columns},
     )
 
     analysis_models = tuple(
@@ -223,3 +249,15 @@ def _to_polars_frame(frame: pl.DataFrame | pd.DataFrame) -> pl.DataFrame:
         return frame.clone()
     # 使用 to_dict(list) 保持 pyarrow-free，兼容 test 环境最小依赖。
     return pl.DataFrame(frame.to_dict(orient='list'))
+
+
+def _resolve_qty_two_decimal_columns(columns: tuple[str, ...]) -> set[str]:
+    dynamic_columns = {
+        column_name
+        for column_name in columns
+        if (
+            (column_name.startswith('本期完工') and column_name.endswith('合计完工金额'))
+            or column_name.endswith('单位完工成本')
+        )
+    }
+    return _QTY_TWO_DECIMAL_COLUMNS | dynamic_columns

@@ -5,12 +5,14 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import polars as pl
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import (
     AnalysisArtifacts,
     ConditionalFormatRule,
+    FactBundle,
     FlatSheet,
     ProductAnomalySection,
     QualityMetric,
@@ -378,6 +380,97 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     assert worksheet['B3'].value == '产品名称'
     assert worksheet['B4'].value == '产品A'
     assert worksheet.freeze_panes == 'A6'
+
+
+def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_models_formats.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame(
+            [
+                {
+                    '月份': '2025年01期',
+                    '本期完工单位成本': 10.0,
+                    '本期完工金额': 100.0,
+                }
+            ]
+        ),
+        qty_sheet_df=pd.DataFrame(
+            [
+                {
+                    '月份': '2025年01期',
+                    '本期完工金额': 165.0,
+                    '本期完工直接材料合计完工金额': 100.0,
+                }
+            ]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[],
+        error_log=pd.DataFrame(columns=['error_type', 'message']),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    detail_sheet = workbook['成本明细']
+    qty_sheet = workbook['产品数量统计']
+    detail_headers = _build_header_map(detail_sheet)
+    qty_headers = _build_header_map(qty_sheet)
+
+    assert detail_sheet.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
+    assert detail_sheet.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
+    assert qty_sheet.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
+    assert qty_sheet.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
+
+
+def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> None:
+    fact_bundle = FactBundle(
+        detail_fact=pl.DataFrame(),
+        qty_fact=pl.DataFrame(),
+        work_order_fact=pl.DataFrame(),
+        product_summary_fact=pl.DataFrame(
+            [
+                {
+                    'product_code': 'P001',
+                    'product_name': '产品A',
+                    'period_display': '2025年01期',
+                    'total_cost': 100.0,
+                    'completed_qty': 10.0,
+                    'unit_cost': 10.0,
+                    'dm_cost': 70.0,
+                    'dm_unit_cost': 7.0,
+                    'dm_contrib': 0.7,
+                    'dl_cost': 20.0,
+                    'dl_unit_cost': 2.0,
+                    'dl_contrib': 0.2,
+                    'moh_cost': 10.0,
+                    'moh_unit_cost': 1.0,
+                    'moh_contrib': 0.1,
+                }
+            ]
+        ),
+        error_fact=pl.DataFrame(),
+    )
+
+    with patch(
+        'src.analytics.presentation_builder.pl.from_pandas',
+        side_effect=AssertionError('should not use pyarrow'),
+    ):
+        models = build_sheet_models(
+            detail_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+            qty_sheet_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+            fact_bundle=fact_bundle,
+            work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+            product_anomaly_sections=[],
+            error_log=pd.DataFrame(columns=['error_type', 'message']),
+        )
+
+    direct_material_model = next(model for model in models if model.sheet_name == '直接材料_价量比')
+    rows = list(direct_material_model.rows_factory())
+    assert rows
+    assert rows[0][0] == 'P001'
+    assert rows[0][3] == 70.0
 
 
 def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:

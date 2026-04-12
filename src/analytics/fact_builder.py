@@ -13,7 +13,8 @@ from src.analytics.contracts import FactBundle
 from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars, normalize_key_value
 
 ZERO = Decimal('0')
-MONEY_DTYPE = pl.Decimal(20, 4)
+# Fact 层保留较高小数精度，避免在兼容边界前过早量化。
+MONEY_DTYPE = pl.Decimal(38, 18)
 COST_BUCKETS = ('direct_material', 'direct_labor', 'moh')
 WORK_ORDER_KEY_COLS = ['period', 'product_code', 'order_no', 'order_line']
 
@@ -354,7 +355,9 @@ def _build_error_frame_polars(
     for field in row_id_fields or ['period', 'product_code', 'order_no', 'order_line', 'cost_bucket']:
         if field in data.columns:
             row_id_exprs.append(_normalize_key_expr(field))
-    row_id_expr = pl.concat_str(row_id_exprs, separator='|').alias('row_id') if row_id_exprs else pl.lit('').alias('row_id')
+    row_id_expr = (
+        pl.concat_str(row_id_exprs, separator='|').alias('row_id') if row_id_exprs else pl.lit('').alias('row_id')
+    )
 
     def _optional_column_expr(column_name: str | None, alias: str) -> pl.Expr:
         if column_name and column_name in data.columns:
@@ -500,38 +503,45 @@ def build_fact_bundle(
     standalone_cost_expr = (
         pl.col('normalized_cost_item').is_in(standalone_item_names) if standalone_item_names else pl.lit(False)
     )
-    detail_fact = detail_df.rename(
-        {
-            '产品编码': 'product_code',
-            '产品名称': 'product_name',
-            '工单编号': 'order_no',
-            '工单行号': 'order_line',
-            '成本项目名称': 'cost_item',
-            '本期完工金额': 'completed_amount',
-        }
-    ).with_columns(
-        [
-            pl.col(detail_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
-            pl.col('cost_item').cast(pl.String, strict=False).str.strip_chars().alias('normalized_cost_item'),
-            pl.col('cost_item').map_elements(map_broad_cost_bucket, return_dtype=pl.String).alias('cost_bucket'),
-            pl.col('cost_item').map_elements(map_component_bucket, return_dtype=pl.String).alias('component_bucket'),
-            normalize_money_expr('completed_amount').alias('amount'),
-        ]
-    ).with_columns(
-        [
-            standalone_cost_expr.alias('is_standalone_cost'),
-            (pl.col('cost_bucket').is_not_null() | standalone_cost_expr).alias('is_supported_cost'),
-        ]
-    ).with_columns(
-        [
-            (pl.col('is_supported_cost') & pl.col('amount').is_null()).alias('is_missing_amount'),
-            (pl.col('cost_bucket').is_null() & ~pl.col('is_standalone_cost')).alias('is_unmapped_cost'),
-            pl.when(pl.col('is_supported_cost') & pl.col('amount').is_null())
-            .then(_money_zero_expr())
-            .otherwise(pl.col('amount'))
-            .cast(MONEY_DTYPE)
-            .alias('amount_filled'),
-        ]
+    detail_fact = (
+        detail_df.rename(
+            {
+                '产品编码': 'product_code',
+                '产品名称': 'product_name',
+                '工单编号': 'order_no',
+                '工单行号': 'order_line',
+                '成本项目名称': 'cost_item',
+                '本期完工金额': 'completed_amount',
+            }
+        )
+        .with_columns(
+            [
+                pl.col(detail_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
+                pl.col('cost_item').cast(pl.String, strict=False).str.strip_chars().alias('normalized_cost_item'),
+                pl.col('cost_item').map_elements(map_broad_cost_bucket, return_dtype=pl.String).alias('cost_bucket'),
+                pl.col('cost_item')
+                .map_elements(map_component_bucket, return_dtype=pl.String)
+                .alias('component_bucket'),
+                normalize_money_expr('completed_amount').alias('amount'),
+            ]
+        )
+        .with_columns(
+            [
+                standalone_cost_expr.alias('is_standalone_cost'),
+                (pl.col('cost_bucket').is_not_null() | standalone_cost_expr).alias('is_supported_cost'),
+            ]
+        )
+        .with_columns(
+            [
+                (pl.col('is_supported_cost') & pl.col('amount').is_null()).alias('is_missing_amount'),
+                (pl.col('cost_bucket').is_null() & ~pl.col('is_standalone_cost')).alias('is_unmapped_cost'),
+                pl.when(pl.col('is_supported_cost') & pl.col('amount').is_null())
+                .then(_money_zero_expr())
+                .otherwise(pl.col('amount'))
+                .cast(MONEY_DTYPE)
+                .alias('amount_filled'),
+            ]
+        )
     )
 
     amount_columns = [
@@ -554,8 +564,16 @@ def build_fact_bundle(
     )
 
     work_order_group_exprs: list[pl.Expr] = [
-        pl.col('amount_filled').filter(pl.col('cost_bucket') == 'direct_material').sum().cast(MONEY_DTYPE).alias('dm_amount'),
-        pl.col('amount_filled').filter(pl.col('cost_bucket') == 'direct_labor').sum().cast(MONEY_DTYPE).alias('dl_amount'),
+        pl.col('amount_filled')
+        .filter(pl.col('cost_bucket') == 'direct_material')
+        .sum()
+        .cast(MONEY_DTYPE)
+        .alias('dm_amount'),
+        pl.col('amount_filled')
+        .filter(pl.col('cost_bucket') == 'direct_labor')
+        .sum()
+        .cast(MONEY_DTYPE)
+        .alias('dl_amount'),
         pl.col('amount_filled').filter(pl.col('cost_bucket') == 'moh').sum().cast(MONEY_DTYPE).alias('moh_amount'),
     ]
     for component_key in component_bucket_targets:
@@ -580,7 +598,9 @@ def build_fact_bundle(
         WORK_ORDER_KEY_COLS + ['product_name'],
         maintain_order=True,
     ).agg(work_order_group_exprs)
-    work_order_amounts = work_order_amounts.with_columns([pl.col(column).fill_null(_money_zero_expr()).alias(column) for column in amount_columns])
+    work_order_amounts = work_order_amounts.with_columns(
+        [pl.col(column).fill_null(_money_zero_expr()).alias(column) for column in amount_columns]
+    )
     work_order_amounts = work_order_amounts.with_columns(
         pl.concat_str([_normalize_key_expr(column) for column in WORK_ORDER_KEY_COLS], separator='|').alias('_join_key')
     )
@@ -588,27 +608,40 @@ def build_fact_bundle(
     total_match_column = build_total_match_column_name(standalone_metas)
     total_mismatch_reason = build_total_mismatch_reason(standalone_metas)
     total_mismatch_error_reason = build_total_mismatch_error_reason(standalone_metas)
-    qty_fact = qty_df.with_row_index('_source_row').with_columns(
-        [
-            pl.col(qty_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
-            pl.col(qty_period_col).map_elements(period_to_display, return_dtype=pl.String).alias('period_display'),
-            pl.col('产品编码').cast(pl.String, strict=False).alias('product_code'),
-            pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
-            pl.col('工单编号').alias('order_no'),
-            pl.col('工单行号').alias('order_line'),
-            normalize_money_expr('本期完工数量').alias('completed_qty'),
-            normalize_money_expr('本期完工金额').alias('completed_amount_total'),
-        ]
-    ).with_columns(
-        [
-            pl.concat_str([_normalize_key_expr(column) for column in WORK_ORDER_KEY_COLS], separator='|').alias('_join_key'),
-            (pl.col('completed_qty').is_not_null() & (pl.col('completed_qty') > _money_zero_expr())).alias('_valid_completed_qty'),
-        ]
-    ).with_columns((pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_null()).alias('_missing_total_amount'))
+    qty_fact = (
+        qty_df.with_row_index('_source_row')
+        .with_columns(
+            [
+                pl.col(qty_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
+                pl.col(qty_period_col).map_elements(period_to_display, return_dtype=pl.String).alias('period_display'),
+                pl.col('产品编码').cast(pl.String, strict=False).alias('product_code'),
+                pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
+                pl.col('工单编号').alias('order_no'),
+                pl.col('工单行号').alias('order_line'),
+                normalize_money_expr('本期完工数量').alias('completed_qty'),
+                normalize_money_expr('本期完工金额').alias('completed_amount_total'),
+            ]
+        )
+        .with_columns(
+            [
+                pl.concat_str([_normalize_key_expr(column) for column in WORK_ORDER_KEY_COLS], separator='|').alias(
+                    '_join_key'
+                ),
+                (pl.col('completed_qty').is_not_null() & (pl.col('completed_qty') > _money_zero_expr())).alias(
+                    '_valid_completed_qty'
+                ),
+            ]
+        )
+        .with_columns(
+            (pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_null()).alias('_missing_total_amount')
+        )
+    )
     qty_fact = qty_fact.filter(pl.col('_valid_completed_qty') & pl.col('completed_amount_total').is_not_null())
 
     qty_fact = qty_fact.join(work_order_amounts.select(['_join_key', *amount_columns]), on='_join_key', how='left')
-    qty_fact = qty_fact.with_columns([pl.col(column).fill_null(_money_zero_expr()).alias(column) for column in amount_columns])
+    qty_fact = qty_fact.with_columns(
+        [pl.col(column).fill_null(_money_zero_expr()).alias(column) for column in amount_columns]
+    )
 
     qty_amount_assign_exprs: list[pl.Expr] = [
         pl.col('dm_amount').alias(QTY_DM_AMOUNT),
@@ -635,7 +668,9 @@ def build_fact_bundle(
         _safe_divide_expr(QTY_MOH_UTILITIES_AMOUNT, 'completed_qty', QTY_MOH_UTILITIES_UNIT_COST),
     ]
     for meta in standalone_metas:
-        qty_unit_cost_exprs.append(_safe_divide_expr(meta.qty_amount_column, 'completed_qty', meta.qty_unit_cost_column))
+        qty_unit_cost_exprs.append(
+            _safe_divide_expr(meta.qty_amount_column, 'completed_qty', meta.qty_unit_cost_column)
+        )
     qty_fact = qty_fact.with_columns(qty_unit_cost_exprs)
 
     qty_fact = qty_fact.with_columns(
@@ -656,7 +691,9 @@ def build_fact_bundle(
 
     total_amount_exprs = [pl.col(QTY_DM_AMOUNT), pl.col(QTY_DL_AMOUNT), pl.col(QTY_MOH_AMOUNT)]
     total_amount_exprs.extend([pl.col(meta.qty_amount_column) for meta in standalone_metas])
-    qty_fact = qty_fact.with_columns(pl.sum_horizontal(total_amount_exprs).cast(MONEY_DTYPE).alias('derived_total_amount'))
+    qty_fact = qty_fact.with_columns(
+        pl.sum_horizontal(total_amount_exprs).cast(MONEY_DTYPE).alias('derived_total_amount')
+    )
 
     qty_fact = qty_fact.with_columns(
         [
@@ -749,7 +786,16 @@ def build_fact_bundle(
     )
     moh_mismatch_error = _build_error_frame_polars(
         moh_mismatch_source.select(
-            ['product_code', 'product_name', 'period', 'order_no', 'order_line', 'moh_component_sum', QTY_MOH_AMOUNT, 'diff']
+            [
+                'product_code',
+                'product_name',
+                'period',
+                'order_no',
+                'order_line',
+                'moh_component_sum',
+                QTY_MOH_AMOUNT,
+                'diff',
+            ]
         ),
         issue_type='MOH_BREAKDOWN_MISMATCH',
         field_name='制造费用',
@@ -768,7 +814,16 @@ def build_fact_bundle(
     )
     total_mismatch_error = _build_error_frame_polars(
         total_mismatch_source.select(
-            ['product_code', 'product_name', 'period', 'order_no', 'order_line', 'derived_total_amount', 'completed_amount_total', 'diff']
+            [
+                'product_code',
+                'product_name',
+                'period',
+                'order_no',
+                'order_line',
+                'derived_total_amount',
+                'completed_amount_total',
+                'diff',
+            ]
         ),
         issue_type='TOTAL_COST_MISMATCH',
         field_name='总完工成本',
@@ -842,7 +897,8 @@ def build_fact_bundle(
                 _safe_divide_expr('moh_utilities_amount', 'completed_qty', 'moh_utilities_unit_cost'),
                 *standalone_unit_exprs,
             ]
-        ).select(work_order_columns)
+        )
+        .select(work_order_columns)
     )
 
     product_summary_fact = _build_product_summary_fact(work_order_fact)

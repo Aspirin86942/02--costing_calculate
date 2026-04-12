@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 import pandas as pd
+import polars as pl
 
 from src.analytics.fact_builder import (
     QTY_CHECK_STATUS,
@@ -234,6 +235,146 @@ def test_build_report_artifacts_exposes_fact_bundle_and_preserves_contracts() ->
     qty_row = artifacts.qty_sheet_df.iloc[0]
     assert qty_row['本期完工直接材料合计完工金额'] == Decimal('100')
     assert 'TOTAL_COST_MISMATCH' in set(artifacts.error_log['issue_type'])
+
+
+def test_build_report_artifacts_preserves_non_terminating_decimal_division_precision() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 3,
+                '本期完工金额': 100,
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    qty_row = artifacts.qty_sheet_df.iloc[0]
+    expected = Decimal('100') / Decimal('3')
+
+    assert qty_row[QTY_DM_UNIT_COST] == expected
+
+
+def test_build_report_artifacts_preserves_small_positive_quantity() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': '0.01',
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': '0.00005',
+                '本期完工金额': '0.01',
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    quality_metrics = {metric.metric: metric.value for metric in artifacts.quality_metrics}
+
+    assert len(artifacts.qty_sheet_df) == 1
+    assert quality_metrics['因完工数量无效被过滤行数'] == '0'
+
+
+def test_build_report_artifacts_keeps_pandas_polars_compatibility_on_precision_fields() -> None:
+    detail_pd = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '委外加工费',
+                '本期完工金额': 5,
+            },
+        ]
+    )
+    qty_pd = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 3,
+                '本期完工金额': 105,
+            }
+        ]
+    )
+
+    artifacts_pd = build_report_artifacts(detail_pd, qty_pd)
+    artifacts_pl = build_report_artifacts(
+        pl.DataFrame(detail_pd.to_dict(orient='list')),
+        pl.DataFrame(qty_pd.to_dict(orient='list')),
+    )
+    qty_row_pd = artifacts_pd.qty_sheet_df.iloc[0]
+    qty_row_pl = artifacts_pl.qty_sheet_df.iloc[0]
+
+    for column in [QTY_DM_AMOUNT, QTY_DM_UNIT_COST, QTY_OUTSOURCE_AMOUNT, QTY_OUTSOURCE_UNIT_COST, QTY_TOTAL_MATCH]:
+        assert qty_row_pd[column] == qty_row_pl[column]
 
 
 def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:

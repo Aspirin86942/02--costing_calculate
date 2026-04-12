@@ -105,160 +105,40 @@
       "直接材料_价量比": {
         "kind": "analysis",
         "freeze_panes": "C3",
-        "auto_filter": "A2:D4",
-        "sections": [
-          {
-            "title": "直接材料完工金额",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "直接材料完工数量",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "直接材料完工单价",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "均值"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "均值": "#,##0.00"
-            }
-          }
-        ],
+        "auto_filter": "A1:G2",
+        "sections": [],
         "column_widths": {
-          "A": 16.71,
-          "B": 13.71,
-          "C": 12.71
+          "A": 15.0,
+          "D": 15.0,
+          "G": 15.0
         }
       },
       "直接人工_价量比": {
         "kind": "analysis",
         "freeze_panes": "C3",
-        "auto_filter": "A2:D4",
-        "sections": [
-          {
-            "title": "直接人工完工金额",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "直接人工完工数量",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "直接人工完工单价",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "均值"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "均值": "#,##0.00"
-            }
-          }
-        ],
+        "auto_filter": "A1:G2",
+        "sections": [],
         "column_widths": {
-          "A": 16.71,
-          "B": 13.71,
-          "C": 12.71
+          "A": 15.0,
+          "D": 15.0,
+          "G": 15.0
         }
       },
       "制造费用_价量比": {
         "kind": "analysis",
         "freeze_panes": "C3",
-        "auto_filter": "A2:D4",
-        "sections": [
-          {
-            "title": "制造费用完工金额",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "制造费用完工数量",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "总计"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "总计": "#,##0.00"
-            }
-          },
-          {
-            "title": "制造费用完工单价",
-            "columns": [
-              "产品编码",
-              "产品名称",
-              "2025年01期",
-              "均值"
-            ],
-            "number_formats": {
-              "2025年01期": "#,##0.00",
-              "均值": "#,##0.00"
-            }
-          }
-        ],
+        "auto_filter": "A1:G2",
+        "sections": [],
         "column_widths": {
-          "A": 16.71,
-          "B": 13.71,
-          "C": 12.71
+          "A": 15.0,
+          "D": 15.0,
+          "G": 15.0
         }
       },
       "按工单按产品异常值分析": {
         "kind": "flat",
         "freeze_panes": "A2",
-        "auto_filter": "A1:BM2",
+        "auto_filter": "A1:BH2",
         "columns": [
           "月份",
           "成本中心",
@@ -284,14 +164,9 @@
           "直接人工单位完工成本",
           "制造费用单位完工成本",
           "制造费用_其他单位完工成本",
-          "制造费用_其他单位完工成本",
-          "制造费用_人工单位完工成本",
           "制造费用_人工单位完工成本",
           "制造费用_机物料及低耗单位完工成本",
-          "制造费用_机物料及低耗单位完工成本",
           "制造费用_折旧单位完工成本",
-          "制造费用_折旧单位完工成本",
-          "制造费用_水电费单位完工成本",
           "制造费用_水电费单位完工成本",
           "委外加工费单位完工成本",
           "log_总单位完工成本",
@@ -327,7 +202,7 @@
           "复核原因"
         ],
         "number_formats": {
-          "本期完工数量": "#,##0",
+          "本期完工数量": "#,##0.00",
           "总完工成本": "#,##0.00",
           "直接材料合计完工金额": "#,##0.00",
           "直接人工合计完工金额": "#,##0.00",
@@ -370,9 +245,8 @@
         "column_widths": {
           "A": 15.0,
           "I": 15.0,
-          "J": 15.0,
-          "AI": 15.0,
-          "BA": 15.0
+          "AD": 15.0,
+          "AV": 15.0
         }
       },
       "按产品异常值分析": {
@@ -442,7 +316,9 @@
           "retryable"
         ],
         "number_formats": {},
-        "column_widths": {}
+        "column_widths": {
+          "A": 9.14
+        }
       }
     }
   },
@@ -450,7 +326,7 @@
     "sheet": "按工单按产品异常值分析",
     "rules": [
       {
-        "sqref": "J2:J2",
+        "sqref": "J2:J1048576",
         "formula": [
           "=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -458,7 +334,7 @@
         "font": null
       },
       {
-        "sqref": "J2:J2",
+        "sqref": "J2:J1048576",
         "formula": [
           "=EXACT($R2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -466,7 +342,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "K2:K2",
+        "sqref": "K2:K1048576",
         "formula": [
           "=EXACT($S2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -474,7 +350,7 @@
         "font": null
       },
       {
-        "sqref": "K2:K2",
+        "sqref": "K2:K1048576",
         "formula": [
           "=EXACT($S2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -482,7 +358,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "L2:L2",
+        "sqref": "L2:L1048576",
         "formula": [
           "=EXACT($T2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -490,7 +366,7 @@
         "font": null
       },
       {
-        "sqref": "L2:L2",
+        "sqref": "L2:L1048576",
         "formula": [
           "=EXACT($T2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -498,7 +374,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "M2:M2",
+        "sqref": "M2:M1048576",
         "formula": [
           "=EXACT($U2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -506,7 +382,7 @@
         "font": null
       },
       {
-        "sqref": "M2:M2",
+        "sqref": "M2:M1048576",
         "formula": [
           "=EXACT($U2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -514,7 +390,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "N2:N2",
+        "sqref": "N2:N1048576",
         "formula": [
           "=EXACT($V2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -522,7 +398,7 @@
         "font": null
       },
       {
-        "sqref": "N2:N2",
+        "sqref": "N2:N1048576",
         "formula": [
           "=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -530,7 +406,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "O2:O2",
+        "sqref": "O2:O1048576",
         "formula": [
           "=EXACT($W2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -538,7 +414,7 @@
         "font": null
       },
       {
-        "sqref": "O2:O2",
+        "sqref": "O2:O1048576",
         "formula": [
           "=EXACT($W2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -546,7 +422,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "P2:P2",
+        "sqref": "P2:P1048576",
         "formula": [
           "=EXACT($X2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -554,7 +430,7 @@
         "font": null
       },
       {
-        "sqref": "P2:P2",
+        "sqref": "P2:P1048576",
         "formula": [
           "=EXACT($X2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -562,7 +438,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "Q2:Q2",
+        "sqref": "Q2:Q1048576",
         "formula": [
           "=EXACT($Y2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -570,7 +446,7 @@
         "font": null
       },
       {
-        "sqref": "Q2:Q2",
+        "sqref": "Q2:Q1048576",
         "formula": [
           "=EXACT($Y2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -578,7 +454,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "R2:R2",
+        "sqref": "R2:R1048576",
         "formula": [
           "=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -586,7 +462,7 @@
         "font": null
       },
       {
-        "sqref": "R2:R2",
+        "sqref": "R2:R1048576",
         "formula": [
           "=EXACT($R2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -594,7 +470,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "S2:S2",
+        "sqref": "S2:S1048576",
         "formula": [
           "=EXACT($S2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -602,7 +478,7 @@
         "font": null
       },
       {
-        "sqref": "S2:S2",
+        "sqref": "S2:S1048576",
         "formula": [
           "=EXACT($S2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -610,7 +486,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "T2:T2",
+        "sqref": "T2:T1048576",
         "formula": [
           "=EXACT($T2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -618,7 +494,7 @@
         "font": null
       },
       {
-        "sqref": "T2:T2",
+        "sqref": "T2:T1048576",
         "formula": [
           "=EXACT($T2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -626,7 +502,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "U2:U2",
+        "sqref": "U2:U1048576",
         "formula": [
           "=EXACT($U2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -634,7 +510,7 @@
         "font": null
       },
       {
-        "sqref": "U2:U2",
+        "sqref": "U2:U1048576",
         "formula": [
           "=EXACT($U2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -642,7 +518,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "V2:V2",
+        "sqref": "V2:V1048576",
         "formula": [
           "=EXACT($V2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -650,7 +526,7 @@
         "font": null
       },
       {
-        "sqref": "V2:V2",
+        "sqref": "V2:V1048576",
         "formula": [
           "=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -658,7 +534,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "W2:W2",
+        "sqref": "W2:W1048576",
         "formula": [
           "=EXACT($W2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -666,7 +542,7 @@
         "font": null
       },
       {
-        "sqref": "W2:W2",
+        "sqref": "W2:W1048576",
         "formula": [
           "=EXACT($W2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -674,7 +550,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "X2:X2",
+        "sqref": "X2:X1048576",
         "formula": [
           "=EXACT($X2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -682,7 +558,7 @@
         "font": null
       },
       {
-        "sqref": "X2:X2",
+        "sqref": "X2:X1048576",
         "formula": [
           "=EXACT($X2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],
@@ -690,7 +566,7 @@
         "font": "FFFFFF"
       },
       {
-        "sqref": "Y2:Y2",
+        "sqref": "Y2:Y1048576",
         "formula": [
           "=EXACT($Y2,UNICHAR(20851)&UNICHAR(27880))"
         ],
@@ -698,7 +574,7 @@
         "font": null
       },
       {
-        "sqref": "Y2:Y2",
+        "sqref": "Y2:Y1048576",
         "formula": [
           "=EXACT($Y2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
         ],

@@ -12,13 +12,10 @@ from time import perf_counter
 import pandas as pd
 
 try:
-    from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
-    from src.analytics.qty_enricher import build_report_artifacts
-    from src.analytics.table_rendering import render_tables
+    from src.analytics.contracts import ProductAnomalySection, QualityMetric, SheetModel, WorkbookPayload
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
-    from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
 except ModuleNotFoundError:
     # 直接执行 src/etl/costing_etl.py 时，解释器搜索路径不含项目根目录，补齐后重试导入。
@@ -26,13 +23,10 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.contracts import FlatSheet, ProductAnomalySection, QualityMetric
-    from src.analytics.qty_enricher import build_report_artifacts
-    from src.analytics.table_rendering import render_tables
+    from src.analytics.contracts import ProductAnomalySection, QualityMetric, SheetModel, WorkbookPayload
     from src.config.pipelines import GB_PIPELINE
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
-    from src.etl.utils import clean_column_name
     from src.excel.workbook_writer import CostingWorkbookWriter
 
 # 当前模块创建一个 logger, 后面所有日志都走这个 logger
@@ -318,6 +312,122 @@ class CostingWorkbookETL:
             key=lambda section: self._product_order_index[(str(section.product_code), str(section.product_name))],
         )
 
+    def _filter_sheet_model_by_whitelist(
+        self,
+        model: SheetModel,
+        *,
+        code_col: str,
+        name_col: str,
+        sort_cols: tuple[str, ...] = (),
+    ) -> SheetModel:
+        """按白名单过滤展示层 SheetModel。"""
+        if not self.product_order:
+            return model
+
+        header_map = {column_name: idx for idx, column_name in enumerate(model.columns)}
+        if code_col not in header_map or name_col not in header_map:
+            missing_cols = [column for column in (code_col, name_col) if column not in header_map]
+            logger.warning('Skip analysis whitelist filter: missing columns=%s', missing_cols)
+            return model
+
+        rows = tuple(model.rows_factory())
+        if not rows:
+            return model
+
+        code_idx = header_map[code_col]
+        name_idx = header_map[name_col]
+        filtered_rows = [
+            row
+            for row in rows
+            if (str(row[code_idx]), str(row[name_idx])) in self.product_whitelist
+        ]
+        if not filtered_rows:
+            return SheetModel(
+                sheet_name=model.sheet_name,
+                columns=model.columns,
+                rows_factory=lambda: iter(()),
+                column_types=model.column_types,
+                number_formats=model.number_formats,
+                freeze_panes=model.freeze_panes,
+                auto_filter=model.auto_filter,
+                fixed_width=model.fixed_width,
+                conditional_formats=model.conditional_formats,
+            )
+
+        order_map = self._product_order_index
+
+        def _sort_key(row: tuple[object, ...]) -> tuple[object, ...]:
+            key: list[object] = [order_map[(str(row[code_idx]), str(row[name_idx]))]]
+            for column_name in sort_cols:
+                if column_name in header_map:
+                    value = row[header_map[column_name]]
+                    key.append('' if value is None else str(value))
+            return tuple(key)
+
+        filtered_rows.sort(key=_sort_key)
+        logger.info(
+            'Analysis product whitelist filter applied: rows %s -> %s, products %s -> %s',
+            len(rows),
+            len(filtered_rows),
+            len({(str(row[code_idx]), str(row[name_idx])) for row in rows}),
+            len({(str(row[code_idx]), str(row[name_idx])) for row in filtered_rows}),
+        )
+        frozen_rows = tuple(filtered_rows)
+        return SheetModel(
+            sheet_name=model.sheet_name,
+            columns=model.columns,
+            rows_factory=lambda rows=frozen_rows: iter(rows),
+            column_types=model.column_types,
+            number_formats=model.number_formats,
+            freeze_panes=model.freeze_panes,
+            auto_filter=model.auto_filter,
+            fixed_width=model.fixed_width,
+            conditional_formats=model.conditional_formats,
+        )
+
+    def _filter_workbook_payload_by_whitelist(self, payload: WorkbookPayload) -> WorkbookPayload:
+        """只对白名单相关分析页应用过滤与排序。"""
+        filtered_models: list[SheetModel] = []
+        for model in payload.sheet_models:
+            if model.sheet_name in {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}:
+                filtered_models.append(
+                    self._filter_sheet_model_by_whitelist(
+                        model,
+                        code_col='产品编码',
+                        name_col='产品名称',
+                        sort_cols=('月份',),
+                    )
+                )
+                continue
+            if model.sheet_name == '按工单按产品异常值分析':
+                filtered_models.append(
+                    self._filter_sheet_model_by_whitelist(
+                        model,
+                        code_col='产品编码',
+                        name_col='产品名称',
+                        sort_cols=('月份', '工单编号', '工单行'),
+                    )
+                )
+                continue
+            if model.sheet_name == '按产品异常值分析':
+                filtered_models.append(
+                    self._filter_sheet_model_by_whitelist(
+                        model,
+                        code_col='产品编码',
+                        name_col='产品名称',
+                        sort_cols=('月份',),
+                    )
+                )
+                continue
+            filtered_models.append(model)
+
+        return WorkbookPayload(
+            sheet_models=tuple(filtered_models),
+            quality_metrics=payload.quality_metrics,
+            error_log_count=payload.error_log_count,
+            stage_timings=payload.stage_timings,
+        )
+
     def _split_sheets(
         self,
         df_raw: pd.DataFrame,
@@ -337,83 +447,28 @@ class CostingWorkbookETL:
             self.last_error_log_count = 0
             logger.info('Processing file: %s', input_path)
 
-            # 阶段耗时需要拆开记录，后续才能区分瓶颈是在读取、变换还是 Excel 导出。
-            read_start = perf_counter()
-            df_raw = self._load_raw_dataframe(input_path)
-            logger.info('Loaded rows=%s, cols=%s', len(df_raw), len(df_raw.columns))
-            logger.info('Timing | stage=read | seconds=%.3f', perf_counter() - read_start)
-
-            transform_start = perf_counter()
-            df_raw.columns = [clean_column_name(c) for c in df_raw.columns]
-            resolved_columns = self._resolve_columns(df_raw)
-            if resolved_columns.rename_map:
-                df_raw.rename(columns=resolved_columns.rename_map, inplace=True)
-
-            target_mat = resolved_columns.child_material_column
-            target_item = resolved_columns.cost_item_column
-
-            if target_mat not in df_raw.columns:
-                logger.error("Missing required column '%s'; columns=%s", target_mat, df_raw.columns.tolist())
-                return False
-
-            df_raw = self._remove_total_rows(df_raw)
-            df_filled = self._forward_fill_with_rules(df_raw)
-
-            if target_item in df_filled.columns:
-                df_filled[COL_FILLED_COST_ITEM] = df_filled[target_item].ffill()
-            else:
-                df_filled[COL_FILLED_COST_ITEM] = None
-
-            df_detail, df_qty = self._split_sheets(df_raw, df_filled, target_mat, target_item)
-            artifacts = build_report_artifacts(
-                df_detail,
-                df_qty,
+            payload = self.pipeline.build_workbook_payload(
+                input_path,
                 standalone_cost_items=self.standalone_cost_items,
             )
-            analysis_fact_df = self._filter_fact_df_for_analysis(artifacts.fact_df)
-            analysis_tables = render_tables(analysis_fact_df)
-            del analysis_fact_df
-            filtered_work_order_sheet = FlatSheet(
-                data=self._filter_dataframe_by_whitelist(
-                    artifacts.work_order_sheet.data,
-                    code_col='产品编码',
-                    name_col='产品名称',
-                    sort_cols=['月份', '工单编号', '工单行'],
-                ),
-                column_types=artifacts.work_order_sheet.column_types,
-            )
-            product_anomaly_sections = self._filter_product_anomaly_sections(artifacts.product_anomaly_sections)
-            error_log = artifacts.error_log.copy()
-            self.last_quality_metrics = artifacts.quality_metrics
-            self.last_error_log_count = len(error_log)
+            filtered_payload = self._filter_workbook_payload_by_whitelist(payload)
+            self.last_quality_metrics = filtered_payload.quality_metrics
+            self.last_error_log_count = filtered_payload.error_log_count
             self._log_quality_metrics(self.last_quality_metrics)
             logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
-            logger.info('Timing | stage=transform | seconds=%.3f', perf_counter() - transform_start)
+            for stage_name, seconds in filtered_payload.stage_timings.items():
+                logger.info('Timing | stage=%s | seconds=%.3f', stage_name, seconds)
 
             export_start = perf_counter()
-            self.workbook_writer.write_workbook(
+            self.workbook_writer.write_workbook_from_models(
                 output_path,
-                detail_df=df_detail,
-                qty_sheet_df=artifacts.qty_sheet_df,
-                analysis_tables=analysis_tables,
-                work_order_sheet=filtered_work_order_sheet,
-                product_anomaly_sections=product_anomaly_sections,
-                error_log=error_log,
+                sheet_models=filtered_payload.sheet_models,
             )
             logger.info('Timing | stage=export | seconds=%.3f', perf_counter() - export_start)
             logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)
-
-            logger.info(
-                'Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(artifacts.qty_sheet_df)
-            )
-            if not error_log.empty:
-                logger.warning('Detected %s data quality issues, check sheet error_log', len(error_log))
-
-            del analysis_tables
-            del filtered_work_order_sheet
-            del product_anomaly_sections
-            del error_log
-            del artifacts
+            logger.info('Output saved: %s', output_path)
+            if self.last_error_log_count > 0:
+                logger.warning('Detected %s data quality issues, check sheet error_log', self.last_error_log_count)
             return True
         except Exception as exc:
             logger.error('Processing failed: %s', exc, exc_info=True)

@@ -1,8 +1,9 @@
 """测试主 ETL 输出与基础行为。"""
 
 import logging
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pandas as pd
 import polars as pl
@@ -17,8 +18,10 @@ from src.analytics.contracts import (
     ProductAnomalySection,
     QualityMetric,
     SheetModel,
+    WorkbookPayload,
 )
 from src.analytics.presentation_builder import build_sheet_models
+from src.analytics.qty_enricher import build_report_artifacts
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
@@ -60,6 +63,54 @@ def _assert_header_columns_fixed_width(
             fallback_width = worksheet.column_dimensions[column_letter].width
             width = None if fallback_width is None else float(fallback_width)
         assert width == expected_width
+
+
+def _build_workbook_payload_from_artifacts(
+    *,
+    detail_df: pd.DataFrame | pl.DataFrame,
+    artifacts: AnalysisArtifacts,
+    stage_timings: dict[str, float] | None = None,
+) -> WorkbookPayload:
+    error_log = artifacts.error_log.copy()
+    for column_name in error_log.columns:
+        error_log[column_name] = pd.Series(
+            [_normalize_error_log_value(value) for value in error_log[column_name].tolist()],
+            dtype='object',
+        )
+    sheet_models = build_sheet_models(
+        detail_df=detail_df,
+        qty_sheet_df=artifacts.qty_sheet_df,
+        fact_bundle=artifacts.fact_bundle,
+        work_order_sheet=artifacts.work_order_sheet,
+        product_anomaly_sections=artifacts.product_anomaly_sections,
+        error_log=error_log,
+    )
+    return WorkbookPayload(
+        sheet_models=sheet_models,
+        quality_metrics=artifacts.quality_metrics,
+        error_log_count=len(artifacts.error_log),
+        stage_timings=stage_timings
+        or {
+            'ingest': 1.0,
+            'normalize': 2.0,
+            'fact': 3.0,
+            'analysis': 4.0,
+            'presentation': 5.0,
+        },
+    )
+
+
+def _normalize_error_log_value(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return format(value, 'f')
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return str(value)
 
 
 class TestCostingWorkbookETL:
@@ -272,6 +323,47 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
 
     assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
     dataframe_writer_mock.assert_not_called()
+
+
+def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplog, tmp_path: Path) -> None:
+    caplog.set_level(logging.INFO)
+    etl = CostingWorkbookETL(skip_rows=2, product_order=())
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('P001',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={
+            'ingest': 1.0,
+            'normalize': 2.0,
+            'fact': 3.0,
+            'analysis': 4.0,
+            'presentation': 5.0,
+        },
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload) as payload_mock,
+        patch.object(etl.workbook_writer, 'write_workbook_from_models') as writer_mock,
+    ):
+        assert etl.process_file(tmp_path / 'input.xlsx', tmp_path / 'output.xlsx') is True
+
+    payload_mock.assert_called_once()
+    writer_mock.assert_called_once()
+    messages = [record.message for record in caplog.records]
+    assert any('Timing | stage=ingest' in message for message in messages)
+    assert any('Timing | stage=normalize' in message for message in messages)
+    assert any('Timing | stage=fact' in message for message in messages)
+    assert any('Timing | stage=analysis' in message for message in messages)
+    assert any('Timing | stage=presentation' in message for message in messages)
+    assert any('Timing | stage=export' in message for message in messages)
 
 
 def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_path: Path) -> None:
@@ -554,7 +646,6 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
 
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
     df_detail = pd.DataFrame(
         [
             {
@@ -652,10 +743,10 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         ]
     )
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
+    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=etl.standalone_cost_items)
+    payload = _build_workbook_payload_from_artifacts(detail_df=df_detail, artifacts=artifacts)
+
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
@@ -714,17 +805,14 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         assert isinstance(cell.value, (int, float))
 
     ws_price = wb['直接材料_价量比']
-    assert ws_price['A1'].value == '直接材料完工金额'
+    price_headers = _build_header_map(ws_price)
+    assert ws_price['A1'].value == '产品编码'
     assert ws_price.freeze_panes == 'C3'
     assert ws_price.auto_filter.ref is not None
-    for title in ['直接材料完工金额', '直接材料完工数量', '直接材料完工单价']:
-        title_row = _find_title_row(ws_price, title)
-        header_row = title_row + 1
-        data_row = header_row + 1
-        month_col = _build_header_map(ws_price, header_row)['2025年01期']
-        cell = ws_price.cell(data_row, month_col)
-        assert cell.number_format == '#,##0.00'
-        assert isinstance(cell.value, (int, float))
+    assert ws_price.cell(2, price_headers['直接材料成本']).number_format == '#,##0.00'
+    assert ws_price.cell(2, price_headers['完工数量']).number_format == '#,##0.00'
+    assert ws_price.cell(2, price_headers['单位直接材料成本']).number_format == '#,##0.00'
+    assert isinstance(ws_price.cell(2, price_headers['直接材料成本']).value, (int, float))
 
     ws_work_order = wb['按工单按产品异常值分析']
     assert ws_work_order['A1'].value == '月份'
@@ -758,56 +846,40 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert etl.last_error_log_count == wb['error_log'].max_row - 1
 
 
-def test_process_file_logs_read_transform_export_timings(caplog, tmp_path) -> None:
-    """process_file 应输出读数、转换和导出的阶段耗时日志。"""
+def test_process_file_logs_new_payload_stage_timings(caplog, tmp_path) -> None:
+    """process_file 应输出 payload 路径各阶段与导出耗时日志。"""
     caplog.set_level(logging.INFO, logger='src.etl.costing_etl')
     etl = CostingWorkbookETL(skip_rows=2)
-    input_path = tmp_path / 'input.xlsx'
-    output_path = tmp_path / 'output.xlsx'
-
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
-    df_detail = pd.DataFrame(
-        [
-            {
-                '月份': '2025年01期',
-                '成本中心名称': '中心A',
-                '产品编码': 'GB_C.D.B0040AA',
-                '产品名称': 'BMS-750W驱动器',
-                '规格型号': 'S-01',
-                '工单编号': 'WO-001',
-                '工单行号': 1,
-                '基本单位': 'PCS',
-                '成本项目名称': '直接材料',
-                '本期完工金额': 100.0,
-            }
-        ]
-    )
-    df_qty = pd.DataFrame(
-        [
-            {
-                '月份': '2025年01期',
-                '成本中心名称': '中心A',
-                '产品编码': 'GB_C.D.B0040AA',
-                '产品名称': 'BMS-750W驱动器',
-                '规格型号': 'S-01',
-                '工单编号': 'WO-001',
-                '工单行号': 1,
-                '基本单位': 'PCS',
-                '本期完工数量': 10.0,
-                '本期完工金额': 100.0,
-            }
-        ]
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('P001',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={
+            'ingest': 1.0,
+            'normalize': 2.0,
+            'fact': 3.0,
+            'analysis': 4.0,
+            'presentation': 5.0,
+        },
     )
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
-        assert etl.process_file(input_path, output_path) is True
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
+        assert etl.process_file(tmp_path / 'input.xlsx', tmp_path / 'output.xlsx') is True
 
     messages = [record.message for record in caplog.records]
-    assert any('Timing | stage=read' in message for message in messages)
-    assert any('Timing | stage=transform' in message for message in messages)
+    assert any('Timing | stage=ingest' in message for message in messages)
+    assert any('Timing | stage=normalize' in message for message in messages)
+    assert any('Timing | stage=fact' in message for message in messages)
+    assert any('Timing | stage=analysis' in message for message in messages)
+    assert any('Timing | stage=presentation' in message for message in messages)
     assert any('Timing | stage=export' in message for message in messages)
 
 
@@ -817,7 +889,6 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
 
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
     df_detail = pd.DataFrame(
         [
             {
@@ -852,10 +923,10 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         ]
     )
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
+    artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=etl.standalone_cost_items)
+    payload = _build_workbook_payload_from_artifacts(detail_df=df_detail, artifacts=artifacts)
+
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
@@ -893,7 +964,6 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
 
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
     df_detail = pd.DataFrame(
         [
             {
@@ -1020,107 +1090,62 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
         ),
         error_log=pd.DataFrame(),
     )
+    payload = _build_workbook_payload_from_artifacts(detail_df=df_detail, artifacts=artifacts)
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        patch('src.etl.costing_etl.build_report_artifacts', return_value=artifacts),
-    ):
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
         assert etl.process_file(input_path, output_path) is True
 
     highlight_semantics = extract_highlight_semantics(output_path)
 
     assert {
-        'sqref': 'J2:J2',
+        'sqref': 'J2:J1048576',
         'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
         'fill': 'DDEBF7',
         'font': None,
     } in highlight_semantics['rules']
     assert {
-        'sqref': 'R2:R2',
+        'sqref': 'R2:R1048576',
         'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
         'fill': 'DDEBF7',
         'font': None,
     } in highlight_semantics['rules']
     assert {
-        'sqref': 'N2:N2',
+        'sqref': 'N2:N1048576',
         'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
         'fill': '4472C4',
         'font': 'FFFFFF',
     } in highlight_semantics['rules']
     assert {
-        'sqref': 'V2:V2',
+        'sqref': 'V2:V1048576',
         'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
         'fill': '4472C4',
         'font': 'FFFFFF',
     } in highlight_semantics['rules']
 
 
-def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:
-    """process_file 调用分析编排时应透传 standalone_cost_items。"""
+def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(tmp_path) -> None:
+    """process_file 调用 payload 编排时应透传 standalone_cost_items。"""
     etl = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
-    input_path = tmp_path / 'input.xlsx'
-    output_path = tmp_path / 'output.xlsx'
-
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
-    df_detail = pd.DataFrame(
-        [
-            {
-                '月份': '2025年01期',
-                '产品编码': 'DP.C.P0197AA',
-                '产品名称': '动力线',
-                '工单编号': 'WO-001',
-                '工单行号': 1,
-                '成本项目名称': '直接材料',
-                '本期完工金额': 120.0,
-            }
-        ]
-    )
-    df_qty = pd.DataFrame(
-        [
-            {
-                '月份': '2025年01期',
-                '产品编码': 'DP.C.P0197AA',
-                '产品名称': '动力线',
-                '工单编号': 'WO-001',
-                '工单行号': 1,
-                '本期完工数量': 10,
-                '本期完工金额': 120.0,
-            }
-        ]
-    )
-    artifacts = AnalysisArtifacts(
-        fact_df=pd.DataFrame(),
-        qty_sheet_df=df_qty.copy(),
-        work_order_sheet=FlatSheet(
-            data=pd.DataFrame(
-                [
-                    {
-                        '月份': '2025年01期',
-                        '产品编码': 'DP.C.P0197AA',
-                        '产品名称': '动力线',
-                        '工单编号': 'WO-001',
-                        '工单行': '1',
-                    }
-                ]
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('DP.C.P0197AA',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
             ),
-            column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text', '工单编号': 'text', '工单行': 'text'},
         ),
-        product_anomaly_sections=[],
         quality_metrics=(),
-        error_log=pd.DataFrame(),
+        error_log_count=0,
+        stage_timings={},
     )
-    mocked_build = Mock(return_value=artifacts)
 
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        patch('src.etl.costing_etl.build_report_artifacts', mocked_build),
-    ):
-        assert etl.process_file(input_path, output_path) is True
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload) as payload_mock:
+        assert etl.process_file(tmp_path / 'input.xlsx', tmp_path / 'output.xlsx') is True
 
-    assert mocked_build.call_count == 1
-    assert mocked_build.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
+    assert payload_mock.call_count == 1
+    assert payload_mock.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:
@@ -1129,7 +1154,6 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     sk_output_path = tmp_path / 'sk_output.xlsx'
     gb_output_path = tmp_path / 'gb_output.xlsx'
 
-    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
     df_detail = pd.DataFrame(
         [
             {
@@ -1212,10 +1236,9 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     )
 
     etl_sk = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
+    sk_artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=etl_sk.standalone_cost_items)
+    sk_payload = _build_workbook_payload_from_artifacts(detail_df=df_detail, artifacts=sk_artifacts)
+    with patch.object(etl_sk.pipeline, 'build_workbook_payload', return_value=sk_payload):
         assert etl_sk.process_file(input_path, sk_output_path) is True
 
     sk_wb = load_workbook(sk_output_path)
@@ -1235,10 +1258,9 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     assert 'Modified Z-score_软件费用' not in sk_work_order_headers
 
     etl_gb = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费',))
-    with (
-        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-    ):
+    gb_artifacts = build_report_artifacts(df_detail, df_qty, standalone_cost_items=etl_gb.standalone_cost_items)
+    gb_payload = _build_workbook_payload_from_artifacts(detail_df=df_detail, artifacts=gb_artifacts)
+    with patch.object(etl_gb.pipeline, 'build_workbook_payload', return_value=gb_payload):
         assert etl_gb.process_file(input_path, gb_output_path) is True
 
     gb_wb = load_workbook(gb_output_path)

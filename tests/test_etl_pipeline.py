@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pandas as pd
 import polars as pl
 
@@ -18,6 +21,8 @@ from src.analytics.contracts import (
     WorkbookPayload,
 )
 from src.etl.costing_etl import CostingWorkbookETL
+from src.etl.stages.reader import load_raw_workbook
+from src.etl.stages.workbook_ingestor import WorkbookIngestor
 
 
 def test_polars_pipeline_contract_objects_are_constructible() -> None:
@@ -167,3 +172,35 @@ def test_pipeline_split_sheets_returns_split_result_and_keeps_month_column() -> 
     assert split_result.detail_df.columns.tolist()[0:2] == ['年期', '月份']
     assert split_result.qty_df.iloc[0]['工单编号'] == 'WO-001'
     assert split_result.detail_df.iloc[0]['成本项目名称'] == '直接材料'
+
+
+def test_workbook_ingestor_falls_back_once_when_fast_reader_fails(tmp_path: Path) -> None:
+    ingestor = WorkbookIngestor()
+    fallback = RawWorkbookFrame(
+        sheet_name='Sheet1',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年1期'], 'column_1': ['P001']}),
+    )
+
+    with (
+        patch.object(ingestor, '_load_with_calamine', side_effect=RuntimeError('boom')),
+        patch.object(ingestor, '_load_with_openpyxl', return_value=fallback) as fallback_mock,
+    ):
+        result = ingestor.load(tmp_path / 'input.xlsx', skip_rows=2)
+
+    assert result.sheet_name == 'Sheet1'
+    fallback_mock.assert_called_once()
+
+
+def test_load_raw_workbook_delegates_to_workbook_ingestor(tmp_path: Path) -> None:
+    raw = RawWorkbookFrame(
+        sheet_name='Sheet1',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年1期'], 'column_1': ['P001']}),
+    )
+
+    with patch.object(WorkbookIngestor, 'load', return_value=raw) as load_mock:
+        result = load_raw_workbook(tmp_path / 'input.xlsx', skip_rows=2)
+
+    assert result is raw
+    load_mock.assert_called_once_with(tmp_path / 'input.xlsx', skip_rows=2)

@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
-from tests.contracts._workbook_contract_helper import (
-    build_default_contract_workbook,
-    build_highlight_contract_workbook,
-    extract_highlight_semantics,
-    extract_workbook_semantics,
-)
+project_root = Path(__file__).resolve().parents[2]
+project_root_str = str(project_root)
+if project_root_str not in sys.path:
+    sys.path.insert(0, project_root_str)
 
 
 def main() -> None:
+    from tests.contracts._workbook_contract_helper import (
+        build_default_contract_workbook,
+        build_highlight_contract_workbook,
+        extract_highlight_semantics,
+        extract_workbook_semantics,
+    )
+
     baseline_dir = Path(__file__).with_name('baselines')
     baseline_dir.mkdir(parents=True, exist_ok=True)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock
-from src.excel.sheet_writers import SheetWriter
+from src.excel.fast_writer import FastSheetWriter
 
 DETAIL_TWO_DECIMAL_COLUMNS = {'本期完工单位成本', '本期完工金额'}
 QTY_TWO_DECIMAL_COLUMNS = {
@@ -51,7 +51,7 @@ class CostingWorkbookWriter:
     """统一写出成本 workbook。"""
 
     def __init__(self) -> None:
-        self.sheet_writer = SheetWriter()
+        self.sheet_writer = FastSheetWriter()
 
     def write_workbook(
         self,
@@ -65,20 +65,26 @@ class CostingWorkbookWriter:
         error_log: pd.DataFrame,
     ) -> None:
         """按固定 sheet 顺序写出完整 workbook。"""
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            self.sheet_writer.write_dataframe_sheet(
+        with pd.ExcelWriter(
+            output_path,
+            engine='xlsxwriter',
+            engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+        ) as writer:
+            self.sheet_writer.write_dataframe_fast(
                 writer,
                 '成本明细',
                 detail_df,
                 numeric_columns=DETAIL_TWO_DECIMAL_COLUMNS,
                 freeze_panes='A2',
+                fixed_width=15,
             )
-            self.sheet_writer.write_dataframe_sheet(
+            self.sheet_writer.write_dataframe_fast(
                 writer,
                 '产品数量统计',
                 qty_sheet_df,
                 numeric_columns=_resolve_qty_numeric_columns(qty_sheet_df),
                 freeze_panes='A2',
+                fixed_width=15,
             )
             for sheet_name, sections in analysis_tables.items():
                 self.sheet_writer.write_analysis_sheet(writer, sheet_name, sections)
@@ -87,7 +93,21 @@ class CostingWorkbookWriter:
                 '按工单按产品异常值分析',
                 work_order_sheet,
                 freeze_panes='A2',
+                fixed_width=15,
             )
-            self.sheet_writer.apply_work_order_highlights(work_order_worksheet)
+            self.sheet_writer.apply_work_order_highlights(
+                writer.book,
+                work_order_worksheet,
+                columns=work_order_sheet.data.columns.tolist(),
+                max_row=len(work_order_sheet.data) + 1,
+            )
             self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
-            error_log.to_excel(writer, sheet_name='error_log', index=False)
+            self.sheet_writer.write_dataframe_fast(
+                writer,
+                'error_log',
+                error_log,
+                numeric_columns=set(),
+                freeze_panes=None,
+                auto_filter=False,
+                apply_column_widths=False,
+            )

@@ -1,21 +1,18 @@
 """测试主 ETL 输出与基础行为。"""
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.utils import get_column_letter
-from openpyxl.utils import get_column_letter
-from openpyxl.utils import get_column_letter
-from openpyxl.utils import get_column_letter
 
 from src.analytics.contracts import AnalysisArtifacts, FlatSheet, ProductAnomalySection, QualityMetric
 from src.etl.costing_etl import CostingWorkbookETL
+from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
-from src.excel.workbook_writer import CostingWorkbookWriter
-from src.excel.workbook_writer import CostingWorkbookWriter
+from tests.contracts._workbook_contract_helper import extract_highlight_semantics
 
 
 def _build_header_map(worksheet, header_row: int = 1) -> dict[str, int]:
@@ -33,11 +30,26 @@ def _find_title_row(worksheet, title: str) -> int:
     raise AssertionError(f'未找到标题行: {title}')
 
 
-def _rgb_suffix(color) -> str | None:
-    rgb = getattr(color, 'rgb', None)
-    if rgb is None:
-        return None
-    return rgb[-6:]
+def _assert_header_columns_fixed_width(
+    worksheet,
+    header_map: dict[str, int],
+    *,
+    expected_width: float = 15.0,
+) -> None:
+    dimensions = list(worksheet.column_dimensions.values())
+    for col_idx in header_map.values():
+        width = None
+        for dimension in dimensions:
+            if dimension.width is None:
+                continue
+            if dimension.min <= col_idx <= dimension.max:
+                width = float(dimension.width)
+                break
+        if width is None:
+            column_letter = get_column_letter(col_idx)
+            fallback_width = worksheet.column_dimensions[column_letter].width
+            width = None if fallback_width is None else float(fallback_width)
+        assert width == expected_width
 
 
 class TestCostingWorkbookETL:
@@ -217,6 +229,116 @@ class TestCostingWorkbookETL:
         assert result['product_code'].tolist() == ['CUSTOM-002', 'CUSTOM-001']
 
 
+def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
+    """热点 sheet 应路由到 write_dataframe_fast。"""
+    workbook_writer = CostingWorkbookWriter()
+    output_path = tmp_path / 'routed.xlsx'
+
+    detail_df = pd.DataFrame([{'本期完工单位成本': 10.0, '本期完工金额': 100.0}])
+    qty_sheet_df = pd.DataFrame(
+        [
+            {
+                '本期完工金额': 165.0,
+                '本期完工直接材料合计完工金额': 100.0,
+            }
+        ]
+    )
+    error_log_df = pd.DataFrame([{'error_code': 'E001', 'message': 'sample'}])
+    work_order_sheet = FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'})
+
+    with (
+        patch.object(workbook_writer.sheet_writer, 'write_dataframe_fast') as fast_writer_mock,
+        patch.object(workbook_writer.sheet_writer, 'write_dataframe_sheet') as dataframe_writer_mock,
+    ):
+        workbook_writer.write_workbook(
+            output_path,
+            detail_df=detail_df,
+            qty_sheet_df=qty_sheet_df,
+            analysis_tables={},
+            work_order_sheet=work_order_sheet,
+            product_anomaly_sections=[],
+            error_log=error_log_df,
+        )
+
+    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计', 'error_log']
+    dataframe_writer_mock.assert_not_called()
+
+
+def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:
+    """快路径下空数值单元格仍应保留数字格式和边框。"""
+    output_path = tmp_path / 'fast_blank_numeric.xlsx'
+    sheet_writer = FastSheetWriter()
+    sheet_df = pd.DataFrame([{'文本列': 'A', '数值列': None}])
+
+    with pd.ExcelWriter(
+        output_path,
+        engine='xlsxwriter',
+        engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+    ) as writer:
+        sheet_writer.write_dataframe_fast(
+            writer,
+            '热点sheet',
+            sheet_df,
+            numeric_columns={'数值列'},
+            freeze_panes='A2',
+            fixed_width=15,
+        )
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['热点sheet']
+    value_cell = worksheet['B2']
+
+    assert value_cell.value is None
+    assert value_cell.number_format == '#,##0.00'
+    assert value_cell.alignment.horizontal == 'right'
+    assert value_cell.border.left.style == 'thin'
+    assert value_cell.border.right.style == 'thin'
+    assert value_cell.border.top.style == 'thin'
+    assert value_cell.border.bottom.style == 'thin'
+
+
+def test_write_dataframe_fast_error_log_style_without_column_widths(tmp_path) -> None:
+    """error_log 在 apply_column_widths=False 下数据区样式不退化。"""
+    output_path = tmp_path / 'fast_error_log.xlsx'
+    sheet_writer = FastSheetWriter()
+    error_log_df = pd.DataFrame(
+        [
+            {
+                'row_id': '1',
+                'error_type': 'MISSING_AMOUNT',
+                'message': 'missing amount',
+            }
+        ]
+    )
+
+    with pd.ExcelWriter(
+        output_path,
+        engine='xlsxwriter',
+        engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+    ) as writer:
+        sheet_writer.write_dataframe_fast(
+            writer,
+            'error_log',
+            error_log_df,
+            numeric_columns=set(),
+            freeze_panes=None,
+            auto_filter=False,
+            apply_column_widths=False,
+        )
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['error_log']
+    cell = worksheet['A2']
+
+    assert worksheet.freeze_panes is None
+    assert worksheet.auto_filter.ref is None
+    assert cell.alignment.horizontal == 'left'
+    assert cell.border.left.style == 'thin'
+    assert cell.border.right.style == 'thin'
+    assert cell.border.top.style == 'thin'
+    assert cell.border.bottom.style == 'thin'
+
+
 def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     """测试 process_file 会输出 v3 相关 sheet 与基础样式。"""
     etl = CostingWorkbookETL(skip_rows=2)
@@ -321,45 +443,11 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         ]
     )
 
-        with (
-            patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
-            patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
-        ):
-            assert etl.process_file(input_path, output_path) is True
-
-    def test_lightweight_export_uses_fixed_width_and_number_formats(self, tmp_path) -> None:
-        """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
-        writer = CostingWorkbookWriter()
-        detail_df = pd.DataFrame(
-            {
-                '本期完工单位成本': [111.11],
-                '本期完工金额': [222.22],
-                '产品编码': ['P001'],
-            }
-        )
-        qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
-        work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
-        output_path = tmp_path / 'lightweight.xlsx'
-        writer.write_workbook(
-            output_path,
-            detail_df=detail_df,
-            qty_sheet_df=qty_sheet_df,
-            analysis_tables={},
-            work_order_sheet=work_order_sheet,
-            product_anomaly_sections=[],
-            error_log=pd.DataFrame(columns=['code']),
-        )
-
-        workbook = load_workbook(output_path)
-        for sheet_name in ('成本明细', '产品数量统计'):
-            worksheet = workbook[sheet_name]
-            assert worksheet.freeze_panes == 'A2'
-            header_map = _build_header_map(worksheet)
-            number_column = header_map['本期完工金额']
-            assert worksheet.cell(2, number_column).number_format == '#,##0.00'
-            for col_idx in range(1, len(worksheet[1]) + 1):
-                width = worksheet.column_dimensions[get_column_letter(col_idx)].width
-                assert width == 15.0
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
     expected_sheets = {
@@ -440,46 +528,15 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_work_order.freeze_panes == 'A2'
     assert ws_work_order.auto_filter.ref is not None
 
-
-def test_lightweight_export_uses_fixed_width_and_number_formats(tmp_path) -> None:
-    """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
-    writer = CostingWorkbookWriter()
-    detail_df = pd.DataFrame(
-        {
-            '本期完工单位成本': [111.11],
-            '本期完工金额': [222.22],
-            '产品编码': ['P001'],
-        }
-    )
-    qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
-    work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
-    output_path = tmp_path / 'lightweight.xlsx'
-    writer.write_workbook(
-        output_path,
-        detail_df=detail_df,
-        qty_sheet_df=qty_sheet_df,
-        analysis_tables={},
-        work_order_sheet=work_order_sheet,
-        product_anomaly_sections=[],
-        error_log=pd.DataFrame(columns=['code']),
-    )
-
-    workbook = load_workbook(output_path)
-    for sheet_name in ('成本明细', '产品数量统计'):
-        worksheet = workbook[sheet_name]
-        assert worksheet.freeze_panes == 'A2'
-        header_map = _build_header_map(worksheet)
-        number_column = header_map['本期完工金额']
-        assert worksheet.cell(2, number_column).number_format == '#,##0.00'
-        for col_idx in range(1, worksheet.max_column + 1):
-            width = worksheet.column_dimensions[get_column_letter(col_idx)].width
-            assert width == 15.0
-
     ws_product = wb['按产品异常值分析']
     assert ws_product['A1'].value == '四、按单个产品异常值分析'
     assert ws_product['A3'].value == '产品编码'
     assert ws_product['A4'].value == 'GB_C.D.B0040AA'
     assert ws_product.freeze_panes == 'A6'
+
+    ws_error_log = wb['error_log']
+    assert ws_error_log.freeze_panes is None
+    assert ws_error_log.auto_filter.ref is None
 
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
     assert '本期完工数量缺失率' not in quality_metrics
@@ -492,8 +549,137 @@ def test_lightweight_export_uses_fixed_width_and_number_formats(tmp_path) -> Non
     assert etl.last_error_log_count == wb['error_log'].max_row - 1
 
 
-def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> None:
-    """测试工单异常页会同步高亮值列和标记列。"""
+def test_process_file_logs_read_transform_export_timings(caplog, tmp_path) -> None:
+    """process_file 应输出读数、转换和导出的阶段耗时日志。"""
+    caplog.set_level(logging.INFO, logger='src.etl.costing_etl')
+    etl = CostingWorkbookETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    messages = [record.message for record in caplog.records]
+    assert any('Timing | stage=read' in message for message in messages)
+    assert any('Timing | stage=transform' in message for message in messages)
+    assert any('Timing | stage=export' in message for message in messages)
+
+
+def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
+    """轻量导出骨架：仍写出8张sheet，关键明细页保留A2冻结和数值格式。"""
+    etl = CostingWorkbookETL(skip_rows=2)
+    input_path = tmp_path / 'input.xlsx'
+    output_path = tmp_path / 'output.xlsx'
+
+    df_raw = pd.DataFrame({'子项物料编码': ['MAT-001'], '成本项目名称': ['直接材料'], '年期': ['2025年1期']})
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工单位成本': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10.0,
+                '本期完工金额': 165.0,
+            }
+        ]
+    )
+
+    with (
+        patch('src.etl.costing_etl.pd.read_excel', return_value=df_raw),
+        patch.object(CostingWorkbookETL, '_split_sheets', return_value=(df_detail, df_qty)),
+    ):
+        assert etl.process_file(input_path, output_path) is True
+
+    xls = pd.ExcelFile(output_path, engine='openpyxl')
+    assert len(xls.sheet_names) == 8
+    assert set(xls.sheet_names) == {
+        '成本明细',
+        '产品数量统计',
+        '直接材料_价量比',
+        '直接人工_价量比',
+        '制造费用_价量比',
+        '按工单按产品异常值分析',
+        '按产品异常值分析',
+        'error_log',
+    }
+
+    wb = load_workbook(output_path)
+    ws_detail = wb['成本明细']
+    detail_headers = _build_header_map(ws_detail)
+    assert ws_detail.freeze_panes == 'A2'
+    assert ws_detail.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
+    assert ws_detail.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(ws_detail, detail_headers)
+
+    ws_qty = wb['产品数量统计']
+    qty_headers = _build_header_map(ws_qty)
+    assert ws_qty.freeze_panes == 'A2'
+    assert ws_qty.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
+    assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(ws_qty, qty_headers)
+
+
+def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> None:
+    """测试工单异常页会写出条件格式规则，而不是直接回填单元格颜色。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -633,21 +819,32 @@ def test_process_file_highlights_work_order_value_and_flag_cells(tmp_path) -> No
     ):
         assert etl.process_file(input_path, output_path) is True
 
-    wb = load_workbook(output_path)
-    ws_work_order = wb['按工单按产品异常值分析']
-    headers = _build_header_map(ws_work_order)
+    highlight_semantics = extract_highlight_semantics(output_path)
 
-    dm_value = ws_work_order.cell(2, headers['直接材料单位完工成本'])
-    dm_flag = ws_work_order.cell(2, headers['直接材料异常标记'])
-    moh_labor_value = ws_work_order.cell(2, headers['制造费用_人工单位完工成本'])
-    moh_labor_flag = ws_work_order.cell(2, headers['制造费用_人工异常标记'])
-
-    assert _rgb_suffix(dm_value.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(dm_flag.fill.fgColor) == 'DDEBF7'
-    assert _rgb_suffix(moh_labor_value.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_flag.fill.fgColor) == '4472C4'
-    assert _rgb_suffix(moh_labor_value.font.color) == 'FFFFFF'
-    assert _rgb_suffix(moh_labor_flag.font.color) == 'FFFFFF'
+    assert {
+        'sqref': 'J2:J2',
+        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
+        'fill': 'DDEBF7',
+        'font': None,
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'R2:R2',
+        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
+        'fill': 'DDEBF7',
+        'font': None,
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'N2:N2',
+        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
+        'fill': '4472C4',
+        'font': 'FFFFFF',
+    } in highlight_semantics['rules']
+    assert {
+        'sqref': 'V2:V2',
+        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
+        'fill': '4472C4',
+        'font': 'FFFFFF',
+    } in highlight_semantics['rules']
 
 
 def test_process_file_passes_standalone_cost_items_to_build_report_artifacts(tmp_path) -> None:
@@ -845,38 +1042,3 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     gb_work_order_headers = _build_header_map(gb_work_order_ws)
     assert '软件费用合计完工金额' not in gb_work_order_headers
     assert '软件费用单位完工成本' not in gb_work_order_headers
-
-
-def test_lightweight_export_uses_fixed_width_and_number_formats(tmp_path) -> None:
-    """成本明细和产品数量统计应获得轻量 sheet 基础属性。"""
-    writer = CostingWorkbookWriter()
-    detail_df = pd.DataFrame(
-        {
-            '本期完工单位成本': [111.11],
-            '本期完工金额': [222.22],
-            '产品编码': ['P001'],
-        }
-    )
-    qty_sheet_df = pd.DataFrame({'本期完工金额': [333.33], '产品编码': ['P002']})
-    work_order_sheet = FlatSheet(data=pd.DataFrame(columns=['产品编码', '产品名称']), column_types={})
-    output_path = tmp_path / 'lightweight.xlsx'
-    writer.write_workbook(
-        output_path,
-        detail_df=detail_df,
-        qty_sheet_df=qty_sheet_df,
-        analysis_tables={},
-        work_order_sheet=work_order_sheet,
-        product_anomaly_sections=[],
-        error_log=pd.DataFrame(columns=['code']),
-    )
-
-    workbook = load_workbook(output_path)
-    for sheet_name in ('成本明细', '产品数量统计'):
-        worksheet = workbook[sheet_name]
-        assert worksheet.freeze_panes == 'A2'
-        header_map = _build_header_map(worksheet)
-        number_column = header_map['本期完工金额']
-        assert worksheet.cell(2, number_column).number_format == '#,##0.00'
-        for col_idx in range(1, worksheet.max_column + 1):
-            width = worksheet.column_dimensions[get_column_letter(col_idx)].width
-            assert width == 15.0

@@ -7,6 +7,7 @@ Excel原始成本计算单 -> 清洗双层表头 -> 规则填充 -> 拆成成本
 import logging
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import pandas as pd
 
@@ -331,12 +332,18 @@ class CostingWorkbookETL:
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""
         try:
+            total_start = perf_counter()
             self.last_quality_metrics = ()
             self.last_error_log_count = 0
             logger.info('Processing file: %s', input_path)
+
+            # 阶段耗时需要拆开记录，后续才能区分瓶颈是在读取、变换还是 Excel 导出。
+            read_start = perf_counter()
             df_raw = self._load_raw_dataframe(input_path)
             logger.info('Loaded rows=%s, cols=%s', len(df_raw), len(df_raw.columns))
+            logger.info('Timing | stage=read | seconds=%.3f', perf_counter() - read_start)
 
+            transform_start = perf_counter()
             df_raw.columns = [clean_column_name(c) for c in df_raw.columns]
             resolved_columns = self._resolve_columns(df_raw)
             if resolved_columns.rename_map:
@@ -365,6 +372,7 @@ class CostingWorkbookETL:
             )
             analysis_fact_df = self._filter_fact_df_for_analysis(artifacts.fact_df)
             analysis_tables = render_tables(analysis_fact_df)
+            del analysis_fact_df
             filtered_work_order_sheet = FlatSheet(
                 data=self._filter_dataframe_by_whitelist(
                     artifacts.work_order_sheet.data,
@@ -380,7 +388,9 @@ class CostingWorkbookETL:
             self.last_error_log_count = len(error_log)
             self._log_quality_metrics(self.last_quality_metrics)
             logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
+            logger.info('Timing | stage=transform | seconds=%.3f', perf_counter() - transform_start)
 
+            export_start = perf_counter()
             self.workbook_writer.write_workbook(
                 output_path,
                 detail_df=df_detail,
@@ -390,12 +400,20 @@ class CostingWorkbookETL:
                 product_anomaly_sections=product_anomaly_sections,
                 error_log=error_log,
             )
+            logger.info('Timing | stage=export | seconds=%.3f', perf_counter() - export_start)
+            logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)
 
             logger.info(
                 'Output saved: %s (detail=%s, qty=%s)', output_path, len(df_detail), len(artifacts.qty_sheet_df)
             )
             if not error_log.empty:
                 logger.warning('Detected %s data quality issues, check sheet error_log', len(error_log))
+
+            del analysis_tables
+            del filtered_work_order_sheet
+            del product_anomaly_sections
+            del error_log
+            del artifacts
             return True
         except Exception as exc:
             logger.error('Processing failed: %s', exc, exc_info=True)

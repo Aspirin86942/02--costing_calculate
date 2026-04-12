@@ -105,19 +105,19 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
                 '直接材料单位完工成本': 18.0,
                 '直接人工单位完工成本': 2.0,
                 '制造费用单位完工成本': 3.0,
-                '制造费用▪其他单位完工成本': 0.0,
-                '制造费用▪人工单位完工成本': 30.0,
-                '制造费用▪机物料及低耗单位完工成本': 0.0,
-                '制造费用▪折旧单位完工成本': 0.0,
-                '制造费用▪水电费单位完工成本': 0.0,
+                '制造费用_其他单位完工成本': 0.0,
+                '制造费用_人工单位完工成本': 30.0,
+                '制造费用_机物料及低耗单位完工成本': 0.0,
+                '制造费用_折旧单位完工成本': 0.0,
+                '制造费用_水电费单位完工成本': 0.0,
                 '直接材料异常标记': '关注',
                 '直接人工异常标记': '正常',
                 '制造费用异常标记': '正常',
-                '制造费用▪其他异常标记': '正常',
-                '制造费用▪人工异常标记': '高度可疑',
-                '制造费用▪机物料及低耗异常标记': '正常',
-                '制造费用▪折旧异常标记': '正常',
-                '制造费用▪水电费异常标记': '正常',
+                '制造费用_其他异常标记': '正常',
+                '制造费用_人工异常标记': '高度可疑',
+                '制造费用_机物料及低耗异常标记': '正常',
+                '制造费用_折旧异常标记': '正常',
+                '制造费用_水电费异常标记': '正常',
             }
         ]
     )
@@ -134,19 +134,19 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
         '直接材料单位完工成本': 'price',
         '直接人工单位完工成本': 'price',
         '制造费用单位完工成本': 'price',
-        '制造费用▪其他单位完工成本': 'price',
-        '制造费用▪人工单位完工成本': 'price',
-        '制造费用▪机物料及低耗单位完工成本': 'price',
-        '制造费用▪折旧单位完工成本': 'price',
-        '制造费用▪水电费单位完工成本': 'price',
+        '制造费用_其他单位完工成本': 'price',
+        '制造费用_人工单位完工成本': 'price',
+        '制造费用_机物料及低耗单位完工成本': 'price',
+        '制造费用_折旧单位完工成本': 'price',
+        '制造费用_水电费单位完工成本': 'price',
         '直接材料异常标记': 'text',
         '直接人工异常标记': 'text',
         '制造费用异常标记': 'text',
-        '制造费用▪其他异常标记': 'text',
-        '制造费用▪人工异常标记': 'text',
-        '制造费用▪机物料及低耗异常标记': 'text',
-        '制造费用▪折旧异常标记': 'text',
-        '制造费用▪水电费异常标记': 'text',
+        '制造费用_其他异常标记': 'text',
+        '制造费用_人工异常标记': 'text',
+        '制造费用_机物料及低耗异常标记': 'text',
+        '制造费用_折旧异常标记': 'text',
+        '制造费用_水电费异常标记': 'text',
     }
     artifacts = AnalysisArtifacts(
         fact_df=pd.DataFrame(
@@ -213,25 +213,25 @@ def extract_workbook_semantics(workbook_path: Path) -> dict[str, object]:
 
 
 def extract_highlight_semantics(workbook_path: Path) -> dict[str, object]:
-    """提取按工单异常页中真正的高亮位置。"""
+    """提取按工单异常页的条件格式规则语义。"""
     workbook = load_workbook(workbook_path)
     worksheet = workbook['按工单按产品异常值分析']
-    highlighted_cells: list[dict[str, str | None]] = []
+    rules: list[dict[str, object]] = []
 
-    for row_idx in range(2, worksheet.max_row + 1):
-        for col_idx in range(1, worksheet.max_column + 1):
-            cell = worksheet.cell(row_idx, col_idx)
-            fill = _rgb_suffix(cell.fill.fgColor)
-            if fill is None:
-                continue
-            highlighted_cells.append(
+    for conditional_range, rule_list in worksheet.conditional_formatting._cf_rules.items():
+        sqref = _normalize_sqref(str(conditional_range.sqref))
+        for rule in rule_list:
+            rules.append(
                 {
-                    'cell': cell.coordinate,
-                    'fill': fill,
+                    'sqref': sqref,
+                    'formula': _normalize_rule_formulas(rule.formula),
+                    'fill': _extract_rule_fill(rule),
+                    'font': _extract_rule_font(rule),
                 }
             )
 
-    return {'sheet': worksheet.title, 'highlighted_cells': highlighted_cells}
+    rules.sort(key=lambda item: (item['sqref'], tuple(item['formula'])))
+    return {'sheet': worksheet.title, 'rules': rules}
 
 
 def _build_default_detail_df() -> pd.DataFrame:
@@ -430,3 +430,33 @@ def _rgb_suffix(color) -> str | None:
     if hasattr(rgb, 'value'):
         rgb = rgb.value
     return rgb[-6:]
+
+
+def _normalize_sqref(sqref: str) -> str:
+    return sqref if ':' in sqref else f'{sqref}:{sqref}'
+
+
+def _normalize_rule_formulas(formulas) -> list[str]:
+    normalized: list[str] = []
+    for formula in formulas or []:
+        formula_text = str(formula)
+        if not formula_text.startswith('='):
+            formula_text = f'={formula_text}'
+        normalized.append(formula_text)
+    return normalized
+
+
+def _extract_rule_fill(rule) -> str | None:
+    dxf = getattr(rule, 'dxf', None)
+    fill = getattr(dxf, 'fill', None)
+    if fill is None:
+        return None
+    return _rgb_suffix(fill.bgColor) or _rgb_suffix(fill.fgColor)
+
+
+def _extract_rule_font(rule) -> str | None:
+    dxf = getattr(rule, 'dxf', None)
+    font = getattr(dxf, 'font', None)
+    if font is None:
+        return None
+    return _rgb_suffix(font.color)

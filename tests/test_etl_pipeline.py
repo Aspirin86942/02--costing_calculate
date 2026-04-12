@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import logging
 import pandas as pd
 import polars as pl
 from openpyxl import Workbook
@@ -228,7 +229,7 @@ def test_workbook_ingestor_calamine_fast_path_preserves_contract(tmp_path: Path)
     assert result.frame.row(0) == ('2026年3期', 'P002')
 
 
-def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tmp_path: Path) -> None:
+def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tmp_path: Path, caplog) -> None:
     workbook_path = tmp_path / 'fallback.xlsx'
     workbook = Workbook()
     worksheet = workbook.active
@@ -241,8 +242,16 @@ def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tm
     workbook.save(workbook_path)
 
     ingestor = WorkbookIngestor()
+    caplog.set_level(logging.WARNING, logger=WorkbookIngestor.__module__)
     with patch.object(ingestor, '_load_with_calamine', side_effect=RuntimeError('boom')):
         result = ingestor.load(workbook_path, skip_rows=2)
 
     assert result.sheet_name == 'FallbackSheet'
     assert result.header_rows == (('主表头', '产品编码'), ('次表头', '产品名称'))
+    assert isinstance(result.frame, pl.DataFrame)
+    assert result.frame.columns == ['column_0', 'column_1']
+    assert result.frame.row(0) == ('2025年1期', 'P001')
+    assert any(
+        'falling back to openpyxl' in record.message and record.levelno >= logging.WARNING
+        for record in caplog.records
+    )

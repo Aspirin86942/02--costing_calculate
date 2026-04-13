@@ -111,4 +111,7 @@ class CostingWorkbookWriter:
             engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
         ) as writer:
             for model in sheet_models:
+                if model.write_mode == 'dataframe_fast':
+                    self.sheet_writer.write_sheet_model_as_lightweight_table(writer, model)
+                    continue
                 self.sheet_writer.write_sheet_model(writer, model)

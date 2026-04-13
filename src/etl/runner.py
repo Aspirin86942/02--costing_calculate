@@ -51,7 +51,7 @@ def write_error_log_csv(*, output_path: Path, error_log_frame) -> None:
 
 
 def run_pipeline(config: PipelineConfig) -> int:
-    """执行指定管线，输出处理后的 workbook 和同名质量日志。"""
+    """执行指定管线，输出处理后的 workbook 并在控制台打印质量日志摘要。"""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     input_files = find_input_files(config)
     if not input_files:
@@ -61,7 +61,6 @@ def run_pipeline(config: PipelineConfig) -> int:
     input_file = input_files[0]
     config.processed_dir.mkdir(parents=True, exist_ok=True)
     output_file = config.processed_dir / f'{input_file.stem}_处理后.xlsx'
-    log_file = config.processed_dir / f'{input_file.stem}_处理后.log'
     error_log_csv_file = config.processed_dir / f'{input_file.stem}_处理后_error_log.csv'
     etl = CostingWorkbookETL(
         skip_rows=2,
@@ -81,7 +80,6 @@ def run_pipeline(config: PipelineConfig) -> int:
         error_log_count=etl.last_error_log_count,
         quality_metrics=etl.last_quality_metrics,
     )
-    log_file.write_text(quality_log, encoding='utf-8')
     print(quality_log)
     logger.info('处理成功: %s', output_file)
     return 0

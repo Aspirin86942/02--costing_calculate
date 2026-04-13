@@ -265,6 +265,69 @@ class FastSheetWriter:
 
         return worksheet
 
+    def write_sheet_model_as_lightweight_table(self, writer: pd.ExcelWriter, model: SheetModel) -> Any:
+        """按热点 SheetModel 走轻量平铺写出，保留易用性但弱化数据单元格样式。"""
+        self._validate_lightweight_fast_model(model)
+
+        workbook = writer.book
+        worksheet = workbook.add_worksheet(model.sheet_name)
+        writer.sheets[model.sheet_name] = worksheet
+
+        header_format = workbook.add_format(
+            {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
+        )
+        # 热点大表核心策略：数据区仅保留对齐与数值格式，不再为每个数据单元格附加边框/填充，
+        # 以降低写出阶段的样式对象开销，同时保持筛选、冻结和数值可读性。
+        text_format = workbook.add_format({'align': 'left', 'valign': 'vcenter'})
+        number_format_cache: dict[str, Any] = {}
+        numeric_format_by_col: dict[int, Any] = {}
+
+        fixed_width = _resolve_fixed_width(model.fixed_width)
+        for col_idx, column_name in enumerate(model.columns):
+            worksheet.write(0, col_idx, column_name, header_format)
+            number_format = model.number_formats.get(column_name)
+            if number_format is not None:
+                numeric_format_by_col[col_idx] = number_format_cache.setdefault(
+                    number_format,
+                    workbook.add_format({'align': 'right', 'valign': 'vcenter', 'num_format': number_format}),
+                )
+
+            default_format = numeric_format_by_col.get(col_idx, text_format)
+            worksheet.set_column(col_idx, col_idx, fixed_width, default_format)
+
+        last_row = 0
+        for row_idx, row in enumerate(model.rows_factory(), start=1):
+            coerced_row_data = tuple(_coerce_row_value_for_excel(value) for value in row)
+            # 为什么这里不再逐格覆写数值列：热点大表的主耗时来自“整行写一次后再对数值列补写一次”，
+            # 改为非空数值完全依赖列默认格式后，可避免重复单元格写入；仅对空白数值位补 write_blank，
+            # 用来保住 openpyxl 侧可观测到的 number_format/alignment 契约。
+            worksheet.write_row(row_idx, 0, coerced_row_data)
+            for col_idx, numeric_format in numeric_format_by_col.items():
+                if _is_blank_excel_value(coerced_row_data[col_idx]):
+                    _write_cell(worksheet, row_idx, col_idx, None, numeric_format)
+            last_row = row_idx
+
+        if model.freeze_panes is not None:
+            freeze_row, freeze_col = _freeze_panes_to_rc(model.freeze_panes)
+            worksheet.freeze_panes(freeze_row, freeze_col)
+        if model.auto_filter and model.columns:
+            worksheet.autofilter(0, 0, max(last_row, 1), len(model.columns) - 1)
+
+        return worksheet
+
+    def _validate_lightweight_fast_model(self, model: SheetModel) -> None:
+        # 为什么要前置校验：fast-path 会省略通用写法中的部分能力，如果静默接收不兼容模型，
+        # 会在不报错的情况下丢失条件格式或特殊布局，难以及时发现回归。
+        if model.conditional_formats:
+            raise ValueError(
+                f'lightweight fast-path does not support conditional_formats: sheet_name={model.sheet_name}'
+            )
+        if model.sheet_name == '按产品异常值分析':
+            raise ValueError(
+                'lightweight fast-path does not support special layout sheet: '
+                f'sheet_name={model.sheet_name}'
+            )
+
     def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
         """写入三段分析块（Task 1 不迁移高亮/条件格式）。"""
         workbook = writer.book

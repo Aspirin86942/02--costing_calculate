@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 import polars as pl
+import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
@@ -20,7 +21,7 @@ from src.analytics.contracts import (
     SheetModel,
     WorkbookPayload,
 )
-from src.analytics.presentation_builder import build_sheet_models
+from src.analytics.presentation_builder import build_sheet_models, dataframe_to_sheet_model
 from src.analytics.qty_enricher import build_report_artifacts
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
@@ -459,6 +460,147 @@ def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_col
     assert rows[1][1] == '集成检测部'
 
 
+def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
+    detail_df = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '本期完工单位成本': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    qty_sheet_df = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '本期完工数量': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    work_order_sheet = FlatSheet(
+        data=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        column_types={'月份': 'text', '产品编码': 'text'},
+    )
+
+    models = build_sheet_models(
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        fact_bundle=None,
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=[],
+    )
+
+    detail_model = next(model for model in models if model.sheet_name == '成本明细')
+    qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
+    work_order_model = next(model for model in models if model.sheet_name == '按工单按产品异常值分析')
+    product_anomaly_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    analysis_models = [
+        model for model in models if model.sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')
+    ]
+
+    assert detail_model.write_mode == 'dataframe_fast'
+    assert detail_model.style_profile == 'lightweight_flat'
+    assert isinstance(detail_model.source_frame, pl.DataFrame)
+    assert detail_model.source_frame.to_dicts() == pl.DataFrame(
+        detail_df.to_dict(orient='list'),
+        strict=False,
+    ).to_dicts()
+
+    assert qty_model.write_mode == 'dataframe_fast'
+    assert qty_model.style_profile == 'lightweight_flat'
+    assert isinstance(qty_model.source_frame, pl.DataFrame)
+    assert qty_model.source_frame.to_dicts() == pl.DataFrame(
+        qty_sheet_df.to_dict(orient='list'),
+        strict=False,
+    ).to_dicts()
+
+    assert work_order_model.write_mode is None
+    assert work_order_model.style_profile is None
+    assert work_order_model.source_frame is None
+    assert product_anomaly_model.write_mode is None
+    assert product_anomaly_model.style_profile is None
+    assert product_anomaly_model.source_frame is None
+    assert analysis_models
+    for model in analysis_models:
+        assert model.write_mode is None
+        assert model.style_profile is None
+        assert model.source_frame is None
+
+
+def test_dataframe_to_sheet_model_rejects_invalid_fast_metadata() -> None:
+    frame = pl.DataFrame({'a': [1]})
+
+    with pytest.raises(ValueError, match='fast export metadata'):
+        dataframe_to_sheet_model(
+            sheet_name='测试',
+            frame=frame,
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+        )
+
+    with pytest.raises(ValueError, match='source_frame'):
+        dataframe_to_sheet_model(
+            sheet_name='测试',
+            frame=frame,
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'b': [1]}),
+        )
+
+
+def test_dataframe_to_sheet_model_keeps_rows_factory_in_sync_with_source_frame() -> None:
+    frame = pl.DataFrame({'a': [1]})
+    source_frame = pl.DataFrame({'a': [2]})
+
+    model = dataframe_to_sheet_model(
+        sheet_name='测试',
+        frame=frame,
+        column_types={'a': 'text'},
+        number_formats={},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=source_frame,
+    )
+
+    assert list(model.rows_factory()) == list(source_frame.iter_rows())
+
+
+def test_sheet_model_rejects_partial_fast_metadata() -> None:
+    with pytest.raises(ValueError, match='fast export metadata'):
+        SheetModel(
+            sheet_name='测试',
+            columns=('a',),
+            rows_factory=lambda: iter([(1,)]),
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+        )
+
+
+def test_sheet_model_fast_metadata_keeps_rows_factory_in_sync() -> None:
+    source_frame = pl.DataFrame({'a': [2]})
+
+    model = SheetModel(
+        sheet_name='测试',
+        columns=('a',),
+        rows_factory=lambda: iter([(1,)]),
+        column_types={'a': 'text'},
+        number_formats={},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=source_frame,
+    )
+
+    assert list(model.rows_factory()) == list(source_frame.iter_rows())
+
+
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()
@@ -532,6 +674,191 @@ def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Pa
     assert detail_sheet.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
     assert qty_sheet.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
     assert qty_sheet.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
+
+
+def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writer(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_models_route_fast.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
+        ),
+        SheetModel(
+            sheet_name='按工单按产品异常值分析',
+            columns=('直接材料单位完工成本', '直接材料异常标记'),
+            rows_factory=lambda: iter([(18.0, '关注')]),
+            column_types={'直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
+            number_formats={'直接材料单位完工成本': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+        ),
+    )
+
+    with (
+        patch.object(
+            writer.sheet_writer,
+            'write_sheet_model_as_lightweight_table',
+            wraps=writer.sheet_writer.write_sheet_model_as_lightweight_table,
+        ) as fast_tabular_mock,
+        patch.object(
+            writer.sheet_writer,
+            'write_sheet_model',
+            wraps=writer.sheet_writer.write_sheet_model,
+        ) as generic_mock,
+    ):
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == ['成本明细']
+    assert [call.args[1].sheet_name for call in generic_mock.call_args_list] == ['按工单按产品异常值分析']
+
+
+def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_data_cells.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
+        ),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['成本明细']
+    assert worksheet.freeze_panes == 'A2'
+    assert worksheet.auto_filter.ref == 'A1:B2'
+    assert worksheet['B2'].number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(worksheet, _build_header_map(worksheet))
+    assert worksheet['A2'].border.left.style is None
+    assert worksheet['A2'].border.right.style is None
+    assert worksheet['A2'].border.top.style is None
+    assert worksheet['A2'].border.bottom.style is None
+
+
+def test_sheet_model_fast_tabular_writer_keeps_blank_numeric_cell_format_lightweight(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_blank_numeric.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', None)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [None]}, strict=False),
+        ),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['成本明细']
+    value_cell = worksheet['B2']
+
+    assert value_cell.value is None
+    assert value_cell.number_format == '#,##0.00'
+    assert value_cell.alignment.horizontal == 'right'
+    assert value_cell.border.left.style is None
+    assert value_cell.border.right.style is None
+    assert value_cell.border.top.style is None
+    assert value_cell.border.bottom.style is None
+
+
+def test_sheet_model_fast_tabular_writer_skips_non_blank_numeric_rewrite(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_single_write.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}, strict=False),
+        ),
+    )
+
+    with patch('src.excel.fast_writer._write_cell') as write_cell_mock:
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    write_cell_mock.assert_not_called()
+
+
+def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_fast_reject_conditional.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
+            conditional_formats=(
+                ConditionalFormatRule(
+                    target_range='A2:A1048576',
+                    formula='=$B2>0',
+                    format_key='attention',
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match='conditional_formats.*成本明细'):
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+
+def test_sheet_model_fast_tabular_writer_rejects_product_anomaly_special_layout(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_fast_reject_product_anomaly.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='按产品异常值分析',
+            columns=('产品编码', '产品名称', '月份', '总成本'),
+            rows_factory=lambda: iter([('P001', '产品A', '2025年01期', 100.0)]),
+            column_types={'产品编码': 'text', '产品名称': 'text', '月份': 'text', '总成本': 'amount'},
+            number_formats={'总成本': '#,##0.00'},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame(
+                {'产品编码': ['P001'], '产品名称': ['产品A'], '月份': ['2025年01期'], '总成本': [100.0]}
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match='按产品异常值分析'):
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
 
 def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> None:

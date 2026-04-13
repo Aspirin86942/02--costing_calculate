@@ -36,7 +36,11 @@ def test_find_input_files_preserves_pattern_order_and_deduplicates(tmp_path) -> 
     assert find_input_files(config) == [same_file, second_file, third_file]
 
 
-def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, tmp_path) -> None:
+def test_run_pipeline_prints_quality_summary_without_writing_log_file(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
     input_file = tmp_path / 'SK-成本计算单.xlsx'
     input_file.touch()
     processed_dir = tmp_path / 'processed'
@@ -75,10 +79,10 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
     error_log_csv_path = processed_dir / 'SK-成本计算单_处理后_error_log.csv'
 
     assert exit_code == 0
-    assert log_path.exists()
+    assert not log_path.exists()
     assert error_log_csv_path.exists()
     assert 'pipeline=sk' in stdout
-    assert '可参与分析占比=100.00%' in log_path.read_text(encoding='utf-8')
+    assert '可参与分析占比=100.00%' in stdout
     pd.testing.assert_frame_equal(
         pd.read_csv(error_log_csv_path, encoding='utf-8-sig'),
         pd.DataFrame(columns=['row_id', 'issue_type', 'message']),
@@ -86,7 +90,7 @@ def test_run_pipeline_writes_quality_log_and_returns_zero(monkeypatch, capsys, t
     assert captured['standalone_cost_items'] == config.standalone_cost_items
 
 
-def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) -> None:
+def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypatch, capsys, tmp_path) -> None:
     input_file = tmp_path / 'GB-成本计算单.xlsx'
     input_file.touch()
     processed_dir = tmp_path / 'processed'
@@ -153,7 +157,7 @@ def test_run_pipeline_uses_real_etl_payload_path(monkeypatch, capsys, tmp_path) 
     error_log_csv_path = processed_dir / 'GB-成本计算单_处理后_error_log.csv'
 
     assert exit_code == 0
-    assert log_path.exists()
+    assert not log_path.exists()
     assert error_log_csv_path.exists()
     assert 'pipeline=gb' in stdout
     assert 'error_log_count=2' in stdout

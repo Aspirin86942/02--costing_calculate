@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 import polars as pl
+import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
@@ -20,7 +21,7 @@ from src.analytics.contracts import (
     SheetModel,
     WorkbookPayload,
 )
-from src.analytics.presentation_builder import build_sheet_models
+from src.analytics.presentation_builder import build_sheet_models, dataframe_to_sheet_model
 from src.analytics.qty_enricher import build_report_artifacts
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
@@ -496,6 +497,8 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     detail_model = next(model for model in models if model.sheet_name == '成本明细')
     qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
     work_order_model = next(model for model in models if model.sheet_name == '按工单按产品异常值分析')
+    product_anomaly_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    analysis_models = [model for model in models if model.sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')]
 
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
@@ -510,6 +513,38 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     assert work_order_model.write_mode is None
     assert work_order_model.style_profile is None
     assert work_order_model.source_frame is None
+    assert product_anomaly_model.write_mode is None
+    assert product_anomaly_model.style_profile is None
+    assert product_anomaly_model.source_frame is None
+    assert analysis_models
+    for model in analysis_models:
+        assert model.write_mode is None
+        assert model.style_profile is None
+        assert model.source_frame is None
+
+
+def test_dataframe_to_sheet_model_rejects_invalid_fast_metadata() -> None:
+    frame = pl.DataFrame({'a': [1]})
+
+    with pytest.raises(ValueError, match='fast export metadata'):
+        dataframe_to_sheet_model(
+            sheet_name='测试',
+            frame=frame,
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+        )
+
+    with pytest.raises(ValueError, match='source_frame'):
+        dataframe_to_sheet_model(
+            sheet_name='测试',
+            frame=frame,
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'b': [1]}),
+        )
 
 
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:

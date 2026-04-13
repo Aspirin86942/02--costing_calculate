@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from typing import Literal, TypeAlias
 
 import pandas as pd
 import polars as pl
+
+WriteMode: TypeAlias = Literal['dataframe_fast']
+StyleProfile: TypeAlias = Literal['lightweight_flat']
 
 
 @dataclass(frozen=True)
@@ -59,8 +63,8 @@ class SheetModel:
     auto_filter: bool = True
     fixed_width: float | None = 15.0
     conditional_formats: tuple[ConditionalFormatRule, ...] = ()
-    write_mode: str | None = None
-    style_profile: str | None = None
+    write_mode: WriteMode | None = None
+    style_profile: StyleProfile | None = None
     source_frame: pl.DataFrame | None = None
 
 

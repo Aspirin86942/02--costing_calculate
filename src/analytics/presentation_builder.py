@@ -14,6 +14,8 @@ from src.analytics.contracts import (
     FlatSheet,
     ProductAnomalySection,
     SheetModel,
+    StyleProfile,
+    WriteMode,
 )
 from src.analytics.table_rendering import (
     PRODUCT_SUMMARY_SHEET_COLUMN_TYPES,
@@ -79,6 +81,8 @@ _ANALYSIS_SHEET_COLUMN_LAYOUT: dict[str, tuple[str, ...]] = {
         '制造费用贡献率',
     ),
 }
+_FAST_EXPORT_WRITE_MODES: set[WriteMode] = {'dataframe_fast'}
+_FAST_EXPORT_STYLE_PROFILES: set[StyleProfile] = {'lightweight_flat'}
 
 
 def dataframe_to_sheet_model(
@@ -91,11 +95,18 @@ def dataframe_to_sheet_model(
     auto_filter: bool = True,
     fixed_width: float | None = 15.0,
     conditional_formats: tuple[ConditionalFormatRule, ...] = (),
-    write_mode: str | None = None,
-    style_profile: str | None = None,
+    write_mode: WriteMode | None = None,
+    style_profile: StyleProfile | None = None,
     source_frame: pl.DataFrame | None = None,
 ) -> SheetModel:
     """把列式数据包装成写出契约。"""
+    _validate_fast_export_metadata(
+        sheet_name=sheet_name,
+        frame=frame,
+        write_mode=write_mode,
+        style_profile=style_profile,
+        source_frame=source_frame,
+    )
     return SheetModel(
         sheet_name=sheet_name,
         columns=tuple(frame.columns),
@@ -110,6 +121,30 @@ def dataframe_to_sheet_model(
         style_profile=style_profile,
         source_frame=source_frame,
     )
+
+
+def _validate_fast_export_metadata(
+    *,
+    sheet_name: str,
+    frame: pl.DataFrame,
+    write_mode: WriteMode | None,
+    style_profile: StyleProfile | None,
+    source_frame: pl.DataFrame | None,
+) -> None:
+    has_any = write_mode is not None or style_profile is not None or source_frame is not None
+    if not has_any:
+        return
+    # fast-export 需要成组出现，避免后续 writer routing 遇到矛盾状态。
+    if write_mode is None or style_profile is None or source_frame is None:
+        raise ValueError(f'fast export metadata incomplete for sheet={sheet_name}')
+    if write_mode not in _FAST_EXPORT_WRITE_MODES:
+        raise ValueError(f'unsupported write_mode for sheet={sheet_name}: {write_mode}')
+    if style_profile not in _FAST_EXPORT_STYLE_PROFILES:
+        raise ValueError(f'unsupported style_profile for sheet={sheet_name}: {style_profile}')
+    if not isinstance(source_frame, pl.DataFrame):
+        raise ValueError(f'source_frame must be polars DataFrame for sheet={sheet_name}')
+    if tuple(source_frame.columns) != tuple(frame.columns):
+        raise ValueError(f'source_frame columns mismatch for sheet={sheet_name}')
 
 
 def build_sheet_models(

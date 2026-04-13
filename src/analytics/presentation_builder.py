@@ -91,6 +91,9 @@ def dataframe_to_sheet_model(
     auto_filter: bool = True,
     fixed_width: float | None = 15.0,
     conditional_formats: tuple[ConditionalFormatRule, ...] = (),
+    write_mode: str | None = None,
+    style_profile: str | None = None,
+    source_frame: pl.DataFrame | None = None,
 ) -> SheetModel:
     """把列式数据包装成写出契约。"""
     return SheetModel(
@@ -103,6 +106,9 @@ def dataframe_to_sheet_model(
         auto_filter=auto_filter,
         fixed_width=fixed_width,
         conditional_formats=conditional_formats,
+        write_mode=write_mode,
+        style_profile=style_profile,
+        source_frame=source_frame,
     )
 
 
@@ -140,6 +146,9 @@ def build_sheet_models(
         number_formats={
             column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS
         },
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=detail_frame,
     )
     qty_two_decimal_columns = _resolve_qty_two_decimal_columns(tuple(qty_frame.columns))
     qty_model = dataframe_to_sheet_model(
@@ -147,6 +156,9 @@ def build_sheet_models(
         frame=qty_frame,
         column_types=dict.fromkeys(qty_frame.columns, 'text'),
         number_formats={column: '#,##0.00' for column in qty_frame.columns if column in qty_two_decimal_columns},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=qty_frame,
     )
 
     analysis_models = tuple(

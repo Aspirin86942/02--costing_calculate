@@ -59,6 +59,9 @@ class SheetModel:
     auto_filter: bool = True
     fixed_width: float | None = 15.0
     conditional_formats: tuple[ConditionalFormatRule, ...] = ()
+    write_mode: str | None = None
+    style_profile: str | None = None
+    source_frame: pl.DataFrame | None = None
 
 
 @dataclass(frozen=True)

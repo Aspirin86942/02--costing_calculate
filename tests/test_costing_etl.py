@@ -459,6 +459,59 @@ def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_col
     assert rows[1][1] == '集成检测部'
 
 
+def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
+    detail_df = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '本期完工单位成本': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    qty_sheet_df = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '产品编码': 'P001',
+                '本期完工数量': 10.0,
+                '本期完工金额': 100.0,
+            }
+        ]
+    )
+    work_order_sheet = FlatSheet(
+        data=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        column_types={'月份': 'text', '产品编码': 'text'},
+    )
+
+    models = build_sheet_models(
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        fact_bundle=None,
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=[],
+    )
+
+    detail_model = next(model for model in models if model.sheet_name == '成本明细')
+    qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
+    work_order_model = next(model for model in models if model.sheet_name == '按工单按产品异常值分析')
+
+    assert detail_model.write_mode == 'dataframe_fast'
+    assert detail_model.style_profile == 'lightweight_flat'
+    assert isinstance(detail_model.source_frame, pl.DataFrame)
+    assert detail_model.source_frame.to_dicts() == pl.DataFrame(detail_df.to_dict(orient='list'), strict=False).to_dicts()
+
+    assert qty_model.write_mode == 'dataframe_fast'
+    assert qty_model.style_profile == 'lightweight_flat'
+    assert isinstance(qty_model.source_frame, pl.DataFrame)
+    assert qty_model.source_frame.to_dicts() == pl.DataFrame(qty_sheet_df.to_dict(orient='list'), strict=False).to_dicts()
+
+    assert work_order_model.write_mode is None
+    assert work_order_model.style_profile is None
+    assert work_order_model.source_frame is None
+
+
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()

@@ -676,6 +676,79 @@ def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Pa
     assert qty_sheet.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
 
 
+def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writer(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_models_route_fast.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
+        ),
+        SheetModel(
+            sheet_name='按工单按产品异常值分析',
+            columns=('直接材料单位完工成本', '直接材料异常标记'),
+            rows_factory=lambda: iter([(18.0, '关注')]),
+            column_types={'直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
+            number_formats={'直接材料单位完工成本': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+        ),
+    )
+
+    with (
+        patch.object(
+            writer.sheet_writer,
+            'write_sheet_model_as_lightweight_table',
+            wraps=writer.sheet_writer.write_sheet_model_as_lightweight_table,
+        ) as fast_tabular_mock,
+        patch.object(writer.sheet_writer, 'write_sheet_model', wraps=writer.sheet_writer.write_sheet_model) as generic_mock,
+    ):
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == ['成本明细']
+    assert [call.args[1].sheet_name for call in generic_mock.call_args_list] == ['按工单按产品异常值分析']
+
+
+def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_data_cells.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
+        ),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['成本明细']
+    assert worksheet.freeze_panes == 'A2'
+    assert worksheet.auto_filter.ref == 'A1:B2'
+    assert worksheet['B2'].number_format == '#,##0.00'
+    _assert_header_columns_fixed_width(worksheet, _build_header_map(worksheet))
+    assert worksheet['A2'].border.left.style is None
+    assert worksheet['A2'].border.right.style is None
+    assert worksheet['A2'].border.top.style is None
+    assert worksheet['A2'].border.bottom.style is None
+
+
 def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> None:
     fact_bundle = FactBundle(
         detail_fact=pl.DataFrame(),

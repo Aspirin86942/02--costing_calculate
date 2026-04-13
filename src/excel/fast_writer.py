@@ -267,6 +267,8 @@ class FastSheetWriter:
 
     def write_sheet_model_as_lightweight_table(self, writer: pd.ExcelWriter, model: SheetModel) -> Any:
         """按热点 SheetModel 走轻量平铺写出，保留易用性但弱化数据单元格样式。"""
+        self._validate_lightweight_fast_model(model)
+
         workbook = writer.book
         worksheet = workbook.add_worksheet(model.sheet_name)
         writer.sheets[model.sheet_name] = worksheet
@@ -308,6 +310,19 @@ class FastSheetWriter:
             worksheet.autofilter(0, 0, max(last_row, 1), len(model.columns) - 1)
 
         return worksheet
+
+    def _validate_lightweight_fast_model(self, model: SheetModel) -> None:
+        # 为什么要前置校验：fast-path 会省略通用写法中的部分能力，如果静默接收不兼容模型，
+        # 会在不报错的情况下丢失条件格式或特殊布局，难以及时发现回归。
+        if model.conditional_formats:
+            raise ValueError(
+                f'lightweight fast-path does not support conditional_formats: sheet_name={model.sheet_name}'
+            )
+        if model.sheet_name == '按产品异常值分析':
+            raise ValueError(
+                'lightweight fast-path does not support special layout sheet: '
+                f'sheet_name={model.sheet_name}'
+            )
 
     def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
         """写入三段分析块（Task 1 不迁移高亮/条件格式）。"""

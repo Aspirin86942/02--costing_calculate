@@ -298,9 +298,13 @@ class FastSheetWriter:
         last_row = 0
         for row_idx, row in enumerate(model.rows_factory(), start=1):
             coerced_row_data = tuple(_coerce_row_value_for_excel(value) for value in row)
-            worksheet.write_row(row_idx, 0, coerced_row_data, text_format)
+            # 为什么这里不再逐格覆写数值列：热点大表的主耗时来自“整行写一次后再对数值列补写一次”，
+            # 改为非空数值完全依赖列默认格式后，可避免重复单元格写入；仅对空白数值位补 write_blank，
+            # 用来保住 openpyxl 侧可观测到的 number_format/alignment 契约。
+            worksheet.write_row(row_idx, 0, coerced_row_data)
             for col_idx, numeric_format in numeric_format_by_col.items():
-                _write_cell(worksheet, row_idx, col_idx, coerced_row_data[col_idx], numeric_format)
+                if _is_blank_excel_value(coerced_row_data[col_idx]):
+                    _write_cell(worksheet, row_idx, col_idx, None, numeric_format)
             last_row = row_idx
 
         if model.freeze_panes is not None:

@@ -753,6 +753,65 @@ def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) 
     assert worksheet['A2'].border.bottom.style is None
 
 
+def test_sheet_model_fast_tabular_writer_keeps_blank_numeric_cell_format_lightweight(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_blank_numeric.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', None)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [None]}, strict=False),
+        ),
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['成本明细']
+    value_cell = worksheet['B2']
+
+    assert value_cell.value is None
+    assert value_cell.number_format == '#,##0.00'
+    assert value_cell.alignment.horizontal == 'right'
+    assert value_cell.border.left.style is None
+    assert value_cell.border.right.style is None
+    assert value_cell.border.top.style is None
+    assert value_cell.border.bottom.style is None
+
+
+def test_sheet_model_fast_tabular_writer_skips_non_blank_numeric_rewrite(tmp_path: Path) -> None:
+    output_path = tmp_path / 'sheet_model_lightweight_single_write.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = (
+        SheetModel(
+            sheet_name='成本明细',
+            columns=('文本列', '金额列'),
+            rows_factory=lambda: iter([('A', 10.0)]),
+            column_types={'文本列': 'text', '金额列': 'amount'},
+            number_formats={'金额列': '#,##0.00'},
+            freeze_panes='A2',
+            auto_filter=True,
+            fixed_width=15.0,
+            write_mode='dataframe_fast',
+            style_profile='lightweight_flat',
+            source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}, strict=False),
+        ),
+    )
+
+    with patch('src.excel.fast_writer._write_cell') as write_cell_mock:
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    write_cell_mock.assert_not_called()
+
+
 def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_model_fast_reject_conditional.xlsx'
     writer = CostingWorkbookWriter()

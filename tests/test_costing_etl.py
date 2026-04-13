@@ -547,6 +547,23 @@ def test_dataframe_to_sheet_model_rejects_invalid_fast_metadata() -> None:
         )
 
 
+def test_dataframe_to_sheet_model_keeps_rows_factory_in_sync_with_source_frame() -> None:
+    frame = pl.DataFrame({'a': [1]})
+    source_frame = pl.DataFrame({'a': [2]})
+
+    model = dataframe_to_sheet_model(
+        sheet_name='测试',
+        frame=frame,
+        column_types={'a': 'text'},
+        number_formats={},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=source_frame,
+    )
+
+    assert list(model.rows_factory()) == list(source_frame.iter_rows())
+
+
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()

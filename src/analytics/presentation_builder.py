@@ -107,12 +107,17 @@ def dataframe_to_sheet_model(
         style_profile=style_profile,
         source_frame=source_frame,
     )
+    resolved_frame = source_frame if source_frame is not None else frame
     return SheetModel(
         sheet_name=sheet_name,
-        columns=tuple(frame.columns),
-        rows_factory=lambda frame=frame: frame.iter_rows(),
-        column_types={column: column_types[column] for column in frame.columns if column in column_types},
-        number_formats={column: number_formats[column] for column in frame.columns if column in number_formats},
+        columns=tuple(resolved_frame.columns),
+        rows_factory=lambda frame=resolved_frame: frame.iter_rows(),
+        column_types={
+            column: column_types[column] for column in resolved_frame.columns if column in column_types
+        },
+        number_formats={
+            column: number_formats[column] for column in resolved_frame.columns if column in number_formats
+        },
         freeze_panes=freeze_panes,
         auto_filter=auto_filter,
         fixed_width=fixed_width,

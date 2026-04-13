@@ -498,17 +498,25 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
     work_order_model = next(model for model in models if model.sheet_name == '按工单按产品异常值分析')
     product_anomaly_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
-    analysis_models = [model for model in models if model.sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')]
+    analysis_models = [
+        model for model in models if model.sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')
+    ]
 
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
     assert isinstance(detail_model.source_frame, pl.DataFrame)
-    assert detail_model.source_frame.to_dicts() == pl.DataFrame(detail_df.to_dict(orient='list'), strict=False).to_dicts()
+    assert detail_model.source_frame.to_dicts() == pl.DataFrame(
+        detail_df.to_dict(orient='list'),
+        strict=False,
+    ).to_dicts()
 
     assert qty_model.write_mode == 'dataframe_fast'
     assert qty_model.style_profile == 'lightweight_flat'
     assert isinstance(qty_model.source_frame, pl.DataFrame)
-    assert qty_model.source_frame.to_dicts() == pl.DataFrame(qty_sheet_df.to_dict(orient='list'), strict=False).to_dicts()
+    assert qty_model.source_frame.to_dicts() == pl.DataFrame(
+        qty_sheet_df.to_dict(orient='list'),
+        strict=False,
+    ).to_dicts()
 
     assert work_order_model.write_mode is None
     assert work_order_model.style_profile is None

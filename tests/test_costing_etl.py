@@ -564,6 +564,35 @@ def test_dataframe_to_sheet_model_keeps_rows_factory_in_sync_with_source_frame()
     assert list(model.rows_factory()) == list(source_frame.iter_rows())
 
 
+def test_sheet_model_rejects_partial_fast_metadata() -> None:
+    with pytest.raises(ValueError, match='fast export metadata'):
+        SheetModel(
+            sheet_name='测试',
+            columns=('a',),
+            rows_factory=lambda: iter([(1,)]),
+            column_types={'a': 'text'},
+            number_formats={},
+            write_mode='dataframe_fast',
+        )
+
+
+def test_sheet_model_fast_metadata_keeps_rows_factory_in_sync() -> None:
+    source_frame = pl.DataFrame({'a': [2]})
+
+    model = SheetModel(
+        sheet_name='测试',
+        columns=('a',),
+        rows_factory=lambda: iter([(1,)]),
+        column_types={'a': 'text'},
+        number_formats={},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=source_frame,
+    )
+
+    assert list(model.rows_factory()) == list(source_frame.iter_rows())
+
+
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()

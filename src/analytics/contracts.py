@@ -67,6 +67,23 @@ class SheetModel:
     style_profile: StyleProfile | None = None
     source_frame: pl.DataFrame | None = None
 
+    def __post_init__(self) -> None:
+        has_any = self.write_mode is not None or self.style_profile is not None or self.source_frame is not None
+        if not has_any:
+            return
+        # fast-export 必须成组出现，避免后续 routing 走到矛盾状态。
+        if self.write_mode is None or self.style_profile is None or self.source_frame is None:
+            raise ValueError('fast export metadata incomplete')
+        if self.write_mode != 'dataframe_fast':
+            raise ValueError(f'unsupported write_mode: {self.write_mode}')
+        if self.style_profile != 'lightweight_flat':
+            raise ValueError(f'unsupported style_profile: {self.style_profile}')
+        if not isinstance(self.source_frame, pl.DataFrame):
+            raise ValueError('source_frame must be polars DataFrame')
+        # 归一 rows_factory/columns 到 source_frame，避免 rows_factory 与 source_frame 分叉。
+        object.__setattr__(self, 'columns', tuple(self.source_frame.columns))
+        object.__setattr__(self, 'rows_factory', lambda frame=self.source_frame: frame.iter_rows())
+
 
 @dataclass(frozen=True)
 class WorkbookPayload:

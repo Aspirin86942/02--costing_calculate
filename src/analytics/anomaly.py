@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pandas as pd
 
 from src.analytics.contracts import ConditionalFormatRule, FlatSheet
@@ -45,6 +46,57 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '关注': 'attention',
     '高度可疑': 'suspicious',
 }
+
+
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """计算加权中位数。
+
+    Args:
+        values: 数值数组
+        weights: 权重数组（必须 > 0）
+
+    Returns:
+        加权中位数
+    """
+    if len(values) == 0:
+        return np.nan
+
+    # 按值排序
+    sorted_indices = np.argsort(values)
+    sorted_values = values[sorted_indices]
+    sorted_weights = weights[sorted_indices]
+
+    # 计算累计权重
+    cumsum = np.cumsum(sorted_weights)
+    total_weight = cumsum[-1]
+
+    # 找到累计权重 >= 总权重/2 的第一个位置
+    cutoff = total_weight / 2.0
+    median_idx = np.searchsorted(cumsum, cutoff, side='right')
+
+    return float(sorted_values[median_idx])
+
+
+def weighted_mad(values: np.ndarray, weights: np.ndarray, center: float) -> float:
+    """计算加权 MAD (Median Absolute Deviation)。
+
+    Args:
+        values: 数值数组
+        weights: 权重数组（必须 > 0）
+        center: 中心值（通常是加权中位数）
+
+    Returns:
+        加权 MAD
+    """
+    if len(values) == 0:
+        return np.nan
+
+    # 计算绝对偏差
+    abs_deviations = np.abs(values - center)
+
+    # 返回绝对偏差的加权中位数
+    return weighted_median(abs_deviations, weights)
+
 
 WORK_ORDER_OUTPUT_COLUMNS = [
     '月份',
@@ -245,17 +297,28 @@ def build_anomaly_sheet(
 
         for _, group_index in anomaly_df.groupby(['product_code', 'product_name'], sort=False).groups.items():
             metric_series = anomaly_df.loc[group_index, metric_key]
-            valid_mask = metric_series.map(lambda value: value is not None and value > ZERO)
+            qty_series = anomaly_df.loc[group_index, 'completed_qty']
+
+            valid_mask = metric_series.map(lambda value: value is not None and value > ZERO) & qty_series.map(
+                lambda value: value is not None and value > ZERO
+            )
             if not valid_mask.any():
                 continue
+
             valid_values = metric_series.loc[valid_mask].map(lambda value: math.log(float(value)))
+            valid_weights = qty_series.loc[valid_mask].map(float)
             anomaly_df.loc[valid_values.index, log_column] = valid_values
 
             if len(valid_values) < 3:
                 continue
 
-            median = valid_values.median()
-            mad = (valid_values - median).abs().median()
+            # 使用加权中位数和加权 MAD
+            values_array = valid_values.to_numpy()
+            weights_array = valid_weights.to_numpy()
+
+            median = weighted_median(values_array, weights_array)
+            mad = weighted_mad(values_array, weights_array, median)
+
             if pd.isna(mad) or mad == 0:
                 continue
 

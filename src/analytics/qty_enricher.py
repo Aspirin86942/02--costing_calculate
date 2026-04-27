@@ -40,7 +40,11 @@ from src.analytics.fact_builder import (
     to_decimal,
 )
 from src.analytics.quality import build_quality_metrics
-from src.analytics.table_rendering import build_product_anomaly_sections, build_product_summary_df
+from src.analytics.table_rendering import (
+    DOC_TYPE_SPLIT_SCOPE_MODE,
+    build_product_anomaly_sections,
+    build_product_summary_df,
+)
 from src.config.pipelines import normalize_product_anomaly_scope_mode
 
 
@@ -86,6 +90,10 @@ def build_report_artifacts(
 
     work_order_sheet = build_anomaly_sheet(work_order_source_pd, standalone_metas=standalone_metas)
     product_summary_df = build_product_summary_df(work_order_source_pd)
+    # doc_type_split 依赖工单层单据类型做分段，不能提前聚合到产品维度。
+    product_anomaly_source_df = (
+        work_order_source_pd if validated_scope_mode == DOC_TYPE_SPLIT_SCOPE_MODE else product_summary_df
+    )
     fact_df = build_fact_table(work_order_source_pd)
     filtered_invalid_qty_count, filtered_missing_total_amount_count = _count_filtered_qty_rows(qty_pl)
     quality_metrics = build_quality_metrics(
@@ -104,7 +112,7 @@ def build_report_artifacts(
         qty_sheet_df=qty_sheet_output,
         work_order_sheet=work_order_sheet,
         product_anomaly_sections=build_product_anomaly_sections(
-            product_summary_df,
+            product_anomaly_source_df,
             scope_mode=validated_scope_mode,
         ),
         quality_metrics=quality_metrics,

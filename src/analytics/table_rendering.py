@@ -6,7 +6,6 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.contracts import ProductAnomalySection, SectionBlock
-from src.config.pipelines import normalize_product_anomaly_scope_mode
 from src.analytics.fact_builder import (
     COST_BUCKETS,
     ZERO,
@@ -18,6 +17,7 @@ from src.analytics.fact_builder import (
     sum_decimal_series,
     to_decimal,
 )
+from src.config.pipelines import normalize_product_anomaly_scope_mode
 
 PRODUCT_ANALYSIS_FIELDS = [
     ('total_cost', '总成本', 'amount', False),
@@ -67,6 +67,34 @@ PRODUCT_SUMMARY_SHEET_COLUMN_TYPES: dict[str, str] = {
     '制造费用成本': 'amount',
     '单位制造费用成本': 'price',
     '制造费用贡献率': 'pct',
+}
+LEGACY_SINGLE_SCOPE_MODE = 'legacy_single_scope'
+DOC_TYPE_SPLIT_SCOPE_MODE = 'doc_type_split'
+DOC_TYPE_SPLIT_SCOPE_LABELS: tuple[str, ...] = ('全部', '正常生产', '返工生产')
+DOC_TYPE_NORMAL_LABEL = '正常生产'
+DOC_TYPE_REWORK_LABEL = '返工生产'
+DOC_TYPE_TO_SECTION_LABEL: dict[str, str] = {
+    '汇报入库-普通生产': DOC_TYPE_NORMAL_LABEL,
+    '直接入库-普通生产': DOC_TYPE_NORMAL_LABEL,
+    '汇报入库-返工生产': DOC_TYPE_REWORK_LABEL,
+}
+WORK_ORDER_SUMMARY_REQUIRED_COLUMNS: set[str] = {
+    'completed_amount_total',
+    'completed_qty',
+    'dm_amount',
+    'dl_amount',
+    'moh_amount',
+}
+PRODUCT_SUMMARY_REQUIRED_COLUMNS: set[str] = {
+    'product_code',
+    'product_name',
+    'period',
+    'period_display',
+    'total_cost',
+    'completed_qty',
+    'dm_cost',
+    'dl_cost',
+    'moh_cost',
 }
 
 
@@ -141,19 +169,7 @@ def build_section_blocks(bucket_df: pd.DataFrame, title_prefix: str) -> list[Sec
     ]
 
 
-def build_product_summary_df(work_order_df: pd.DataFrame) -> pd.DataFrame:
-    if work_order_df.empty:
-        return pd.DataFrame(columns=['product_code', 'product_name', 'period', 'period_display'])
-
-    summary_df = work_order_df.groupby(
-        ['product_code', 'product_name', 'period'], dropna=False, as_index=False, sort=False
-    ).agg(
-        total_cost=('completed_amount_total', sum_decimal_series),
-        completed_qty=('completed_qty', sum_decimal_series),
-        dm_cost=('dm_amount', sum_decimal_series),
-        dl_cost=('dl_amount', sum_decimal_series),
-        moh_cost=('moh_amount', sum_decimal_series),
-    )
+def _finalize_product_summary_metrics(summary_df: pd.DataFrame) -> pd.DataFrame:
     summary_df['unit_cost'] = summary_df['total_cost'].combine(summary_df['completed_qty'], safe_divide)
     summary_df['dm_unit_cost'] = summary_df['dm_cost'].combine(summary_df['completed_qty'], safe_divide)
     summary_df['dl_unit_cost'] = summary_df['dl_cost'].combine(summary_df['completed_qty'], safe_divide)
@@ -161,8 +177,32 @@ def build_product_summary_df(work_order_df: pd.DataFrame) -> pd.DataFrame:
     summary_df['dm_contrib'] = summary_df['dm_cost'].combine(summary_df['total_cost'], safe_divide)
     summary_df['dl_contrib'] = summary_df['dl_cost'].combine(summary_df['total_cost'], safe_divide)
     summary_df['moh_contrib'] = summary_df['moh_cost'].combine(summary_df['total_cost'], safe_divide)
-    summary_df['period_display'] = summary_df['period'].map(period_to_display)
+    if 'period_display' not in summary_df.columns:
+        summary_df['period_display'] = summary_df['period'].map(period_to_display)
+    else:
+        summary_df['period_display'] = summary_df['period_display'].fillna(summary_df['period'].map(period_to_display))
     return summary_df
+
+
+def build_product_summary_df(work_order_df: pd.DataFrame, *, include_doc_type: bool = False) -> pd.DataFrame:
+    if work_order_df.empty:
+        columns = ['product_code', 'product_name', 'period', 'period_display']
+        if include_doc_type:
+            columns.append('doc_type')
+        return pd.DataFrame(columns=columns)
+
+    group_columns = ['product_code', 'product_name', 'period']
+    if include_doc_type and 'doc_type' in work_order_df.columns:
+        group_columns.append('doc_type')
+
+    summary_df = work_order_df.groupby(group_columns, dropna=False, as_index=False, sort=False).agg(
+        total_cost=('completed_amount_total', sum_decimal_series),
+        completed_qty=('completed_qty', sum_decimal_series),
+        dm_cost=('dm_amount', sum_decimal_series),
+        dl_cost=('dl_amount', sum_decimal_series),
+        moh_cost=('moh_amount', sum_decimal_series),
+    )
+    return _finalize_product_summary_metrics(summary_df)
 
 
 def build_product_summary_from_fact_df(fact_df: pd.DataFrame) -> pd.DataFrame:
@@ -206,56 +246,130 @@ def build_product_summary_from_fact_df(fact_df: pd.DataFrame) -> pd.DataFrame:
     summary_df['total_cost'] = (
         summary_df['dm_cost'].combine(summary_df['dl_cost'], add_decimal).combine(summary_df['moh_cost'], add_decimal)
     )
-    summary_df['unit_cost'] = summary_df['total_cost'].combine(summary_df['completed_qty'], safe_divide)
-    summary_df['dm_unit_cost'] = summary_df['dm_cost'].combine(summary_df['completed_qty'], safe_divide)
-    summary_df['dl_unit_cost'] = summary_df['dl_cost'].combine(summary_df['completed_qty'], safe_divide)
-    summary_df['moh_unit_cost'] = summary_df['moh_cost'].combine(summary_df['completed_qty'], safe_divide)
-    summary_df['dm_contrib'] = summary_df['dm_cost'].combine(summary_df['total_cost'], safe_divide)
-    summary_df['dl_contrib'] = summary_df['dl_cost'].combine(summary_df['total_cost'], safe_divide)
-    summary_df['moh_contrib'] = summary_df['moh_cost'].combine(summary_df['total_cost'], safe_divide)
-    summary_df['period_display'] = summary_df['period'].map(period_to_display)
-    return summary_df
+    return _finalize_product_summary_metrics(summary_df)
 
 
 def build_product_anomaly_sections(
     summary_df: pd.DataFrame,
     *,
-    scope_mode: str = 'legacy_single_scope',
+    scope_mode: str = LEGACY_SINGLE_SCOPE_MODE,
 ) -> list[ProductAnomalySection]:
     """构建兼容产品摘要页。"""
-    normalize_product_anomaly_scope_mode(scope_mode)
-    if 'period_display' not in summary_df.columns and {'cost_bucket', 'amount', 'qty'}.issubset(summary_df.columns):
-        summary_df = build_product_summary_from_fact_df(summary_df)
-
-    if summary_df.empty:
+    validated_scope_mode = normalize_product_anomaly_scope_mode(scope_mode)
+    normalized_summary_df = _normalize_product_anomaly_source_frame(summary_df, scope_mode=validated_scope_mode)
+    if normalized_summary_df.empty:
         return []
 
     sections: list[ProductAnomalySection] = []
-    grouped = summary_df.groupby(['product_code', 'product_name'], dropna=False, sort=False)
+    grouped = normalized_summary_df.groupby(['product_code', 'product_name'], dropna=False, sort=False)
     for (product_code, product_name), product_frame in grouped:
-        product_frame = product_frame.sort_values('period').reset_index(drop=True)
-        display_data = pd.DataFrame({'月份': product_frame['period_display']})
-        column_types = {'月份': 'text'}
-        amount_columns: list[str] = []
+        if validated_scope_mode == LEGACY_SINGLE_SCOPE_MODE:
+            aggregated_summary = _aggregate_scope_summary_by_period(product_frame)
+            sections.append(
+                _build_product_anomaly_section(
+                    product_code=product_code,
+                    product_name=product_name,
+                    summary_frame=aggregated_summary,
+                    section_label=None,
+                )
+            )
+            continue
 
-        for internal_key, display_name, metric_type, _detect in PRODUCT_ANALYSIS_FIELDS:
-            display_data[display_name] = product_frame[internal_key]
-            column_types[display_name] = metric_type
-            if metric_type == 'amount':
-                amount_columns.append(display_name)
-
+        # doc_type_split 先输出“全部”，再按识别到的生产单据类型拆“正常生产/返工生产”。
+        aggregated_all = _aggregate_scope_summary_by_period(product_frame)
         sections.append(
-            ProductAnomalySection(
-                product_code=str(product_code),
-                product_name=str(product_name),
-                data=display_data,
-                column_types=column_types,
-                amount_columns=amount_columns,
-                outlier_cells=set(),
+            _build_product_anomaly_section(
+                product_code=product_code,
+                product_name=product_name,
+                summary_frame=aggregated_all,
+                section_label=DOC_TYPE_SPLIT_SCOPE_LABELS[0],
             )
         )
+        scope_labels = product_frame['doc_type'].map(_map_doc_type_to_scope_label)
+        for section_label in DOC_TYPE_SPLIT_SCOPE_LABELS[1:]:
+            scoped_frame = product_frame.loc[scope_labels == section_label]
+            if scoped_frame.empty:
+                continue
+            sections.append(
+                _build_product_anomaly_section(
+                    product_code=product_code,
+                    product_name=product_name,
+                    summary_frame=_aggregate_scope_summary_by_period(scoped_frame),
+                    section_label=section_label,
+                )
+            )
 
     return sections
+
+
+def _normalize_product_anomaly_source_frame(summary_df: pd.DataFrame, *, scope_mode: str) -> pd.DataFrame:
+    if PRODUCT_SUMMARY_REQUIRED_COLUMNS.issubset(summary_df.columns):
+        return summary_df.copy()
+    if {'cost_bucket', 'amount', 'qty'}.issubset(summary_df.columns):
+        return build_product_summary_from_fact_df(summary_df)
+    if WORK_ORDER_SUMMARY_REQUIRED_COLUMNS.issubset(summary_df.columns):
+        return build_product_summary_df(
+            summary_df,
+            include_doc_type=scope_mode == DOC_TYPE_SPLIT_SCOPE_MODE,
+        )
+    if 'period_display' in summary_df.columns:
+        return summary_df.copy()
+    return summary_df.copy()
+
+
+def _aggregate_scope_summary_by_period(scope_df: pd.DataFrame) -> pd.DataFrame:
+    aggregated = scope_df.groupby(['period'], dropna=False, as_index=False, sort=False).agg(
+        total_cost=('total_cost', sum_decimal_series),
+        completed_qty=('completed_qty', sum_decimal_series),
+        dm_cost=('dm_cost', sum_decimal_series),
+        dl_cost=('dl_cost', sum_decimal_series),
+        moh_cost=('moh_cost', sum_decimal_series),
+    )
+    period_display_map = (
+        scope_df[['period', 'period_display']]
+        .dropna(subset=['period'])
+        .drop_duplicates(subset=['period'], keep='first')
+    )
+    aggregated = aggregated.merge(period_display_map, on='period', how='left')
+    aggregated = _finalize_product_summary_metrics(aggregated)
+    return aggregated.sort_values('period').reset_index(drop=True)
+
+
+def _build_product_anomaly_section(
+    *,
+    product_code: object,
+    product_name: object,
+    summary_frame: pd.DataFrame,
+    section_label: str | None,
+) -> ProductAnomalySection:
+    display_data = pd.DataFrame({'月份': summary_frame['period_display']})
+    column_types = {'月份': 'text'}
+    amount_columns: list[str] = []
+
+    for internal_key, display_name, metric_type, _detect in PRODUCT_ANALYSIS_FIELDS:
+        display_data[display_name] = summary_frame[internal_key]
+        column_types[display_name] = metric_type
+        if metric_type == 'amount':
+            amount_columns.append(display_name)
+
+    return ProductAnomalySection(
+        product_code=str(product_code),
+        product_name=str(product_name),
+        data=display_data,
+        column_types=column_types,
+        amount_columns=amount_columns,
+        outlier_cells=set(),
+        section_label=section_label,
+    )
+
+
+def _map_doc_type_to_scope_label(doc_type: object) -> str | None:
+    if doc_type is None or pd.isna(doc_type):
+        return None
+    normalized_doc_type = str(doc_type).strip()
+    if not normalized_doc_type:
+        return None
+    return DOC_TYPE_TO_SECTION_LABEL.get(normalized_doc_type)
 
 
 def render_tables(fact_df: pd.DataFrame) -> dict[str, list[SectionBlock]]:

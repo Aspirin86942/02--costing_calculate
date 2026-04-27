@@ -144,7 +144,10 @@ def test_build_report_artifacts_passes_scope_mode_to_product_anomaly_sections(mo
         captured['summary_columns'] = tuple(summary_df.columns)
         return []
 
-    monkeypatch.setattr('src.analytics.qty_enricher.build_product_anomaly_sections', _fake_build_product_anomaly_sections)
+    monkeypatch.setattr(
+        'src.analytics.qty_enricher.build_product_anomaly_sections',
+        _fake_build_product_anomaly_sections,
+    )
 
     artifacts = build_report_artifacts(
         _build_base_detail_df(),
@@ -164,6 +167,168 @@ def test_build_report_artifacts_rejects_invalid_scope_mode() -> None:
             _build_base_qty_df(total_amount=165),
             product_anomaly_scope_mode='bad',
         )
+
+
+def test_build_report_artifacts_doc_type_split_builds_labeled_sections() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 50,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 20,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-004',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 7,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-005',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 3,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '直接入库-普通生产',
+                '本期完工数量': 5,
+                '本期完工金额': 50,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-返工生产',
+                '本期完工数量': 2,
+                '本期完工金额': 20,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-004',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '普通委外订单',
+                '本期完工数量': 1,
+                '本期完工金额': 7,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-005',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '未知类型',
+                '本期完工数量': 1,
+                '本期完工金额': 3,
+            },
+        ]
+    )
+
+    artifacts = build_report_artifacts(
+        df_detail,
+        df_qty,
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    assert artifacts.fact_bundle is not None
+    work_order_fact = artifacts.fact_bundle.work_order_fact
+    assert 'doc_type' in work_order_fact.columns
+    assert set(work_order_fact['doc_type'].to_list()) == {
+        '汇报入库-普通生产',
+        '直接入库-普通生产',
+        '汇报入库-返工生产',
+        '普通委外订单',
+        '未知类型',
+    }
+
+    assert [section.section_label for section in artifacts.product_anomaly_sections] == ['全部', '正常生产', '返工生产']
+    section_by_label = {
+        section.section_label: section
+        for section in artifacts.product_anomaly_sections
+    }
+    assert section_by_label['全部'].data['总成本'].tolist() == [Decimal('180')]
+    assert section_by_label['正常生产'].data['总成本'].tolist() == [Decimal('150')]
+    assert section_by_label['返工生产'].data['总成本'].tolist() == [Decimal('20')]
 
 
 def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:

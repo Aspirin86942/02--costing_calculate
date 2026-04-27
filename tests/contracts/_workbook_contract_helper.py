@@ -334,6 +334,7 @@ def _build_default_qty_df() -> pd.DataFrame:
                 '规格型号': 'S-01',
                 '工单编号': 'WO-001',
                 '工单行号': 1,
+                '单据类型': '汇报入库-普通生产',
                 '基本单位': 'PCS',
                 '本期完工数量': 10,
                 '本期完工金额': 165,
@@ -346,6 +347,7 @@ def _build_default_qty_df() -> pd.DataFrame:
                 '规格型号': 'S-02',
                 '工单编号': 'WO-002',
                 '工单行号': 1,
+                '单据类型': '汇报入库-普通生产',
                 '基本单位': 'PCS',
                 '本期完工数量': 0,
                 '本期完工金额': 100,
@@ -358,6 +360,7 @@ def _build_default_qty_df() -> pd.DataFrame:
                 '规格型号': 'S-03',
                 '工单编号': 'WO-003',
                 '工单行号': 1,
+                '单据类型': '汇报入库-普通生产',
                 '基本单位': 'PCS',
                 '本期完工数量': 5,
                 '本期完工金额': None,
@@ -423,6 +426,12 @@ def _extract_analysis_sheet(worksheet) -> dict[str, object]:
 
 
 def _extract_product_anomaly_sheet(worksheet) -> dict[str, object]:
+    if worksheet['A5'].value == '分析口径':
+        return _extract_scoped_product_anomaly_sheet(worksheet)
+    return _extract_legacy_product_anomaly_sheet(worksheet)
+
+
+def _extract_legacy_product_anomaly_sheet(worksheet) -> dict[str, object]:
     headers = [worksheet.cell(5, col_idx).value for col_idx in range(1, worksheet.max_column + 1)]
     while headers and headers[-1] is None:
         headers.pop()
@@ -434,6 +443,7 @@ def _extract_product_anomaly_sheet(worksheet) -> dict[str, object]:
     }
     return {
         'kind': 'product_anomaly',
+        'layout': 'legacy',
         'freeze_panes': worksheet.freeze_panes,
         'auto_filter': worksheet.auto_filter.ref,
         'title': worksheet['A1'].value,
@@ -441,6 +451,60 @@ def _extract_product_anomaly_sheet(worksheet) -> dict[str, object]:
         'meta_values': [worksheet['A4'].value, worksheet['B4'].value],
         'columns': headers,
         'number_formats': first_data_formats,
+        'column_widths': _extract_column_widths(worksheet),
+    }
+
+
+def _extract_scoped_product_anomaly_sheet(worksheet) -> dict[str, object]:
+    sections: list[dict[str, object]] = []
+    row_idx = 3
+    while row_idx <= worksheet.max_row:
+        meta_label_code = worksheet.cell(row_idx, 1).value
+        meta_label_name = worksheet.cell(row_idx, 2).value
+        if meta_label_code != '产品编码' or meta_label_name != '产品名称':
+            row_idx += 1
+            continue
+
+        if worksheet.cell(row_idx + 2, 1).value != '分析口径':
+            row_idx += 1
+            continue
+
+        header_row = row_idx + 3
+        first_data_row = header_row + 1
+        headers: list[object] = []
+        col_idx = 1
+        while col_idx <= worksheet.max_column and worksheet.cell(header_row, col_idx).value is not None:
+            headers.append(worksheet.cell(header_row, col_idx).value)
+            col_idx += 1
+
+        number_formats = {
+            header: worksheet.cell(first_data_row, header_col).number_format
+            for header_col, header in enumerate(headers, start=1)
+            if first_data_row <= worksheet.max_row
+            and worksheet.cell(first_data_row, header_col).number_format != 'General'
+        }
+        sections.append(
+            {
+                'product_code': worksheet.cell(row_idx + 1, 1).value,
+                'product_name': worksheet.cell(row_idx + 1, 2).value,
+                'scope_label': worksheet.cell(row_idx + 2, 2).value,
+                'columns': headers,
+                'number_formats': number_formats,
+            }
+        )
+        row_idx = first_data_row + 1
+
+    first_section = sections[0] if sections else {'columns': [], 'number_formats': {}}
+    return {
+        'kind': 'product_anomaly',
+        'layout': 'scoped',
+        'freeze_panes': worksheet.freeze_panes,
+        'auto_filter': worksheet.auto_filter.ref,
+        'title': worksheet['A1'].value,
+        'scope_labels': [section['scope_label'] for section in sections],
+        'columns': first_section['columns'],
+        'number_formats': first_section['number_formats'],
+        'sections': sections,
         'column_widths': _extract_column_widths(worksheet),
     }
 

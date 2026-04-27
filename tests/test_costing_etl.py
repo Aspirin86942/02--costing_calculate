@@ -644,6 +644,98 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     assert worksheet.freeze_panes == 'A6'
 
 
+def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() -> None:
+    models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        qty_sheet_df=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='全部',
+            ),
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='正常生产',
+            ),
+        ],
+    )
+
+    product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    rows = list(product_model.rows_factory())
+
+    assert product_model.columns[:4] == ('产品编码', '产品名称', '分析口径', '月份')
+    assert rows[0][:4] == ('P001', '产品A', '全部', '2025年01期')
+    assert rows[1][:4] == ('P001', '产品A', '正常生产', '2025年01期')
+    assert product_model.freeze_panes == 'A7'
+
+
+def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
+    output_path = tmp_path / 'product_anomaly_scope_split_model.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        qty_sheet_df=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='全部',
+            ),
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='正常生产',
+            ),
+        ],
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['按产品异常值分析']
+    assert worksheet['A1'].value == '四、按单个产品异常值分析'
+    assert worksheet['A3'].value == '产品编码'
+    assert worksheet['A4'].value == 'P001'
+    assert worksheet['B3'].value == '产品名称'
+    assert worksheet['B4'].value == '产品A'
+    assert worksheet['A5'].value == '分析口径'
+    assert worksheet['B5'].value == '全部'
+    assert worksheet['A6'].value == '月份'
+    assert worksheet['A7'].value == '2025年01期'
+    assert any(
+        worksheet.cell(row=row_idx, column=2).value == '正常生产'
+        for row_idx in range(1, worksheet.max_row + 1)
+        if worksheet.cell(row=row_idx, column=1).value == '分析口径'
+    )
+    assert worksheet.freeze_panes == 'A7'
+
+
 def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_models_formats.xlsx'
     writer = CostingWorkbookWriter()

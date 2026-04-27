@@ -204,6 +204,7 @@ class CostingEtlPipeline:
         input_path: Path,
         *,
         standalone_cost_items: tuple[str, ...],
+        product_anomaly_scope_mode: str = 'legacy_single_scope',
         artifacts_transform: Callable[[AnalysisArtifacts], AnalysisArtifacts] | None = None,
     ) -> WorkbookPayload:
         """按全链路 Polars 路径构建 workbook payload。"""
@@ -226,6 +227,7 @@ class CostingEtlPipeline:
             split_result.detail_df,
             split_result.qty_df,
             standalone_cost_items=standalone_cost_items,
+            product_anomaly_scope_mode=product_anomaly_scope_mode,
         )
         if artifacts_transform is not None:
             artifacts = artifacts_transform(artifacts)

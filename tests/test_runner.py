@@ -31,6 +31,7 @@ def test_find_input_files_preserves_pattern_order_and_deduplicates(tmp_path) -> 
         input_patterns=('SK-*成本计算单.xlsx', 'SK-* 成本计算单.xlsx', 'SK-*.xlsx'),
         product_order=(('DP.C.P0197AA', '动力线'),),
         standalone_cost_items=('委外加工费', '软件费用'),
+        product_anomaly_scope_mode='legacy_single_scope',
     )
 
     assert find_input_files(config) == [same_file, second_file, third_file]
@@ -51,12 +52,20 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
         processed_dir=processed_dir,
         input_patterns=('SK-*.xlsx',),
         product_order=(('DP.C.P0197AA', '动力线'),),
+        product_anomaly_scope_mode='legacy_single_scope',
     )
 
     captured: dict[str, tuple[str, ...] | None] = {}
 
     class _DummyETL:
-        def __init__(self, skip_rows: int, *, product_order, standalone_cost_items) -> None:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+        ) -> None:
             self.skip_rows = skip_rows
             self.product_order = product_order
             self.last_quality_metrics = (
@@ -66,6 +75,7 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
             self.last_error_log_count = 0
             self.last_error_log_frame = pd.DataFrame(columns=['row_id', 'issue_type', 'message'])
             captured['standalone_cost_items'] = standalone_cost_items
+            captured['product_anomaly_scope_mode'] = product_anomaly_scope_mode
 
         def process_file(self, input_path: Path, output_path: Path) -> bool:
             output_path.write_text('ok', encoding='utf-8')
@@ -88,6 +98,7 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
         pd.DataFrame(columns=['row_id', 'issue_type', 'message']),
     )
     assert captured['standalone_cost_items'] == config.standalone_cost_items
+    assert captured['product_anomaly_scope_mode'] == config.product_anomaly_scope_mode
 
 
 def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypatch, capsys, tmp_path) -> None:
@@ -102,6 +113,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         input_patterns=('GB-*.xlsx',),
         product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
         standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
     )
 
     captured: dict[str, object] = {}
@@ -115,9 +127,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
                 number_formats={},
             ),
         ),
-        quality_metrics=(
-            QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),
-        ),
+        quality_metrics=(QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),),
         error_log_count=2,
         stage_timings={'ingest': 1.0, 'normalize': 2.0, 'fact': 3.0, 'analysis': 4.0, 'presentation': 5.0},
         error_log_export=pd.DataFrame(
@@ -133,10 +143,12 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         input_path: Path,
         *,
         standalone_cost_items: tuple[str, ...],
+        product_anomaly_scope_mode: str,
         artifacts_transform=None,
     ):
         captured['input_path'] = input_path
         captured['standalone_cost_items'] = standalone_cost_items
+        captured['product_anomaly_scope_mode'] = product_anomaly_scope_mode
         captured['artifacts_transform'] = artifacts_transform
         return payload
 
@@ -164,6 +176,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
     assert captured['input_path'] == input_file
     assert captured['output_path'] == processed_dir / 'GB-成本计算单_处理后.xlsx'
     assert captured['standalone_cost_items'] == ('委外加工费',)
+    assert captured['product_anomaly_scope_mode'] == 'doc_type_split'
     assert callable(captured['artifacts_transform'])
     assert captured['sheet_names'] == ['成本明细']
     pd.testing.assert_frame_equal(

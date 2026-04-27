@@ -644,6 +644,10 @@ def build_fact_bundle(
                 pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
                 pl.col('工单编号').alias('order_no'),
                 pl.col('工单行号').alias('order_line'),
+                (pl.col('单据类型') if '单据类型' in qty_df.columns else pl.lit(None))
+                .cast(pl.String, strict=False)
+                .str.strip_chars()
+                .alias('doc_type'),
                 pl.col('本期完工数量').alias('completed_qty_raw'),
                 pl.col('本期完工金额').alias('completed_amount_total_raw'),
                 normalize_money_expr('本期完工数量').alias('completed_qty'),
@@ -881,6 +885,7 @@ def build_fact_bundle(
         'period_display',
         'product_code',
         'product_name',
+        'doc_type',
         'order_no',
         'order_line',
         'cost_center',

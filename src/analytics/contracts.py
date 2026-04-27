@@ -116,6 +116,7 @@ class ProductAnomalySection:
     column_types: dict[str, str]
     amount_columns: list[str]
     outlier_cells: set[tuple[int, str]]
+    section_label: str | None = None
 
 
 @dataclass

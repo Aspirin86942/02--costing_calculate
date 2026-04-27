@@ -112,9 +112,7 @@ def dataframe_to_sheet_model(
         sheet_name=sheet_name,
         columns=tuple(resolved_frame.columns),
         rows_factory=lambda frame=resolved_frame: frame.iter_rows(),
-        column_types={
-            column: column_types[column] for column in resolved_frame.columns if column in column_types
-        },
+        column_types={column: column_types[column] for column in resolved_frame.columns if column in column_types},
         number_formats={
             column: number_formats[column] for column in resolved_frame.columns if column in number_formats
         },
@@ -176,16 +174,18 @@ def build_sheet_models(
     work_order_number_formats = _build_number_formats(work_order_column_types)
     work_order_conditional_formats = build_work_order_conditional_formats(list(work_order_frame.columns))
 
-    product_anomaly_frame, product_anomaly_column_types = _build_product_anomaly_frame(product_anomaly_sections)
+    (
+        product_anomaly_frame,
+        product_anomaly_column_types,
+        has_scoped_product_anomaly_section,
+    ) = _build_product_anomaly_frame(product_anomaly_sections)
     product_anomaly_number_formats = _build_number_formats(product_anomaly_column_types)
 
     detail_model = dataframe_to_sheet_model(
         sheet_name='成本明细',
         frame=detail_frame,
         column_types=dict.fromkeys(detail_frame.columns, 'text'),
-        number_formats={
-            column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS
-        },
+        number_formats={column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS},
         write_mode='dataframe_fast',
         style_profile='lightweight_flat',
         source_frame=detail_frame,
@@ -218,7 +218,7 @@ def build_sheet_models(
         frame=product_anomaly_frame,
         column_types=product_anomaly_column_types,
         number_formats=product_anomaly_number_formats,
-        freeze_panes='A6',
+        freeze_panes='A7' if has_scoped_product_anomaly_section else 'A6',
         fixed_width=15.0,
     )
     return (
@@ -251,12 +251,14 @@ def _build_analysis_sheet_model(*, sheet_name: str, summary_df: pd.DataFrame) ->
 
 def _build_product_anomaly_frame(
     sections: list[ProductAnomalySection],
-) -> tuple[pl.DataFrame, dict[str, str]]:
+) -> tuple[pl.DataFrame, dict[str, str], bool]:
+    has_scoped_section = any(section.section_label is not None for section in sections)
     if not sections:
         empty_columns = ['产品编码', '产品名称', '月份']
         return (
             _to_polars_frame(pd.DataFrame(columns=empty_columns)),
             {'产品编码': 'text', '产品名称': 'text', '月份': 'text'},
+            False,
         )
 
     section_frames: list[pd.DataFrame] = []
@@ -265,14 +267,19 @@ def _build_product_anomaly_frame(
         section_df = section.data.copy()
         section_df.insert(0, '产品名称', section.product_name)
         section_df.insert(0, '产品编码', section.product_code)
+        if has_scoped_section:
+            section_df.insert(2, '分析口径', '' if section.section_label is None else section.section_label)
         section_frames.append(section_df)
         for column_name, metric_type in section.column_types.items():
             column_types.setdefault(column_name, metric_type)
 
+    if has_scoped_section:
+        column_types.setdefault('分析口径', 'text')
+
     merged = pd.concat(section_frames, ignore_index=True, sort=False)
     for column_name in merged.columns:
         column_types.setdefault(column_name, 'text')
-    return _to_polars_frame(merged), column_types
+    return _to_polars_frame(merged), column_types, has_scoped_section
 
 
 def _build_number_formats(column_types: Mapping[str, str]) -> dict[str, str]:

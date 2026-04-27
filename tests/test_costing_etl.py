@@ -23,6 +23,7 @@ from src.analytics.contracts import (
 )
 from src.analytics.presentation_builder import build_sheet_models, dataframe_to_sheet_model
 from src.analytics.qty_enricher import build_report_artifacts
+from src.config.pipelines import GB_PIPELINE
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
@@ -133,6 +134,14 @@ class TestCostingWorkbookETL:
             standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
         )
         assert etl.standalone_cost_items == ('委外加工费', '软件费用')
+
+    def test_product_anomaly_scope_mode_defaults_to_gb_pipeline_mode(self) -> None:
+        etl = CostingWorkbookETL(skip_rows=2)
+        assert etl.product_anomaly_scope_mode == GB_PIPELINE.product_anomaly_scope_mode
+
+    def test_product_anomaly_scope_mode_rejects_invalid_value(self) -> None:
+        with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
+            CostingWorkbookETL(skip_rows=2, product_anomaly_scope_mode='bad')
 
     def test_process_file_not_found(self) -> None:
         """测试文件不存在时返回 False。"""
@@ -505,18 +514,24 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
     assert isinstance(detail_model.source_frame, pl.DataFrame)
-    assert detail_model.source_frame.to_dicts() == pl.DataFrame(
-        detail_df.to_dict(orient='list'),
-        strict=False,
-    ).to_dicts()
+    assert (
+        detail_model.source_frame.to_dicts()
+        == pl.DataFrame(
+            detail_df.to_dict(orient='list'),
+            strict=False,
+        ).to_dicts()
+    )
 
     assert qty_model.write_mode == 'dataframe_fast'
     assert qty_model.style_profile == 'lightweight_flat'
     assert isinstance(qty_model.source_frame, pl.DataFrame)
-    assert qty_model.source_frame.to_dicts() == pl.DataFrame(
-        qty_sheet_df.to_dict(orient='list'),
-        strict=False,
-    ).to_dicts()
+    assert (
+        qty_model.source_frame.to_dicts()
+        == pl.DataFrame(
+            qty_sheet_df.to_dict(orient='list'),
+            strict=False,
+        ).to_dicts()
+    )
 
     assert work_order_model.write_mode is None
     assert work_order_model.style_profile is None
@@ -633,6 +648,98 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     assert worksheet['B3'].value == '产品名称'
     assert worksheet['B4'].value == '产品A'
     assert worksheet.freeze_panes == 'A6'
+
+
+def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() -> None:
+    models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        qty_sheet_df=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='全部',
+            ),
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='正常生产',
+            ),
+        ],
+    )
+
+    product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    rows = list(product_model.rows_factory())
+
+    assert product_model.columns[:4] == ('产品编码', '产品名称', '分析口径', '月份')
+    assert rows[0][:4] == ('P001', '产品A', '全部', '2025年01期')
+    assert rows[1][:4] == ('P001', '产品A', '正常生产', '2025年01期')
+    assert product_model.freeze_panes == 'A7'
+
+
+def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
+    output_path = tmp_path / 'product_anomaly_scope_split_model.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+        qty_sheet_df=pd.DataFrame(
+            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+        ),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
+        product_anomaly_sections=[
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='全部',
+            ),
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+                section_label='正常生产',
+            ),
+        ],
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['按产品异常值分析']
+    assert worksheet['A1'].value == '四、按单个产品异常值分析'
+    assert worksheet['A3'].value == '产品编码'
+    assert worksheet['A4'].value == 'P001'
+    assert worksheet['B3'].value == '产品名称'
+    assert worksheet['B4'].value == '产品A'
+    assert worksheet['A5'].value == '分析口径'
+    assert worksheet['B5'].value == '全部'
+    assert worksheet['A6'].value == '月份'
+    assert worksheet['A7'].value == '2025年01期'
+    assert any(
+        worksheet.cell(row=row_idx, column=2).value == '正常生产'
+        for row_idx in range(1, worksheet.max_row + 1)
+        if worksheet.cell(row=row_idx, column=1).value == '分析口径'
+    )
+    assert worksheet.freeze_panes == 'A7'
 
 
 def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Path) -> None:
@@ -1465,8 +1572,13 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
 
 
 def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(tmp_path) -> None:
-    """process_file 调用 payload 编排时应透传 standalone_cost_items。"""
-    etl = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
+    """process_file 调用 payload 编排时应透传 standalone_cost_items 与 scope_mode。"""
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(),
+        standalone_cost_items=('委外加工费', '软件费用'),
+        product_anomaly_scope_mode='doc_type_split',
+    )
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
@@ -1487,6 +1599,7 @@ def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(t
 
     assert payload_mock.call_count == 1
     assert payload_mock.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
+    assert payload_mock.call_args.kwargs['product_anomaly_scope_mode'] == 'doc_type_split'
 
 
 def test_process_file_filters_whitelist_before_presentation_and_preserves_numeric_order_line_sort(tmp_path) -> None:
@@ -1621,7 +1734,7 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
         patch.object(etl.pipeline, 'load_raw_workbook_frame', return_value=Mock()),
         patch.object(etl.pipeline, 'build_normalized_cost_frame', return_value=Mock()),
         patch.object(etl.pipeline, 'split_normalized_frames', return_value=Mock(detail_df=detail_df, qty_df=qty_df)),
-        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts),
+        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts) as build_artifacts_mock,
         patch(
             'src.etl.pipeline.build_sheet_models',
             return_value=(
@@ -1647,6 +1760,7 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
     assert [(section.product_code, section.product_name) for section in product_sections_arg] == [
         ('GB_C.D.B0040AA', 'BMS-750W驱动器')
     ]
+    assert build_artifacts_mock.call_args.kwargs['product_anomaly_scope_mode'] == GB_PIPELINE.product_anomaly_scope_mode
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:

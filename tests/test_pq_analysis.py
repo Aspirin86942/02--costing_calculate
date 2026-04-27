@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pandas as pd
+import pytest
 
 from src.analytics.contracts import ProductAnomalySection, SectionBlock
 from src.analytics.table_rendering import build_product_anomaly_sections, render_tables
@@ -213,3 +214,8 @@ def test_build_product_anomaly_sections_keeps_only_existing_periods() -> None:
 
     assert len(sections) == 1
     assert sections[0].data['月份'].tolist() == ['2025年03期', '2025年04期']
+
+
+def test_build_product_anomaly_sections_rejects_invalid_scope_mode() -> None:
+    with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
+        build_product_anomaly_sections(_sample_fact_df(), scope_mode='bad')

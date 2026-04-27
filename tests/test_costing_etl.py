@@ -23,6 +23,7 @@ from src.analytics.contracts import (
 )
 from src.analytics.presentation_builder import build_sheet_models, dataframe_to_sheet_model
 from src.analytics.qty_enricher import build_report_artifacts
+from src.config.pipelines import GB_PIPELINE
 from src.etl.costing_etl import CostingWorkbookETL
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
@@ -133,6 +134,14 @@ class TestCostingWorkbookETL:
             standalone_cost_items=(' 委外加工费 ', '', '  软件费用  '),
         )
         assert etl.standalone_cost_items == ('委外加工费', '软件费用')
+
+    def test_product_anomaly_scope_mode_defaults_to_gb_pipeline_mode(self) -> None:
+        etl = CostingWorkbookETL(skip_rows=2)
+        assert etl.product_anomaly_scope_mode == GB_PIPELINE.product_anomaly_scope_mode
+
+    def test_product_anomaly_scope_mode_rejects_invalid_value(self) -> None:
+        with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
+            CostingWorkbookETL(skip_rows=2, product_anomaly_scope_mode='bad')
 
     def test_process_file_not_found(self) -> None:
         """测试文件不存在时返回 False。"""
@@ -1465,8 +1474,13 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
 
 
 def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(tmp_path) -> None:
-    """process_file 调用 payload 编排时应透传 standalone_cost_items。"""
-    etl = CostingWorkbookETL(skip_rows=2, product_order=(), standalone_cost_items=('委外加工费', '软件费用'))
+    """process_file 调用 payload 编排时应透传 standalone_cost_items 与 scope_mode。"""
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(),
+        standalone_cost_items=('委外加工费', '软件费用'),
+        product_anomaly_scope_mode='doc_type_split',
+    )
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
@@ -1487,6 +1501,7 @@ def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(t
 
     assert payload_mock.call_count == 1
     assert payload_mock.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
+    assert payload_mock.call_args.kwargs['product_anomaly_scope_mode'] == 'doc_type_split'
 
 
 def test_process_file_filters_whitelist_before_presentation_and_preserves_numeric_order_line_sort(tmp_path) -> None:
@@ -1621,7 +1636,7 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
         patch.object(etl.pipeline, 'load_raw_workbook_frame', return_value=Mock()),
         patch.object(etl.pipeline, 'build_normalized_cost_frame', return_value=Mock()),
         patch.object(etl.pipeline, 'split_normalized_frames', return_value=Mock(detail_df=detail_df, qty_df=qty_df)),
-        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts),
+        patch('src.etl.pipeline.build_report_artifacts', return_value=artifacts) as build_artifacts_mock,
         patch(
             'src.etl.pipeline.build_sheet_models',
             return_value=(
@@ -1647,6 +1662,7 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
     assert [(section.product_code, section.product_name) for section in product_sections_arg] == [
         ('GB_C.D.B0040AA', 'BMS-750W驱动器')
     ]
+    assert build_artifacts_mock.call_args.kwargs['product_anomaly_scope_mode'] == GB_PIPELINE.product_anomaly_scope_mode
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:

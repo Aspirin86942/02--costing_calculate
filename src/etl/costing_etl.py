@@ -14,7 +14,7 @@ import polars as pl
 
 try:
     from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
-    from src.config.pipelines import GB_PIPELINE
+    from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -25,7 +25,7 @@ except ModuleNotFoundError:
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
     from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
-    from src.config.pipelines import GB_PIPELINE
+    from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
@@ -175,6 +175,7 @@ class CostingWorkbookETL:
         *,
         product_order: tuple[tuple[str, str], ...] | None = None,
         standalone_cost_items: tuple[str, ...] | None = None,
+        product_anomaly_scope_mode: str | None = None,
     ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
@@ -194,6 +195,10 @@ class CostingWorkbookETL:
             if normalized:
                 normalized_items.append(normalized)
         self.standalone_cost_items = tuple(normalized_items)
+        self.product_anomaly_scope_mode = normalize_product_anomaly_scope_mode(
+            product_anomaly_scope_mode,
+            default_mode=GB_PIPELINE.product_anomaly_scope_mode,
+        )
         self.workbook_writer = CostingWorkbookWriter()
         self.pipeline = CostingEtlPipeline(
             skip_rows=skip_rows,
@@ -390,6 +395,7 @@ class CostingWorkbookETL:
             payload = self.pipeline.build_workbook_payload(
                 input_path,
                 standalone_cost_items=self.standalone_cost_items,
+                product_anomaly_scope_mode=self.product_anomaly_scope_mode,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
             self.last_quality_metrics = payload.quality_metrics

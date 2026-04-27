@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import pandas as pd
 import polars as pl
+import pytest
 
 from src.analytics.fact_builder import (
     QTY_CHECK_STATUS,
@@ -133,6 +134,36 @@ def test_build_report_artifacts_enriches_qty_sheet() -> None:
     assert '完工数量是否有效' not in artifacts.qty_sheet_df.columns
     assert '完工数量是否小于等于0' not in artifacts.qty_sheet_df.columns
     assert '是否存在空值' not in artifacts.qty_sheet_df.columns
+
+
+def test_build_report_artifacts_passes_scope_mode_to_product_anomaly_sections(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_build_product_anomaly_sections(summary_df: pd.DataFrame, *, scope_mode: str = 'legacy_single_scope'):
+        captured['scope_mode'] = scope_mode
+        captured['summary_columns'] = tuple(summary_df.columns)
+        return []
+
+    monkeypatch.setattr('src.analytics.qty_enricher.build_product_anomaly_sections', _fake_build_product_anomaly_sections)
+
+    artifacts = build_report_artifacts(
+        _build_base_detail_df(),
+        _build_base_qty_df(total_amount=165),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    assert captured['scope_mode'] == 'doc_type_split'
+    assert 'product_code' in captured['summary_columns']
+    assert artifacts.product_anomaly_sections == []
+
+
+def test_build_report_artifacts_rejects_invalid_scope_mode() -> None:
+    with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
+        build_report_artifacts(
+            _build_base_detail_df(),
+            _build_base_qty_df(total_amount=165),
+            product_anomaly_scope_mode='bad',
+        )
 
 
 def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:

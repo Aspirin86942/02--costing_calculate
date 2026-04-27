@@ -41,14 +41,17 @@ from src.analytics.fact_builder import (
 )
 from src.analytics.quality import build_quality_metrics
 from src.analytics.table_rendering import build_product_anomaly_sections, build_product_summary_df
+from src.config.pipelines import normalize_product_anomaly_scope_mode
 
 
 def build_report_artifacts(
     df_detail: pd.DataFrame | pl.DataFrame,
     df_qty: pd.DataFrame | pl.DataFrame,
     standalone_cost_items: tuple[str, ...] | list[str] | None = DEFAULT_STANDALONE_COST_ITEMS,
+    product_anomaly_scope_mode: str = 'legacy_single_scope',
 ) -> AnalysisArtifacts:
     """构建 V3 报表所需的全部分析产物（Polars 构建 + pandas 兼容输出）。"""
+    validated_scope_mode = normalize_product_anomaly_scope_mode(product_anomaly_scope_mode)
     detail_pl = _to_polars_frame(df_detail)
     qty_pl = _to_polars_frame(df_qty)
     detail_pd = _to_pandas_frame(df_detail)
@@ -100,7 +103,10 @@ def build_report_artifacts(
         fact_df=fact_df,
         qty_sheet_df=qty_sheet_output,
         work_order_sheet=work_order_sheet,
-        product_anomaly_sections=build_product_anomaly_sections(product_summary_df),
+        product_anomaly_sections=build_product_anomaly_sections(
+            product_summary_df,
+            scope_mode=validated_scope_mode,
+        ),
         quality_metrics=quality_metrics,
         error_log=error_log,
         fact_bundle=fact_bundle,

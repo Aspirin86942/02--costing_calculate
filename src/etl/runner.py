@@ -66,6 +66,7 @@ def run_pipeline(config: PipelineConfig) -> int:
         skip_rows=2,
         product_order=config.product_order,
         standalone_cost_items=config.standalone_cost_items,
+        product_anomaly_scope_mode=config.product_anomaly_scope_mode,
     )
 
     if not etl.process_file(input_file, output_file):

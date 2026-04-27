@@ -6,6 +6,7 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.contracts import ProductAnomalySection, SectionBlock
+from src.config.pipelines import normalize_product_anomaly_scope_mode
 from src.analytics.fact_builder import (
     COST_BUCKETS,
     ZERO,
@@ -216,8 +217,13 @@ def build_product_summary_from_fact_df(fact_df: pd.DataFrame) -> pd.DataFrame:
     return summary_df
 
 
-def build_product_anomaly_sections(summary_df: pd.DataFrame) -> list[ProductAnomalySection]:
+def build_product_anomaly_sections(
+    summary_df: pd.DataFrame,
+    *,
+    scope_mode: str = 'legacy_single_scope',
+) -> list[ProductAnomalySection]:
     """构建兼容产品摘要页。"""
+    normalize_product_anomaly_scope_mode(scope_mode)
     if 'period_display' not in summary_df.columns and {'cost_bucket', 'amount', 'qty'}.issubset(summary_df.columns):
         summary_df = build_product_summary_from_fact_df(summary_df)
 

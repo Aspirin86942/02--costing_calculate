@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.config.pipelines import GB_PIPELINE, PIPELINES, SK_PIPELINE
 
 
@@ -47,3 +49,20 @@ def test_sk_pipeline_product_order_preserves_business_sequence() -> None:
 def test_pipeline_standalone_cost_items_are_defined_per_target() -> None:
     assert GB_PIPELINE.standalone_cost_items == ('委外加工费',)
     assert SK_PIPELINE.standalone_cost_items == ('委外加工费', '软件费用')
+
+
+def test_pipeline_product_anomaly_scope_mode_is_defined_per_target() -> None:
+    assert GB_PIPELINE.product_anomaly_scope_mode == 'doc_type_split'
+    assert SK_PIPELINE.product_anomaly_scope_mode == 'legacy_single_scope'
+
+
+def test_pipeline_config_rejects_invalid_product_anomaly_scope_mode(tmp_path) -> None:
+    from src.config.pipelines import PipelineConfig
+
+    with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
+        PipelineConfig(
+            name='invalid',
+            raw_dir=tmp_path,
+            processed_dir=tmp_path,
+            product_anomaly_scope_mode='bad',
+        )

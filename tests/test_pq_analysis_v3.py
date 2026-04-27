@@ -331,10 +331,7 @@ def test_build_report_artifacts_doc_type_split_builds_labeled_sections() -> None
     }
 
     assert [section.section_label for section in artifacts.product_anomaly_sections] == ['全部', '正常生产', '返工生产']
-    section_by_label = {
-        section.section_label: section
-        for section in artifacts.product_anomaly_sections
-    }
+    section_by_label = {section.section_label: section for section in artifacts.product_anomaly_sections}
     assert section_by_label['全部'].data['总成本'].tolist() == [Decimal('180')]
     assert section_by_label['正常生产'].data['总成本'].tolist() == [Decimal('150')]
     assert section_by_label['返工生产'].data['总成本'].tolist() == [Decimal('20')]

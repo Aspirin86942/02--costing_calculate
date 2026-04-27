@@ -200,9 +200,7 @@ class FastSheetWriter:
             if key not in grouped_rows:
                 grouped_rows[key] = []
                 group_order.append(key)
-            grouped_rows[key].append(
-                tuple(row[table_column_start_idx : table_column_start_idx + len(table_columns)])
-            )
+            grouped_rows[key].append(tuple(row[table_column_start_idx : table_column_start_idx + len(table_columns)]))
 
         sections: list[ProductAnomalySection] = []
         for product_code, product_name, section_label in group_order:
@@ -337,8 +335,7 @@ class FastSheetWriter:
             )
         if model.sheet_name == '按产品异常值分析':
             raise ValueError(
-                'lightweight fast-path does not support special layout sheet: '
-                f'sheet_name={model.sheet_name}'
+                f'lightweight fast-path does not support special layout sheet: sheet_name={model.sheet_name}'
             )
 
     def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
@@ -347,9 +344,7 @@ class FastSheetWriter:
         worksheet = workbook.add_worksheet(sheet_name)
         writer.sheets[sheet_name] = worksheet
 
-        title_format = workbook.add_format(
-            {'bold': True, 'bg_color': '#FFD966', 'align': 'left', 'valign': 'vcenter'}
-        )
+        title_format = workbook.add_format({'bold': True, 'bg_color': '#FFD966', 'align': 'left', 'valign': 'vcenter'})
         header_format = workbook.add_format(
             {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
         )
@@ -864,9 +859,7 @@ class FastSheetWriter:
                 continue
             numeric_format_by_col[col_idx] = number_format_cache.setdefault(
                 number_format,
-                workbook.add_format(
-                    {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
-                ),
+                workbook.add_format({'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}),
             )
 
         if apply_column_widths:

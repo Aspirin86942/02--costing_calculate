@@ -514,18 +514,24 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
     assert isinstance(detail_model.source_frame, pl.DataFrame)
-    assert detail_model.source_frame.to_dicts() == pl.DataFrame(
-        detail_df.to_dict(orient='list'),
-        strict=False,
-    ).to_dicts()
+    assert (
+        detail_model.source_frame.to_dicts()
+        == pl.DataFrame(
+            detail_df.to_dict(orient='list'),
+            strict=False,
+        ).to_dicts()
+    )
 
     assert qty_model.write_mode == 'dataframe_fast'
     assert qty_model.style_profile == 'lightweight_flat'
     assert isinstance(qty_model.source_frame, pl.DataFrame)
-    assert qty_model.source_frame.to_dicts() == pl.DataFrame(
-        qty_sheet_df.to_dict(orient='list'),
-        strict=False,
-    ).to_dicts()
+    assert (
+        qty_model.source_frame.to_dicts()
+        == pl.DataFrame(
+            qty_sheet_df.to_dict(orient='list'),
+            strict=False,
+        ).to_dicts()
+    )
 
     assert work_order_model.write_mode is None
     assert work_order_model.style_profile is None

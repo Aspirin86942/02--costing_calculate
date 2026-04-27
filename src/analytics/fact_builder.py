@@ -644,11 +644,7 @@ def build_fact_bundle(
                 pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
                 pl.col('工单编号').alias('order_no'),
                 pl.col('工单行号').alias('order_line'),
-                (
-                    pl.col('单据类型')
-                    if '单据类型' in qty_df.columns
-                    else pl.lit(None)
-                )
+                (pl.col('单据类型') if '单据类型' in qty_df.columns else pl.lit(None))
                 .cast(pl.String, strict=False)
                 .str.strip_chars()
                 .alias('doc_type'),

@@ -112,9 +112,7 @@ def dataframe_to_sheet_model(
         sheet_name=sheet_name,
         columns=tuple(resolved_frame.columns),
         rows_factory=lambda frame=resolved_frame: frame.iter_rows(),
-        column_types={
-            column: column_types[column] for column in resolved_frame.columns if column in column_types
-        },
+        column_types={column: column_types[column] for column in resolved_frame.columns if column in column_types},
         number_formats={
             column: number_formats[column] for column in resolved_frame.columns if column in number_formats
         },
@@ -187,9 +185,7 @@ def build_sheet_models(
         sheet_name='成本明细',
         frame=detail_frame,
         column_types=dict.fromkeys(detail_frame.columns, 'text'),
-        number_formats={
-            column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS
-        },
+        number_formats={column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS},
         write_mode='dataframe_fast',
         style_profile='lightweight_flat',
         source_frame=detail_frame,

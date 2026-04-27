@@ -127,9 +127,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
                 number_formats={},
             ),
         ),
-        quality_metrics=(
-            QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),
-        ),
+        quality_metrics=(QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),),
         error_log_count=2,
         stage_timings={'ingest': 1.0, 'normalize': 2.0, 'fact': 3.0, 'analysis': 4.0, 'presentation': 5.0},
         error_log_export=pd.DataFrame(

@@ -334,8 +334,7 @@ def _validate_doc_type_split_contract(summary_df: pd.DataFrame) -> None:
     # doc_type_split 的核心是按单据类型分段；如果 doc_type 全空，继续执行只会静默退化成“全部”。
     if not summary_df['doc_type'].map(_has_non_empty_doc_type).any():
         raise ValueError(
-            'doc_type_split requires non-empty doc_type values after trimming; '
-            'all doc_type values are empty or missing'
+            'doc_type_split requires non-empty doc_type values after trimming; all doc_type values are empty or missing'
         )
 
 

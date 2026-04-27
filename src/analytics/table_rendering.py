@@ -319,18 +319,30 @@ def build_product_anomaly_sections(
 
 def _validate_doc_type_split_contract(summary_df: pd.DataFrame) -> None:
     missing_columns = sorted(DOC_TYPE_SPLIT_SUMMARY_REQUIRED_COLUMNS.difference(summary_df.columns))
-    if not missing_columns:
-        return
     required_columns_text = ', '.join(sorted(DOC_TYPE_SPLIT_SUMMARY_REQUIRED_COLUMNS))
     work_order_columns_text = ', '.join(sorted(DOC_TYPE_SPLIT_WORK_ORDER_REQUIRED_COLUMNS))
-    missing_columns_text = ', '.join(missing_columns)
-    raise ValueError(
-        'doc_type_split requires required columns: '
-        f'{required_columns_text}; '
-        'or work-order columns: '
-        f'{work_order_columns_text}; '
-        f'missing: {missing_columns_text}'
-    )
+    if missing_columns:
+        missing_columns_text = ', '.join(missing_columns)
+        raise ValueError(
+            'doc_type_split requires required columns: '
+            f'{required_columns_text}; '
+            'or work-order columns: '
+            f'{work_order_columns_text}; '
+            f'missing: {missing_columns_text}'
+        )
+
+    # doc_type_split 的核心是按单据类型分段；如果 doc_type 全空，继续执行只会静默退化成“全部”。
+    if not summary_df['doc_type'].map(_has_non_empty_doc_type).any():
+        raise ValueError(
+            'doc_type_split requires non-empty doc_type values after trimming; '
+            'all doc_type values are empty or missing'
+        )
+
+
+def _has_non_empty_doc_type(value: object) -> bool:
+    if value is None or pd.isna(value):
+        return False
+    return str(value).strip() != ''
 
 
 def _normalize_product_anomaly_source_frame(summary_df: pd.DataFrame, *, scope_mode: str) -> pd.DataFrame:

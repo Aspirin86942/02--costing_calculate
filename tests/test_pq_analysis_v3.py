@@ -169,6 +169,15 @@ def test_build_report_artifacts_rejects_invalid_scope_mode() -> None:
         )
 
 
+def test_build_report_artifacts_doc_type_split_rejects_missing_doc_type_values() -> None:
+    with pytest.raises(ValueError, match='doc_type'):
+        build_report_artifacts(
+            _build_base_detail_df(),
+            _build_base_qty_df(total_amount=165),
+            product_anomaly_scope_mode='doc_type_split',
+        )
+
+
 def test_build_report_artifacts_doc_type_split_builds_labeled_sections() -> None:
     df_detail = pd.DataFrame(
         [

@@ -341,6 +341,15 @@ def test_build_product_anomaly_sections_doc_type_split_skips_empty_sections() ->
     assert [section.section_label for section in sections] == ['全部', '正常生产']
 
 
+def test_build_product_anomaly_sections_doc_type_split_rejects_fact_df_input_contract() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        build_product_anomaly_sections(_sample_fact_df(), scope_mode='doc_type_split')
+
+    message = str(exc_info.value)
+    assert 'doc_type_split' in message
+    assert ('doc_type' in message) or ('required columns' in message)
+
+
 def test_build_product_anomaly_sections_rejects_invalid_scope_mode() -> None:
     with pytest.raises(ValueError, match='product_anomaly_scope_mode'):
         build_product_anomaly_sections(_sample_fact_df(), scope_mode='bad')

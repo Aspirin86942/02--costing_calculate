@@ -96,6 +96,18 @@ PRODUCT_SUMMARY_REQUIRED_COLUMNS: set[str] = {
     'dl_cost',
     'moh_cost',
 }
+DOC_TYPE_SPLIT_SUMMARY_REQUIRED_COLUMNS: set[str] = PRODUCT_SUMMARY_REQUIRED_COLUMNS | {'doc_type'}
+DOC_TYPE_SPLIT_WORK_ORDER_REQUIRED_COLUMNS: set[str] = {
+    'product_code',
+    'product_name',
+    'period',
+    'doc_type',
+    'completed_amount_total',
+    'completed_qty',
+    'dm_amount',
+    'dl_amount',
+    'moh_amount',
+}
 
 
 def build_product_summary_sheet_frame(summary_frame: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
@@ -259,6 +271,9 @@ def build_product_anomaly_sections(
     normalized_summary_df = _normalize_product_anomaly_source_frame(summary_df, scope_mode=validated_scope_mode)
     if normalized_summary_df.empty:
         return []
+    if validated_scope_mode == DOC_TYPE_SPLIT_SCOPE_MODE:
+        # 这里统一校验输入契约，避免 pandas 在深层分支抛出不可控 KeyError。
+        _validate_doc_type_split_contract(normalized_summary_df)
 
     sections: list[ProductAnomalySection] = []
     grouped = normalized_summary_df.groupby(['product_code', 'product_name'], dropna=False, sort=False)
@@ -300,6 +315,22 @@ def build_product_anomaly_sections(
             )
 
     return sections
+
+
+def _validate_doc_type_split_contract(summary_df: pd.DataFrame) -> None:
+    missing_columns = sorted(DOC_TYPE_SPLIT_SUMMARY_REQUIRED_COLUMNS.difference(summary_df.columns))
+    if not missing_columns:
+        return
+    required_columns_text = ', '.join(sorted(DOC_TYPE_SPLIT_SUMMARY_REQUIRED_COLUMNS))
+    work_order_columns_text = ', '.join(sorted(DOC_TYPE_SPLIT_WORK_ORDER_REQUIRED_COLUMNS))
+    missing_columns_text = ', '.join(missing_columns)
+    raise ValueError(
+        'doc_type_split requires required columns: '
+        f'{required_columns_text}; '
+        'or work-order columns: '
+        f'{work_order_columns_text}; '
+        f'missing: {missing_columns_text}'
+    )
 
 
 def _normalize_product_anomaly_source_frame(summary_df: pd.DataFrame, *, scope_mode: str) -> pd.DataFrame:

@@ -1266,7 +1266,8 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
 
     ws_work_order = wb['按工单按产品异常值分析']
     assert ws_work_order['A1'].value == '月份'
-    assert ws_work_order['I2'].value == 10
+    assert ws_work_order['I2'].value == 'PCS'
+    assert ws_work_order['J2'].value == 10
     work_order_headers = _build_header_map(ws_work_order)
     assert '委外加工费合计完工金额' in work_order_headers
     assert '委外加工费单位完工成本' in work_order_headers
@@ -1365,6 +1366,7 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
                 '规格型号': 'S-01',
                 '工单编号': 'WO-001',
                 '工单行号': 1,
+                '单据类型': '汇报入库-普通生产',
                 '基本单位': 'PCS',
                 '本期完工数量': 10.0,
                 '本期完工金额': 165.0,
@@ -1404,6 +1406,14 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     assert ws_qty.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
     assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
     _assert_header_columns_fixed_width(ws_qty, qty_headers)
+
+    ws_work_order = wb['按工单按产品异常值分析']
+    work_order_headers = _build_header_map(ws_work_order)
+    assert '生产类型' in work_order_headers
+    assert ws_work_order.cell(2, work_order_headers['生产类型']).value == '正常生产'
+    assert work_order_headers['本期完工数量'] == 10
+    assert ws_work_order.cell(2, 9).value == 'PCS'
+    assert ws_work_order.cell(2, 10).value == 10
 
 
 def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> None:

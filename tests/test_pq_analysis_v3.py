@@ -406,46 +406,29 @@ def test_build_report_artifacts_work_order_sheet_adds_production_scope_column() 
 
 
 def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> None:
-    df_detail = pd.DataFrame(
-        [
-            {
-                '月份': '2025年01期',
-                '成本中心名称': '中心A',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
-                '规格型号': 'S-01',
-                '工单编号': 'WO-N1',
-                '工单行号': 1,
-                '基本单位': 'PCS',
-                '成本项目名称': '直接材料',
-                '本期完工金额': 100,
-            },
-            {
-                '月份': '2025年01期',
-                '成本中心名称': '中心A',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
-                '规格型号': 'S-01',
-                '工单编号': 'WO-N2',
-                '工单行号': 1,
-                '基本单位': 'PCS',
-                '成本项目名称': '直接材料',
-                '本期完工金额': 120,
-            },
-            {
-                '月份': '2025年01期',
-                '成本中心名称': '中心A',
-                '产品编码': 'P001',
-                '产品名称': '产品A',
-                '规格型号': 'S-01',
-                '工单编号': 'WO-U1',
-                '工单行号': 1,
-                '基本单位': 'PCS',
-                '成本项目名称': '直接材料',
-                '本期完工金额': 500,
-            },
-        ]
-    )
+    detail_rows: list[dict[str, object]] = []
+    order_cost_map = {
+        'WO-N1': {'直接材料': 100, '直接人工': 30, '制造费用_其他': 10, '制造费用-人工': 20, '制造费用_机物料及低耗': 5, '制造费用_折旧': 8, '制造费用_水电费': 7},
+        'WO-N2': {'直接材料': 120, '直接人工': 35, '制造费用_其他': 12, '制造费用-人工': 22, '制造费用_机物料及低耗': 6, '制造费用_折旧': 9, '制造费用_水电费': 8},
+        'WO-U1': {'直接材料': 500, '直接人工': 60, '制造费用_其他': 40, '制造费用-人工': 50, '制造费用_机物料及低耗': 20, '制造费用_折旧': 15, '制造费用_水电费': 15},
+    }
+    for order_no, cost_item_map in order_cost_map.items():
+        for cost_item, amount in cost_item_map.items():
+            detail_rows.append(
+                {
+                    '月份': '2025年01期',
+                    '成本中心名称': '中心A',
+                    '产品编码': 'P001',
+                    '产品名称': '产品A',
+                    '规格型号': 'S-01',
+                    '工单编号': order_no,
+                    '工单行号': 1,
+                    '基本单位': 'PCS',
+                    '成本项目名称': cost_item,
+                    '本期完工金额': amount,
+                }
+            )
+    df_detail = pd.DataFrame(detail_rows)
     df_qty = pd.DataFrame(
         [
             {
@@ -459,7 +442,7 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
                 '基本单位': 'PCS',
                 '单据类型': '汇报入库-普通生产',
                 '本期完工数量': 10,
-                '本期完工金额': 100,
+                '本期完工金额': 180,
             },
             {
                 '月份': '2025年01期',
@@ -472,7 +455,7 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
                 '基本单位': 'PCS',
                 '单据类型': '汇报入库-返工生产',
                 '本期完工数量': 10,
-                '本期完工金额': 120,
+                '本期完工金额': 212,
             },
             {
                 '月份': '2025年01期',
@@ -485,7 +468,7 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
                 '基本单位': 'PCS',
                 '单据类型': '普通委外订单',
                 '本期完工数量': 10,
-                '本期完工金额': 500,
+                '本期完工金额': 700,
             },
         ]
     )
@@ -499,7 +482,125 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
     assert row['Modified Z-score_总单位完工成本'] is None
-    assert '单据类型未归类' in row['复核原因']
+    assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
+
+
+def test_build_report_artifacts_marks_missing_doc_type_column_as_not_analyzable() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 30,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用_其他',
+                '本期完工金额': 10,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用-人工',
+                '本期完工金额': 20,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用_机物料及低耗',
+                '本期完工金额': 5,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用_折旧',
+                '本期完工金额': 8,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '制造费用_水电费',
+                '本期完工金额': 7,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-M1',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10,
+                '本期完工金额': 180,
+            }
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    anomaly_df = artifacts.work_order_sheet.data
+    row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-M1'].iloc[0]
+
+    assert row['生产类型'] == '未归类'
+    assert row['是否可参与分析'] == '否'
+    assert row['异常等级'] == ''
+    assert row['异常主要来源'] == ''
+    assert row['Modified Z-score_总单位完工成本'] is None
+    assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
 
 
 def test_build_report_artifacts_filters_out_invalid_qty_rows() -> None:
@@ -974,6 +1075,7 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
                 '工单编号': 'WO-001',
                 '工单行号': 1,
                 '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
                 '本期完工数量': 10,
                 '本期完工金额': 100,
             },
@@ -986,6 +1088,7 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
                 '工单编号': 'WO-002',
                 '工单行号': 1,
                 '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
                 '本期完工数量': 10,
                 '本期完工金额': 110,
             },
@@ -998,6 +1101,7 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
                 '工单编号': 'WO-003',
                 '工单行号': 1,
                 '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
                 '本期完工数量': 10,
                 '本期完工金额': 500,
             },

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import math
 
 import numpy as np
 import pandas as pd
 
-from src.analytics import table_rendering
 from src.analytics.contracts import ConditionalFormatRule, FlatSheet
 from src.analytics.errors import append_reason
 from src.analytics.fact_builder import (
@@ -16,6 +14,12 @@ from src.analytics.fact_builder import (
     ZERO,
     StandaloneCostItemMeta,
     resolve_standalone_cost_item_metas,
+)
+from src.analytics.table_rendering import (
+    DOC_TYPE_NORMAL_LABEL,
+    DOC_TYPE_REWORK_LABEL,
+    DOC_TYPE_UNKNOWN_LABEL,
+    map_doc_type_to_scope_label,
 )
 
 ANOMALY_METRICS = [
@@ -48,25 +52,7 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '关注': 'attention',
     '高度可疑': 'suspicious',
 }
-DOC_TYPE_NORMAL_LABEL = getattr(table_rendering, 'DOC_TYPE_NORMAL_LABEL', '正常生产')
-DOC_TYPE_REWORK_LABEL = getattr(table_rendering, 'DOC_TYPE_REWORK_LABEL', '返工生产')
-DOC_TYPE_UNKNOWN_LABEL = getattr(table_rendering, 'DOC_TYPE_UNKNOWN_LABEL', '未归类')
 ANALYZABLE_PRODUCTION_SCOPE_LABELS = {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
-_DOC_TYPE_SCOPE_LABEL_MAPPER: Callable[[object], object] | None = getattr(
-    table_rendering,
-    'map_doc_type_to_scope_label',
-    None,
-)
-if _DOC_TYPE_SCOPE_LABEL_MAPPER is None:
-    _DOC_TYPE_SCOPE_LABEL_MAPPER = getattr(table_rendering, '_map_doc_type_to_scope_label', None)
-
-
-def map_doc_type_to_scope_label(doc_type: object) -> str:
-    mapped_label = _DOC_TYPE_SCOPE_LABEL_MAPPER(doc_type) if _DOC_TYPE_SCOPE_LABEL_MAPPER else None
-    if mapped_label is None or pd.isna(mapped_label):
-        return DOC_TYPE_UNKNOWN_LABEL
-    normalized_label = str(mapped_label).strip()
-    return normalized_label or DOC_TYPE_UNKNOWN_LABEL
 
 
 def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
@@ -307,19 +293,15 @@ def build_anomaly_sheet(
 
     if 'doc_type' in anomaly_df.columns:
         anomaly_df['production_scope'] = anomaly_df['doc_type'].map(map_doc_type_to_scope_label)
-        has_non_empty_doc_type = anomaly_df['doc_type'].map(
-            lambda value: value is not None and not pd.isna(value) and str(value).strip() != ''
-        ).any()
     else:
         anomaly_df['production_scope'] = DOC_TYPE_UNKNOWN_LABEL
-        has_non_empty_doc_type = False
 
     analyzable_scope_mask = anomaly_df['production_scope'].isin(ANALYZABLE_PRODUCTION_SCOPE_LABELS)
     base_can_analyze = anomaly_df['completed_qty'].map(
         lambda value: value is not None and value > ZERO
     ) & anomaly_df['total_unit_cost'].map(lambda value: value is not None and value > ZERO)
-    scope_not_analyzable_mask = has_non_empty_doc_type & ~analyzable_scope_mask
-    anomaly_df['can_analyze'] = base_can_analyze & ~scope_not_analyzable_mask
+    scope_not_analyzable_mask = ~analyzable_scope_mask
+    anomaly_df['can_analyze'] = base_can_analyze & analyzable_scope_mask
     # 未归类单据无法进入正常生产/返工生产异常池，需显式保留复核原因。
     reason_series = append_reason(
         reason_series,

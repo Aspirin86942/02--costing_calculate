@@ -318,7 +318,11 @@ def build_anomaly_sheet(
         metric_positive = anomaly_df[metric_key].map(lambda value: value is not None and value > ZERO)
         reason_series = append_reason(reason_series, ~metric_positive, f'{display_name}小于等于0或为空')
 
-        for _, group_index in anomaly_df.groupby(['product_code', 'product_name'], sort=False).groups.items():
+        # 按产品 + 生产类型拆分异常池，避免正常生产与返工生产相互稀释分数。
+        for _, group_index in anomaly_df.groupby(
+            ['product_code', 'product_name', 'production_scope'],
+            sort=False,
+        ).groups.items():
             metric_series = anomaly_df.loc[group_index, metric_key]
             qty_series = anomaly_df.loc[group_index, 'completed_qty']
             can_analyze_series = anomaly_df.loc[group_index, 'can_analyze']

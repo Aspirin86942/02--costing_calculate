@@ -1,7 +1,6 @@
 """测试加权 z-score 计算逻辑。"""
 
 import numpy as np
-import pytest
 
 from src.analytics.anomaly import weighted_mad, weighted_median
 

@@ -1638,3 +1638,61 @@ def test_build_report_artifacts_supports_empty_standalone_output_columns() -> No
     assert '委外加工费单位完工成本' not in work_order_columns
     assert '软件费用合计完工金额' not in work_order_columns
     assert '软件费用单位完工成本' not in work_order_columns
+
+
+def test_build_report_artifacts_uses_minimum_dispersion_for_near_zero_weighted_mad() -> None:
+    """测试近零加权 MAD 场景下，接近中心值的返工工单不会被误判为异常。"""
+    rows = [
+        ('WO-R-CENTER-1', Decimal('100'), Decimal('100.0000000')),
+        ('WO-R-CENTER-2', Decimal('710'), Decimal('100.0000008')),
+        ('WO-R-CENTER-3', Decimal('77'), Decimal('100.0000012')),
+        ('WO-R-CENTER-4', Decimal('234'), Decimal('99.9999965')),
+        ('WO-R-CLOSE', Decimal('24'), Decimal('99.0000000')),
+        ('WO-R-FAR', Decimal('311'), Decimal('95.0000000')),
+        ('WO-R-EXTREME', Decimal('30'), Decimal('10.0000000')),
+    ]
+    detail_rows: list[dict[str, object]] = []
+    qty_rows: list[dict[str, object]] = []
+
+    for order_no, qty, unit_cost in rows:
+        total_amount = qty * unit_cost
+        detail_rows.append(
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P-NEAR-MAD',
+                '产品名称': '近零MAD产品',
+                '规格型号': 'S-NEAR',
+                '工单编号': order_no,
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': total_amount,
+            }
+        )
+        qty_rows.append(
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P-NEAR-MAD',
+                '产品名称': '近零MAD产品',
+                '规格型号': 'S-NEAR',
+                '工单编号': order_no,
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-返工生产',
+                '本期完工数量': qty,
+                '本期完工金额': total_amount,
+            }
+        )
+
+    artifacts = build_report_artifacts(pd.DataFrame(detail_rows), pd.DataFrame(qty_rows))
+    anomaly_df = artifacts.work_order_sheet.data
+    close_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-R-CLOSE'].iloc[0]
+    far_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-R-FAR'].iloc[0]
+    extreme_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-R-EXTREME'].iloc[0]
+
+    assert close_row['生产类型'] == DOC_TYPE_REWORK_LABEL
+    assert close_row['直接材料异常标记'] == '正常'
+    assert far_row['直接材料异常标记'] == '高度可疑'
+    assert extreme_row['直接材料异常标记'] == '高度可疑'

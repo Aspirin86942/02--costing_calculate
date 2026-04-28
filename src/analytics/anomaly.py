@@ -53,6 +53,8 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '高度可疑': 'suspicious',
 }
 ANALYZABLE_PRODUCTION_SCOPE_LABELS = {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
+MIN_RELATIVE_MAD_RATIO = 0.005
+MIN_LOG_MAD = math.log1p(MIN_RELATIVE_MAD_RATIO)
 
 
 def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
@@ -103,6 +105,16 @@ def weighted_mad(values: np.ndarray, weights: np.ndarray, center: float) -> floa
 
     # 返回绝对偏差的加权中位数
     return weighted_median(abs_deviations, weights)
+
+
+def resolve_effective_log_mad(mad: float) -> float:
+    """返回 log Modified Z-score 计算使用的有效 MAD。"""
+    if pd.isna(mad):
+        return np.nan
+
+    # 当大量高权重工单的单位成本几乎完全一致时，加权 MAD 会被压到接近 0。
+    # 这会把 1% 左右的正常波动放大成数万甚至数百万分，偏离人工复核直觉。
+    return max(float(mad), MIN_LOG_MAD)
 
 
 WORK_ORDER_OUTPUT_COLUMNS = [
@@ -347,9 +359,10 @@ def build_anomaly_sheet(
             weights_array = valid_weights.to_numpy()
 
             median = weighted_median(values_array, weights_array)
-            mad = weighted_mad(values_array, weights_array, median)
+            raw_mad = weighted_mad(values_array, weights_array, median)
+            mad = resolve_effective_log_mad(raw_mad)
 
-            if pd.isna(mad) or mad == 0:
+            if pd.isna(mad):
                 continue
 
             scores = 0.6745 * (valid_values - median) / mad

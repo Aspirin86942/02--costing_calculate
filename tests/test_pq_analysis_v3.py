@@ -17,6 +17,12 @@ from src.analytics.fact_builder import (
     QTY_TOTAL_MATCH,
 )
 from src.analytics.qty_enricher import build_report_artifacts
+from src.analytics.table_rendering import (
+    DOC_TYPE_NORMAL_LABEL,
+    DOC_TYPE_REWORK_LABEL,
+    DOC_TYPE_UNKNOWN_LABEL,
+    map_doc_type_to_scope_label,
+)
 
 
 def _build_base_detail_df() -> pd.DataFrame:
@@ -401,8 +407,12 @@ def test_build_report_artifacts_work_order_sheet_adds_production_scope_column() 
     anomaly_df = artifacts.work_order_sheet.data
 
     assert anomaly_df.columns.tolist()[7:10] == ['生产类型', '基本单位', '本期完工数量']
-    assert anomaly_df.loc[anomaly_df['工单编号'] == 'WO-N1', '生产类型'].iloc[0] == '正常生产'
-    assert anomaly_df.loc[anomaly_df['工单编号'] == 'WO-U1', '生产类型'].iloc[0] == '未归类'
+    assert anomaly_df.loc[anomaly_df['工单编号'] == 'WO-N1', '生产类型'].iloc[0] == DOC_TYPE_NORMAL_LABEL
+    assert anomaly_df.loc[anomaly_df['工单编号'] == 'WO-U1', '生产类型'].iloc[0] == DOC_TYPE_UNKNOWN_LABEL
+
+
+def test_map_doc_type_to_scope_label_maps_rework_doc_type() -> None:
+    assert map_doc_type_to_scope_label('汇报入库-返工生产') == DOC_TYPE_REWORK_LABEL
 
 
 def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> None:
@@ -477,7 +487,7 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     anomaly_df = artifacts.work_order_sheet.data
     row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-U1'].iloc[0]
 
-    assert row['生产类型'] == '未归类'
+    assert row['生产类型'] == DOC_TYPE_UNKNOWN_LABEL
     assert row['是否可参与分析'] == '否'
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
@@ -595,7 +605,7 @@ def test_build_report_artifacts_marks_missing_doc_type_column_as_not_analyzable(
     anomaly_df = artifacts.work_order_sheet.data
     row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-M1'].iloc[0]
 
-    assert row['生产类型'] == '未归类'
+    assert row['生产类型'] == DOC_TYPE_UNKNOWN_LABEL
     assert row['是否可参与分析'] == '否'
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''

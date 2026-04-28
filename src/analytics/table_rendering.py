@@ -73,6 +73,7 @@ DOC_TYPE_SPLIT_SCOPE_MODE = 'doc_type_split'
 DOC_TYPE_SPLIT_SCOPE_LABELS: tuple[str, ...] = ('全部', '正常生产', '返工生产')
 DOC_TYPE_NORMAL_LABEL = '正常生产'
 DOC_TYPE_REWORK_LABEL = '返工生产'
+DOC_TYPE_UNKNOWN_LABEL = '未归类'
 DOC_TYPE_TO_SECTION_LABEL: dict[str, str] = {
     '汇报入库-普通生产': DOC_TYPE_NORMAL_LABEL,
     '直接入库-普通生产': DOC_TYPE_NORMAL_LABEL,
@@ -300,7 +301,7 @@ def build_product_anomaly_sections(
                 section_label=DOC_TYPE_SPLIT_SCOPE_LABELS[0],
             )
         )
-        scope_labels = product_frame['doc_type'].map(_map_doc_type_to_scope_label)
+        scope_labels = product_frame['doc_type'].map(map_doc_type_to_scope_label)
         for section_label in DOC_TYPE_SPLIT_SCOPE_LABELS[1:]:
             scoped_frame = product_frame.loc[scope_labels == section_label]
             if scoped_frame.empty:
@@ -405,13 +406,13 @@ def _build_product_anomaly_section(
     )
 
 
-def _map_doc_type_to_scope_label(doc_type: object) -> str | None:
+def map_doc_type_to_scope_label(doc_type: object) -> str:
     if doc_type is None or pd.isna(doc_type):
-        return None
+        return DOC_TYPE_UNKNOWN_LABEL
     normalized_doc_type = str(doc_type).strip()
     if not normalized_doc_type:
-        return None
-    return DOC_TYPE_TO_SECTION_LABEL.get(normalized_doc_type)
+        return DOC_TYPE_UNKNOWN_LABEL
+    return DOC_TYPE_TO_SECTION_LABEL.get(normalized_doc_type, DOC_TYPE_UNKNOWN_LABEL)
 
 
 def render_tables(fact_df: pd.DataFrame) -> dict[str, list[SectionBlock]]:

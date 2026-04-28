@@ -8,7 +8,14 @@ import pandas as pd
 import pytest
 
 from src.analytics.contracts import ProductAnomalySection, SectionBlock
-from src.analytics.table_rendering import build_product_anomaly_sections, render_tables
+from src.analytics.table_rendering import (
+    DOC_TYPE_NORMAL_LABEL,
+    DOC_TYPE_REWORK_LABEL,
+    DOC_TYPE_UNKNOWN_LABEL,
+    build_product_anomaly_sections,
+    map_doc_type_to_scope_label,
+    render_tables,
+)
 
 
 def _sample_fact_df() -> pd.DataFrame:
@@ -339,6 +346,15 @@ def test_build_product_anomaly_sections_doc_type_split_skips_empty_sections() ->
     )
 
     assert [section.section_label for section in sections] == ['全部', '正常生产']
+
+
+def test_map_doc_type_to_scope_label_returns_known_and_unknown_labels() -> None:
+    assert map_doc_type_to_scope_label('汇报入库-普通生产') == DOC_TYPE_NORMAL_LABEL
+    assert map_doc_type_to_scope_label('直接入库-普通生产') == DOC_TYPE_NORMAL_LABEL
+    assert map_doc_type_to_scope_label('汇报入库-返工生产') == DOC_TYPE_REWORK_LABEL
+    assert map_doc_type_to_scope_label('普通委外订单') == DOC_TYPE_UNKNOWN_LABEL
+    assert map_doc_type_to_scope_label('  ') == DOC_TYPE_UNKNOWN_LABEL
+    assert map_doc_type_to_scope_label(None) == DOC_TYPE_UNKNOWN_LABEL
 
 
 def test_build_product_anomaly_sections_doc_type_split_rejects_fact_df_input_contract() -> None:

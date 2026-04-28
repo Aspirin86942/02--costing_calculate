@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import math
 
 import numpy as np
 import pandas as pd
 
+from src.analytics import table_rendering
 from src.analytics.contracts import ConditionalFormatRule, FlatSheet
 from src.analytics.errors import append_reason
 from src.analytics.fact_builder import (
@@ -46,6 +48,25 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '关注': 'attention',
     '高度可疑': 'suspicious',
 }
+DOC_TYPE_NORMAL_LABEL = getattr(table_rendering, 'DOC_TYPE_NORMAL_LABEL', '正常生产')
+DOC_TYPE_REWORK_LABEL = getattr(table_rendering, 'DOC_TYPE_REWORK_LABEL', '返工生产')
+DOC_TYPE_UNKNOWN_LABEL = getattr(table_rendering, 'DOC_TYPE_UNKNOWN_LABEL', '未归类')
+ANALYZABLE_PRODUCTION_SCOPE_LABELS = {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
+_DOC_TYPE_SCOPE_LABEL_MAPPER: Callable[[object], object] | None = getattr(
+    table_rendering,
+    'map_doc_type_to_scope_label',
+    None,
+)
+if _DOC_TYPE_SCOPE_LABEL_MAPPER is None:
+    _DOC_TYPE_SCOPE_LABEL_MAPPER = getattr(table_rendering, '_map_doc_type_to_scope_label', None)
+
+
+def map_doc_type_to_scope_label(doc_type: object) -> str:
+    mapped_label = _DOC_TYPE_SCOPE_LABEL_MAPPER(doc_type) if _DOC_TYPE_SCOPE_LABEL_MAPPER else None
+    if mapped_label is None or pd.isna(mapped_label):
+        return DOC_TYPE_UNKNOWN_LABEL
+    normalized_label = str(mapped_label).strip()
+    return normalized_label or DOC_TYPE_UNKNOWN_LABEL
 
 
 def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
@@ -106,6 +127,7 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '规格型号',
     '工单编号',
     '工单行',
+    '生产类型',
     '基本单位',
     '本期完工数量',
     '总完工成本',
@@ -167,6 +189,7 @@ WORK_ORDER_COLUMN_TYPES = {
     '规格型号': 'text',
     '工单编号': 'text',
     '工单行': 'text',
+    '生产类型': 'text',
     '基本单位': 'text',
     '本期完工数量': 'qty',
     '总完工成本': 'amount',
@@ -282,9 +305,27 @@ def build_anomaly_sheet(
     anomaly_df = work_order_df.copy()
     reason_series = pd.Series('', index=anomaly_df.index, dtype='object')
 
-    anomaly_df['can_analyze'] = anomaly_df['completed_qty'].map(
+    if 'doc_type' in anomaly_df.columns:
+        anomaly_df['production_scope'] = anomaly_df['doc_type'].map(map_doc_type_to_scope_label)
+        has_non_empty_doc_type = anomaly_df['doc_type'].map(
+            lambda value: value is not None and not pd.isna(value) and str(value).strip() != ''
+        ).any()
+    else:
+        anomaly_df['production_scope'] = DOC_TYPE_UNKNOWN_LABEL
+        has_non_empty_doc_type = False
+
+    analyzable_scope_mask = anomaly_df['production_scope'].isin(ANALYZABLE_PRODUCTION_SCOPE_LABELS)
+    base_can_analyze = anomaly_df['completed_qty'].map(
         lambda value: value is not None and value > ZERO
     ) & anomaly_df['total_unit_cost'].map(lambda value: value is not None and value > ZERO)
+    scope_not_analyzable_mask = has_non_empty_doc_type & ~analyzable_scope_mask
+    anomaly_df['can_analyze'] = base_can_analyze & ~scope_not_analyzable_mask
+    # 未归类单据无法进入正常生产/返工生产异常池，需显式保留复核原因。
+    reason_series = append_reason(
+        reason_series,
+        scope_not_analyzable_mask,
+        '单据类型未归类，不参与正常生产/返工生产异常池',
+    )
 
     for metric_key, display_name, flag_column, _reason in ANOMALY_METRICS:
         log_column = f'log_{metric_key}'
@@ -298,9 +339,12 @@ def build_anomaly_sheet(
         for _, group_index in anomaly_df.groupby(['product_code', 'product_name'], sort=False).groups.items():
             metric_series = anomaly_df.loc[group_index, metric_key]
             qty_series = anomaly_df.loc[group_index, 'completed_qty']
+            can_analyze_series = anomaly_df.loc[group_index, 'can_analyze']
 
-            valid_mask = metric_series.map(lambda value: value is not None and value > ZERO) & qty_series.map(
-                lambda value: value is not None and value > ZERO
+            valid_mask = (
+                metric_series.map(lambda value: value is not None and value > ZERO)
+                & qty_series.map(lambda value: value is not None and value > ZERO)
+                & can_analyze_series
             )
             if not valid_mask.any():
                 continue
@@ -369,6 +413,9 @@ def build_anomaly_sheet(
             highest_source.loc[same_rank_same_score & ~prefer_total] = '多项同时异常'
 
     highest_source.loc[severity_rank <= 0] = ''
+    unknown_scope_mask = scope_not_analyzable_mask
+    overall_level.loc[unknown_scope_mask] = ''
+    highest_source.loc[unknown_scope_mask] = ''
     anomaly_df['异常等级'] = overall_level
     anomaly_df['异常主要来源'] = highest_source
 
@@ -380,6 +427,7 @@ def build_anomaly_sheet(
         'spec': '规格型号',
         'order_no': '工单编号',
         'order_line': '工单行',
+        'production_scope': '生产类型',
         'unit': '基本单位',
         'completed_qty': '本期完工数量',
         'completed_amount_total': '总完工成本',

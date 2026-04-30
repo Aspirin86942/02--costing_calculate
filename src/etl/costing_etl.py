@@ -13,7 +13,14 @@ import pandas as pd
 import polars as pl
 
 try:
-    from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
+    from src.analytics.contracts import (
+        AnalysisArtifacts,
+        FactBundle,
+        FlatSheet,
+        ProductAnomalySection,
+        QualityMetric,
+        WorkbookPayload,
+    )
     from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.month_filter import MonthFilterSummary, MonthRange
@@ -25,7 +32,14 @@ except ModuleNotFoundError:
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
+    from src.analytics.contracts import (
+        AnalysisArtifacts,
+        FactBundle,
+        FlatSheet,
+        ProductAnomalySection,
+        QualityMetric,
+        WorkbookPayload,
+    )
     from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
     from src.etl.month_filter import MonthFilterSummary, MonthRange
@@ -223,6 +237,7 @@ class CostingWorkbookETL:
         self.last_error_log_count: int = 0
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         self.last_month_filter_summary: MonthFilterSummary | None = None
+        self.last_stage_timings: dict[str, float] = {}
         ensure_directories()
 
     def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
@@ -235,6 +250,45 @@ class CostingWorkbookETL:
                 metric.value,
                 metric.description,
             )
+
+    def _reset_last_run_state(self) -> None:
+        """重置本次运行状态，避免失败后残留上一轮质量摘要。"""
+        self.last_quality_metrics = ()
+        self.last_error_log_count = 0
+        self.last_error_log_frame = pd.DataFrame()
+        self.last_month_filter_summary = None
+        self.last_stage_timings = {}
+
+    def _apply_payload_state(self, payload: WorkbookPayload) -> None:
+        """把 payload 中可观测结果同步到 ETL 实例，供 runner 输出。"""
+        self.last_month_filter_summary = self.pipeline.last_month_filter_summary
+        self.last_quality_metrics = payload.quality_metrics
+        self.last_error_log_count = payload.error_log_count
+        self.last_error_log_frame = payload.error_log_export.copy()
+        self.last_stage_timings = dict(payload.stage_timings)
+
+    def prepare_payload(self, input_path: Path) -> bool:
+        """构建 workbook payload 但不写出文件，用于 check-only 预检。"""
+        try:
+            self._reset_last_run_state()
+            logger.info('Preparing payload for file: %s', input_path)
+            payload = self.pipeline.build_workbook_payload(
+                input_path,
+                standalone_cost_items=self.standalone_cost_items,
+                product_anomaly_scope_mode=self.product_anomaly_scope_mode,
+                month_range=self.month_range,
+                artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
+            )
+            self._apply_payload_state(payload)
+            self._log_quality_metrics(self.last_quality_metrics)
+            logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
+            for stage_name, seconds in payload.stage_timings.items():
+                logger.info('Timing | stage=%s | seconds=%.3f', stage_name, seconds)
+            return True
+        except Exception as exc:
+            self.last_error_log_frame = pd.DataFrame()
+            logger.error('Payload preparation failed: %s', exc, exc_info=True)
+            return False
 
     def _load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
         """读取原始 workbook。"""
@@ -392,10 +446,7 @@ class CostingWorkbookETL:
         """Read one workbook and write split output workbook."""
         try:
             total_start = perf_counter()
-            self.last_quality_metrics = ()
-            self.last_error_log_count = 0
-            self.last_error_log_frame = pd.DataFrame()
-            self.last_month_filter_summary = None
+            self._reset_last_run_state()
             logger.info('Processing file: %s', input_path)
 
             payload = self.pipeline.build_workbook_payload(
@@ -405,10 +456,7 @@ class CostingWorkbookETL:
                 month_range=self.month_range,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
-            self.last_month_filter_summary = self.pipeline.last_month_filter_summary
-            self.last_quality_metrics = payload.quality_metrics
-            self.last_error_log_count = payload.error_log_count
-            self.last_error_log_frame = payload.error_log_export.copy()
+            self._apply_payload_state(payload)
             self._log_quality_metrics(self.last_quality_metrics)
             logger.info('Quality issue count | error_log_rows=%s', self.last_error_log_count)
             for stage_name, seconds in payload.stage_timings.items():

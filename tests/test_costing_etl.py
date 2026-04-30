@@ -375,6 +375,44 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     assert any('Timing | stage=export' in message for message in messages)
 
 
+def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+        month_range=MonthRange(start='2025-01', end='2025-03'),
+    )
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('P001',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),),
+        error_log_count=1,
+        stage_timings={'ingest': 0.1, 'normalize': 0.2},
+        error_log_export=pd.DataFrame([{'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT'}]),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload) as payload_mock,
+        patch.object(etl.workbook_writer, 'write_workbook_from_models') as writer_mock,
+    ):
+        assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
+
+    payload_mock.assert_called_once()
+    writer_mock.assert_not_called()
+    assert etl.last_quality_metrics == payload.quality_metrics
+    assert etl.last_error_log_count == 1
+    pd.testing.assert_frame_equal(etl.last_error_log_frame, payload.error_log_export)
+    assert etl.last_stage_timings == {'ingest': 0.1, 'normalize': 0.2}
+
+
 def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_models.xlsx'
     writer = CostingWorkbookWriter()

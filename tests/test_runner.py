@@ -147,6 +147,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         *,
         standalone_cost_items: tuple[str, ...],
         product_anomaly_scope_mode: str,
+        month_range=None,
         artifacts_transform=None,
     ):
         captured['input_path'] = input_path
@@ -243,3 +244,56 @@ def test_run_pipeline_uses_month_suffix_in_output_names(monkeypatch, capsys, tmp
     assert (processed_dir / 'GB-成本计算单_处理后_2025-01_2025-03_error_log.csv').exists()
     assert 'month_range=[2025-01, 2025-03]' in stdout
     assert 'month_filter_rows=3->2' in stdout
+
+
+def test_run_pipeline_succeeds_when_month_range_matches_no_rows(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'SK-成本计算单.xlsx'
+    input_file.touch()
+    processed_dir = tmp_path / 'processed'
+    processed_dir.mkdir()
+    config = PipelineConfig(
+        name='sk',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('SK-*.xlsx',),
+        product_order=(('DP.C.P0197AA', '动力线'),),
+        product_anomaly_scope_mode='legacy_single_scope',
+    )
+
+    month_range = MonthRange(start='2026-01', end='2026-03')
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range,
+        ) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame(columns=['row_id', 'issue_type', 'message'])
+            self.last_month_filter_summary = MonthFilterSummary(
+                month_range=month_range,
+                input_rows=5,
+                output_rows=0,
+                input_months=('2025-01', '2025-02'),
+                output_months=(),
+            )
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            output_path.write_text('ok', encoding='utf-8')
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, month_range=month_range)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert 'month_filter_rows=5->0' in stdout
+    assert 'months_after=-' in stdout
+    assert (processed_dir / 'SK-成本计算单_处理后_2026-01_2026-03.xlsx').exists()
+    assert (processed_dir / 'SK-成本计算单_处理后_2026-01_2026-03_error_log.csv').exists()

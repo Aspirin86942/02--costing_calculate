@@ -53,6 +53,7 @@ def build_report_artifacts(
     df_qty: pd.DataFrame | pl.DataFrame,
     standalone_cost_items: tuple[str, ...] | list[str] | None = DEFAULT_STANDALONE_COST_ITEMS,
     product_anomaly_scope_mode: str = 'legacy_single_scope',
+    month_filter_empty_result: bool = False,
 ) -> AnalysisArtifacts:
     """构建 V3 报表所需的全部分析产物（Polars 构建 + pandas 兼容输出）。"""
     validated_scope_mode = normalize_product_anomaly_scope_mode(product_anomaly_scope_mode)
@@ -103,6 +104,7 @@ def build_report_artifacts(
         work_order_sheet.data,
         filtered_invalid_qty_count,
         filtered_missing_total_amount_count,
+        month_filter_empty_result=month_filter_empty_result,
     )
     error_log = concat_error_logs(error_frames)
 

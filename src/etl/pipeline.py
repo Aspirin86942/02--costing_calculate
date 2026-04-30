@@ -234,6 +234,7 @@ class CostingEtlPipeline:
             split_result.qty_df,
             standalone_cost_items=standalone_cost_items,
             product_anomaly_scope_mode=product_anomaly_scope_mode,
+            month_filter_empty_result=bool(month_filter_summary is not None and month_filter_summary.output_rows == 0),
         )
         if artifacts_transform is not None:
             artifacts = artifacts_transform(artifacts)

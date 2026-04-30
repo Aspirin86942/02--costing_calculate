@@ -41,12 +41,14 @@ def build_quality_log_text(
         f'error_log_count={error_log_count}',
     ]
     if month_filter_summary is not None:
+        months_before = ','.join(month_filter_summary.input_months) or '-'
+        months_after = ','.join(month_filter_summary.output_months) or '-'
         lines.extend(
             [
                 f'month_range={month_filter_summary.month_range.describe()}',
                 f'month_filter_rows={month_filter_summary.input_rows}->{month_filter_summary.output_rows}',
-                f'months_before={",".join(month_filter_summary.input_months)}',
-                f'months_after={",".join(month_filter_summary.output_months)}',
+                f'months_before={months_before}',
+                f'months_after={months_after}',
             ]
         )
     lines.extend(['', '[quality_metrics]'])
@@ -78,15 +80,13 @@ def run_pipeline(config: PipelineConfig, month_range: MonthRange | None = None) 
     input_file = input_files[0]
     config.processed_dir.mkdir(parents=True, exist_ok=True)
     output_file, error_log_csv_file = _build_output_paths(config.processed_dir, input_file, month_range)
-    etl_kwargs = {
-        'skip_rows': 2,
-        'product_order': config.product_order,
-        'standalone_cost_items': config.standalone_cost_items,
-        'product_anomaly_scope_mode': config.product_anomaly_scope_mode,
-    }
-    if month_range is not None:
-        etl_kwargs['month_range'] = month_range
-    etl = CostingWorkbookETL(**etl_kwargs)
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=config.product_order,
+        standalone_cost_items=config.standalone_cost_items,
+        product_anomaly_scope_mode=config.product_anomaly_scope_mode,
+        month_range=month_range,
+    )
 
     if not etl.process_file(input_file, output_file):
         logger.error('处理失败: %s', input_file.name)

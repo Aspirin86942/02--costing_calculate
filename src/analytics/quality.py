@@ -16,11 +16,17 @@ def build_quality_metrics(
     analysis_df: pd.DataFrame | pl.DataFrame,
     filtered_invalid_qty_count: int,
     filtered_missing_total_amount_count: int,
+    month_filter_empty_result: bool = False,
 ) -> tuple[QualityMetric, ...]:
     """构建数据质量指标对象，避免将质量结果固化为 workbook sheet。"""
     duplicate_count = _count_duplicate_keys(qty_sheet_df)
     dm_amount_null_rate = _null_rate(qty_sheet_df, QTY_DM_AMOUNT)
     analyzable_rate = _yes_rate(analysis_df, '是否可参与分析')
+    null_rate_value = 'N/A' if month_filter_empty_result else f'{dm_amount_null_rate:.2%}'
+    coverage_value = 'N/A' if month_filter_empty_result else f'{analyzable_rate:.2%}'
+    na_description = '月份过滤后无数据，指标不适用'
+    null_rate_description = na_description if month_filter_empty_result else '派生金额字段空值率'
+    coverage_description = na_description if month_filter_empty_result else '仅统计白名单产品且通过基础校验的工单'
 
     return (
         QualityMetric(
@@ -62,8 +68,8 @@ def build_quality_metrics(
         QualityMetric(
             category='空值率',
             metric='直接材料金额缺失率',
-            value=f'{dm_amount_null_rate:.2%}',
-            description='派生金额字段空值率',
+            value=null_rate_value,
+            description=null_rate_description,
         ),
         QualityMetric(
             category='唯一性检查',
@@ -74,8 +80,8 @@ def build_quality_metrics(
         QualityMetric(
             category='分析覆盖率',
             metric='可参与分析占比',
-            value=f'{analyzable_rate:.2%}',
-            description='仅统计白名单产品且通过基础校验的工单',
+            value=coverage_value,
+            description=coverage_description,
         ),
     )
 

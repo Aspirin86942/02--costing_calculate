@@ -70,7 +70,9 @@ def apply_month_range_to_normalized_frame(
 
     period_column = _resolve_period_column(normalized.frame)
     frame = normalized.frame.with_columns(
-        pl.col(period_column).map_elements(normalize_period, return_dtype=pl.String, skip_nulls=False).alias('_period_key')
+        pl.col(period_column)
+        .map_elements(normalize_period, return_dtype=pl.String, skip_nulls=False)
+        .alias('_period_key')
     )
     input_months = tuple(sorted({value for value in frame['_period_key'].to_list() if value}))
 

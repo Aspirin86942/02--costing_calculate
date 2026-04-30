@@ -99,6 +99,25 @@ def _build_base_qty_df(*, total_amount: int) -> pd.DataFrame:
     )
 
 
+def test_count_filtered_qty_rows_uses_polars_without_to_dicts(monkeypatch) -> None:
+    from src.analytics import qty_enricher
+
+    qty_df = pl.DataFrame(
+        {
+            '本期完工数量': ['10', '0', None, '5'],
+            '本期完工金额': ['100', '0', '50', None],
+        }
+    )
+
+    monkeypatch.setattr(
+        pl.DataFrame,
+        'to_dicts',
+        lambda self: (_ for _ in ()).throw(AssertionError('must stay in Polars')),
+    )
+
+    assert qty_enricher._count_filtered_qty_rows(qty_df) == (2, 1)
+
+
 def test_build_report_artifacts_enriches_qty_sheet() -> None:
     """测试数量页补强金额、单位成本和校验字段。"""
     df_detail = _build_base_detail_df()

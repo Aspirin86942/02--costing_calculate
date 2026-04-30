@@ -183,17 +183,33 @@ def _build_qty_output_columns(
 
 
 def _count_filtered_qty_rows(qty_df: pl.DataFrame) -> tuple[int, int]:
-    qty_pd = _polars_to_pandas(qty_df)
-    if qty_pd.empty:
+    if qty_df.is_empty():
         return 0, 0
 
-    completed_qty = qty_pd['本期完工数量'].map(to_decimal)
-    completed_amount_total = qty_pd['本期完工金额'].map(to_decimal)
-    valid_completed_qty_mask = completed_qty.map(lambda value: value is not None and value > ZERO)
-    missing_total_amount_mask = valid_completed_qty_mask & completed_amount_total.isna()
-    filtered_invalid_qty_count = int((~valid_completed_qty_mask).sum())
-    filtered_missing_total_amount_count = int(missing_total_amount_mask.sum())
-    return filtered_invalid_qty_count, filtered_missing_total_amount_count
+    normalized = qty_df.with_columns(
+        [
+            pl.col('本期完工数量')
+            .cast(pl.String, strict=False)
+            .str.strip_chars()
+            .cast(pl.Decimal(38, 28), strict=False)
+            .alias('_completed_qty_for_count'),
+            pl.col('本期完工金额')
+            .cast(pl.String, strict=False)
+            .str.strip_chars()
+            .cast(pl.Decimal(38, 28), strict=False)
+            .alias('_completed_amount_for_count'),
+        ]
+    )
+    valid_qty_expr = pl.col('_completed_qty_for_count').is_not_null() & (pl.col('_completed_qty_for_count') > ZERO)
+    result = normalized.select(
+        [
+            (~valid_qty_expr).sum().alias('filtered_invalid_qty_count'),
+            (valid_qty_expr & pl.col('_completed_amount_for_count').is_null())
+            .sum()
+            .alias('filtered_missing_total_amount_count'),
+        ]
+    ).row(0)
+    return int(result[0]), int(result[1])
 
 
 def _decimal_or_zero(value: object) -> object:

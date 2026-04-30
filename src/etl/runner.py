@@ -4,7 +4,10 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
+import pandas as pd
+
 from src.analytics.contracts import QualityMetric
+from src.analytics.summary import build_summary_payload, write_summary_json
 from src.config.pipelines import PipelineConfig
 from src.etl.costing_etl import CostingWorkbookETL
 from src.etl.month_filter import MonthFilterSummary, MonthRange
@@ -96,11 +99,16 @@ def write_error_log_csv(*, output_path: Path, error_log_frame) -> None:
     error_log_frame.to_csv(output_path, index=False, encoding='utf-8-sig')
 
 
-def _build_output_paths(processed_dir: Path, input_file: Path, month_range: MonthRange | None) -> tuple[Path, Path]:
+def _build_output_paths(
+    processed_dir: Path,
+    input_file: Path,
+    month_range: MonthRange | None,
+) -> tuple[Path, Path, Path]:
     suffix = '' if month_range is None or not month_range.output_suffix() else f'_{month_range.output_suffix()}'
     workbook_path = processed_dir / f'{input_file.stem}_处理后{suffix}.xlsx'
     error_log_path = processed_dir / f'{input_file.stem}_处理后{suffix}_error_log.csv'
-    return workbook_path, error_log_path
+    summary_path = processed_dir / f'{input_file.stem}_处理后{suffix}_summary.json'
+    return workbook_path, error_log_path, summary_path
 
 
 def run_pipeline(
@@ -120,7 +128,7 @@ def run_pipeline(
     input_file = input_files[0]
     if not check_only:
         config.processed_dir.mkdir(parents=True, exist_ok=True)
-    output_file, error_log_csv_file = _build_output_paths(config.processed_dir, input_file, month_range)
+    output_file, error_log_csv_file, summary_file = _build_output_paths(config.processed_dir, input_file, month_range)
     etl = CostingWorkbookETL(
         skip_rows=2,
         product_order=config.product_order,
@@ -163,6 +171,18 @@ def run_pipeline(
         return 1
 
     write_error_log_csv(output_path=error_log_csv_file, error_log_frame=etl.last_error_log_frame)
+    summary_payload = build_summary_payload(
+        pipeline_name=config.name,
+        input_path=input_file,
+        output_path=output_file,
+        error_log_path=error_log_csv_file,
+        error_log_count=etl.last_error_log_count,
+        quality_metrics=etl.last_quality_metrics,
+        error_log_frame=etl.last_error_log_frame,
+        work_order_sheet_frame=getattr(etl, 'last_work_order_sheet_frame', pd.DataFrame()),
+        month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
+    )
+    write_summary_json(summary_file, summary_payload)
     quality_log = build_quality_log_text(
         pipeline_name=config.name,
         input_path=input_file,

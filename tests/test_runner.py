@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -357,6 +358,55 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         payload.error_log_export,
         check_dtype=False,
     )
+
+
+def test_run_pipeline_writes_summary_json_after_success(monkeypatch, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.touch()
+    processed_dir = tmp_path / 'processed'
+    processed_dir.mkdir()
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+            ensure_output_directories=True,
+        ) -> None:
+            self.last_quality_metrics = (
+                QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),
+            )
+            self.last_error_log_count = 1
+            self.last_error_log_frame = pd.DataFrame([{'issue_type': 'MISSING_AMOUNT'}])
+            self.last_work_order_sheet_frame = pd.DataFrame([{'异常等级': '关注', '异常主要来源': '材料异常'}])
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            output_path.write_text('ok', encoding='utf-8')
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    assert run_pipeline(config) == 0
+
+    summary_path = processed_dir / 'GB-成本计算单_处理后_summary.json'
+    payload = json.loads(summary_path.read_text(encoding='utf-8'))
+    assert payload['pipeline'] == 'gb'
+    assert payload['issue_type_counts'] == {'MISSING_AMOUNT': 1}
+    assert payload['anomaly_level_counts'] == {'关注': 1}
 
 
 def test_run_pipeline_uses_month_suffix_in_output_names(monkeypatch, capsys, tmp_path) -> None:

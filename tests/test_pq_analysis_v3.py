@@ -1,5 +1,6 @@
 """测试 V3 分析数据逻辑。"""
 
+import math
 from decimal import Decimal
 
 import pandas as pd
@@ -161,9 +162,7 @@ def test_build_fact_bundle_cost_bucket_mapping_without_python_udf(monkeypatch) -
     monkeypatch.setattr(fact_builder, 'map_broad_cost_bucket', original_map_broad)
     monkeypatch.setattr(fact_builder, 'map_component_bucket', original_map_component)
 
-    assert bundle.work_order_fact.select(['dm_amount', 'moh_amount', 'moh_labor_amount']).to_dict(
-        as_series=False
-    ) == {
+    assert bundle.work_order_fact.select(['dm_amount', 'moh_amount', 'moh_labor_amount']).to_dict(as_series=False) == {
         'dm_amount': [Decimal('100.0000000000000000000000000000')],
         'moh_amount': [Decimal('20.0000000000000000000000000000')],
         'moh_labor_amount': [Decimal('20.0000000000000000000000000000')],
@@ -587,6 +586,11 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
     assert row['Modified Z-score_总单位完工成本'] is None
+    assert row['异常池样本数'] is None
+    assert row['异常池中心log值'] is None
+    assert row['异常池原始MAD'] is None
+    assert row['异常池有效MAD'] is None
+    assert row['相对中位偏离'] is None
     assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
 
 
@@ -1221,6 +1225,11 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
     assert suspicious_row['总成本异常标记'] == '高度可疑'
     assert suspicious_row['异常等级'] == '高度可疑'
     assert suspicious_row['异常主要来源'] == '总成本异常'
+    assert suspicious_row['异常池样本数'] == 3
+    assert suspicious_row['异常池中心log值'] == pytest.approx(math.log(11))
+    assert suspicious_row['异常池原始MAD'] == pytest.approx(math.log(11) - math.log(10))
+    assert suspicious_row['异常池有效MAD'] == pytest.approx(math.log(11) - math.log(10))
+    assert suspicious_row['相对中位偏离'] == pytest.approx((50 / 11) - 1)
 
 
 def test_build_report_artifacts_scores_normal_and_rework_in_separate_pools() -> None:

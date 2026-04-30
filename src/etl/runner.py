@@ -56,6 +56,40 @@ def build_quality_log_text(
     return '\n'.join(lines)
 
 
+def _file_size_or_zero(path: Path) -> int:
+    return path.stat().st_size if path.exists() else 0
+
+
+def build_benchmark_log_text(
+    *,
+    input_path: Path,
+    output_path: Path,
+    error_log_path: Path,
+    error_log_count: int,
+    stage_timings: dict[str, float],
+    output_written: bool,
+) -> str:
+    """构建稳定 benchmark 文本，测试只依赖字段存在，不断言秒数快慢。"""
+    lines = [
+        '',
+        '[benchmark]',
+        f'output_written={str(output_written).lower()}',
+        f'input_size_bytes={_file_size_or_zero(input_path)}',
+        f'output_size_bytes={_file_size_or_zero(output_path) if output_written else 0}',
+        f'error_log_size_bytes={_file_size_or_zero(error_log_path) if output_written else 0}',
+        f'planned_output={output_path}',
+        f'planned_error_log={error_log_path}',
+        f'error_log_count={error_log_count}',
+    ]
+    total = 0.0
+    for stage_name in sorted(stage_timings):
+        seconds = float(stage_timings[stage_name])
+        total += seconds
+        lines.append(f'stage_{stage_name}_seconds={seconds:.3f}')
+    lines.append(f'stage_total_observed_seconds={total:.3f}')
+    return '\n'.join(lines)
+
+
 def write_error_log_csv(*, output_path: Path, error_log_frame) -> None:
     """将 error_log 明细独立导出为 CSV，避免拖慢 workbook 导出。"""
     # 这里使用 utf-8-sig，是为了让业务侧直接用 Excel 打开 CSV 时保持中文列名不乱码。
@@ -109,6 +143,17 @@ def run_pipeline(
         )
         print('mode=check-only')
         print(quality_log)
+        if benchmark:
+            print(
+                build_benchmark_log_text(
+                    input_path=input_file,
+                    output_path=output_file,
+                    error_log_path=error_log_csv_file,
+                    error_log_count=etl.last_error_log_count,
+                    stage_timings=getattr(etl, 'last_stage_timings', {}),
+                    output_written=False,
+                )
+            )
         logger.info('预检成功: %s', input_file.name)
         return 0
 
@@ -126,5 +171,16 @@ def run_pipeline(
         month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
     )
     print(quality_log)
+    if benchmark:
+        print(
+            build_benchmark_log_text(
+                input_path=input_file,
+                output_path=output_file,
+                error_log_path=error_log_csv_file,
+                error_log_count=etl.last_error_log_count,
+                stage_timings=getattr(etl, 'last_stage_timings', {}),
+                output_written=True,
+            )
+        )
     logger.info('处理成功: %s', output_file)
     return 0

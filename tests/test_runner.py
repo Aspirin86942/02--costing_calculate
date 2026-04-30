@@ -7,7 +7,7 @@ import pandas as pd
 from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
 from src.config.pipelines import PipelineConfig
 from src.etl.month_filter import MonthFilterSummary, MonthRange
-from src.etl.runner import find_input_files, run_pipeline
+from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
 
 
 class _FakeGlobDir:
@@ -155,6 +155,77 @@ def test_run_pipeline_check_only_builds_payload_without_writing_outputs(monkeypa
     assert 'mode=check-only' in stdout
     assert 'pipeline=gb' in stdout
     assert 'output=' in stdout
+    assert not processed_dir.exists()
+
+
+def test_build_benchmark_log_text_reports_stage_timings_and_file_sizes(tmp_path) -> None:
+    input_file = tmp_path / 'input.xlsx'
+    output_file = tmp_path / 'output.xlsx'
+    error_log_file = tmp_path / 'error_log.csv'
+    input_file.write_bytes(b'abc')
+    output_file.write_bytes(b'output')
+    error_log_file.write_bytes(b'csv')
+
+    text = build_benchmark_log_text(
+        input_path=input_file,
+        output_path=output_file,
+        error_log_path=error_log_file,
+        error_log_count=4,
+        stage_timings={'ingest': 0.1, 'normalize': 0.2},
+        output_written=True,
+    )
+
+    assert '[benchmark]' in text
+    assert 'input_size_bytes=3' in text
+    assert 'output_size_bytes=6' in text
+    assert 'error_log_size_bytes=3' in text
+    assert 'stage_ingest_seconds=0.100' in text
+    assert 'stage_normalize_seconds=0.200' in text
+    assert 'error_log_count=4' in text
+
+
+def test_run_pipeline_check_only_benchmark_prints_planned_output_without_writing(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'SK-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    processed_dir = tmp_path / 'processed'
+    config = PipelineConfig(
+        name='sk',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('SK-*.xlsx',),
+        product_order=(('DP.C.P0197AA', '动力线'),),
+        product_anomaly_scope_mode='legacy_single_scope',
+    )
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+        ) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame()
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'ingest': 0.5}
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, check_only=True, benchmark=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert '[benchmark]' in stdout
+    assert 'output_written=false' in stdout
+    assert 'input_size_bytes=3' in stdout
+    assert 'stage_ingest_seconds=0.500' in stdout
     assert not processed_dir.exists()
 
 

@@ -104,6 +104,60 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
     assert captured['product_anomaly_scope_mode'] == config.product_anomaly_scope_mode
 
 
+def test_run_pipeline_check_only_builds_payload_without_writing_outputs(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.write_text('placeholder', encoding='utf-8')
+    processed_dir = tmp_path / 'processed'
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    captured: dict[str, Path] = {}
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+        ) -> None:
+            self.last_quality_metrics = (
+                QualityMetric('行数勾稽', '产品数量统计输出行数', '3', '仅保留有效工单'),
+            )
+            self.last_error_log_count = 2
+            self.last_error_log_frame = pd.DataFrame([{'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT'}])
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'ingest': 0.1, 'normalize': 0.2}
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            captured['input_path'] = input_path
+            return True
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            raise AssertionError('check-only must not write workbook')
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, check_only=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert captured['input_path'] == input_file
+    assert 'mode=check-only' in stdout
+    assert 'pipeline=gb' in stdout
+    assert 'output=' in stdout
+    assert not processed_dir.exists()
+
+
 def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypatch, capsys, tmp_path) -> None:
     input_file = tmp_path / 'GB-成本计算单.xlsx'
     input_file.touch()

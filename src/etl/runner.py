@@ -69,7 +69,13 @@ def _build_output_paths(processed_dir: Path, input_file: Path, month_range: Mont
     return workbook_path, error_log_path
 
 
-def run_pipeline(config: PipelineConfig, month_range: MonthRange | None = None) -> int:
+def run_pipeline(
+    config: PipelineConfig,
+    month_range: MonthRange | None = None,
+    *,
+    check_only: bool = False,
+    benchmark: bool = False,
+) -> int:
     """执行指定管线，输出处理后的 workbook 并在控制台打印质量日志摘要。"""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     input_files = find_input_files(config)
@@ -78,7 +84,8 @@ def run_pipeline(config: PipelineConfig, month_range: MonthRange | None = None) 
         return 1
 
     input_file = input_files[0]
-    config.processed_dir.mkdir(parents=True, exist_ok=True)
+    if not check_only:
+        config.processed_dir.mkdir(parents=True, exist_ok=True)
     output_file, error_log_csv_file = _build_output_paths(config.processed_dir, input_file, month_range)
     etl = CostingWorkbookETL(
         skip_rows=2,
@@ -87,6 +94,23 @@ def run_pipeline(config: PipelineConfig, month_range: MonthRange | None = None) 
         product_anomaly_scope_mode=config.product_anomaly_scope_mode,
         month_range=month_range,
     )
+
+    if check_only:
+        if not etl.prepare_payload(input_file):
+            logger.error('预检失败: %s', input_file.name)
+            return 1
+        quality_log = build_quality_log_text(
+            pipeline_name=config.name,
+            input_path=input_file,
+            output_path=output_file,
+            error_log_count=etl.last_error_log_count,
+            quality_metrics=etl.last_quality_metrics,
+            month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
+        )
+        print('mode=check-only')
+        print(quality_log)
+        logger.info('预检成功: %s', input_file.name)
+        return 0
 
     if not etl.process_file(input_file, output_file):
         logger.error('处理失败: %s', input_file.name)

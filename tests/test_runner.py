@@ -6,6 +6,7 @@ import pandas as pd
 
 from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
 from src.config.pipelines import PipelineConfig
+from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.etl.runner import find_input_files, run_pipeline
 
 
@@ -65,6 +66,7 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
             product_order,
             standalone_cost_items,
             product_anomaly_scope_mode,
+            month_range=None,
         ) -> None:
             self.skip_rows = skip_rows
             self.product_order = product_order
@@ -74,6 +76,7 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
             )
             self.last_error_log_count = 0
             self.last_error_log_frame = pd.DataFrame(columns=['row_id', 'issue_type', 'message'])
+            self.last_month_filter_summary = None
             captured['standalone_cost_items'] = standalone_cost_items
             captured['product_anomaly_scope_mode'] = product_anomaly_scope_mode
 
@@ -184,3 +187,59 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         payload.error_log_export,
         check_dtype=False,
     )
+
+
+def test_run_pipeline_uses_month_suffix_in_output_names(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.touch()
+    processed_dir = tmp_path / 'processed'
+    processed_dir.mkdir()
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    captured: dict[str, object] = {}
+    month_range = MonthRange(start='2025-01', end='2025-03')
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range,
+        ) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame(columns=['row_id', 'issue_type', 'message'])
+            self.last_month_filter_summary = MonthFilterSummary(
+                month_range=month_range,
+                input_rows=3,
+                output_rows=2,
+                input_months=('2025-01', '2025-02', '2025-03'),
+                output_months=('2025-02', '2025-03'),
+            )
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            captured['output_path'] = output_path
+            output_path.write_text('ok', encoding='utf-8')
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, month_range=month_range)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert captured['output_path'] == processed_dir / 'GB-成本计算单_处理后_2025-01_2025-03.xlsx'
+    assert (processed_dir / 'GB-成本计算单_处理后_2025-01_2025-03_error_log.csv').exists()
+    assert 'month_range=[2025-01, 2025-03]' in stdout
+    assert 'month_filter_rows=3->2' in stdout

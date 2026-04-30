@@ -7,6 +7,7 @@ from pathlib import Path
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import PipelineConfig
 from src.etl.costing_etl import CostingWorkbookETL
+from src.etl.month_filter import MonthFilterSummary, MonthRange
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def build_quality_log_text(
     output_path: Path,
     error_log_count: int,
     quality_metrics: Iterable[QualityMetric],
+    month_filter_summary: MonthFilterSummary | None = None,
 ) -> str:
     """将质量校验结果整理为文本日志，避免再次塞回 Excel。"""
     lines = [
@@ -37,9 +39,17 @@ def build_quality_log_text(
         f'input={input_path}',
         f'output={output_path}',
         f'error_log_count={error_log_count}',
-        '',
-        '[quality_metrics]',
     ]
+    if month_filter_summary is not None:
+        lines.extend(
+            [
+                f'month_range={month_filter_summary.month_range.describe()}',
+                f'month_filter_rows={month_filter_summary.input_rows}->{month_filter_summary.output_rows}',
+                f'months_before={",".join(month_filter_summary.input_months)}',
+                f'months_after={",".join(month_filter_summary.output_months)}',
+            ]
+        )
+    lines.extend(['', '[quality_metrics]'])
     lines.extend(f'{metric.metric}={metric.value} | {metric.description}' for metric in quality_metrics)
     return '\n'.join(lines)
 
@@ -50,7 +60,14 @@ def write_error_log_csv(*, output_path: Path, error_log_frame) -> None:
     error_log_frame.to_csv(output_path, index=False, encoding='utf-8-sig')
 
 
-def run_pipeline(config: PipelineConfig) -> int:
+def _build_output_paths(processed_dir: Path, input_file: Path, month_range: MonthRange | None) -> tuple[Path, Path]:
+    suffix = '' if month_range is None or not month_range.output_suffix() else f'_{month_range.output_suffix()}'
+    workbook_path = processed_dir / f'{input_file.stem}_处理后{suffix}.xlsx'
+    error_log_path = processed_dir / f'{input_file.stem}_处理后{suffix}_error_log.csv'
+    return workbook_path, error_log_path
+
+
+def run_pipeline(config: PipelineConfig, month_range: MonthRange | None = None) -> int:
     """执行指定管线，输出处理后的 workbook 并在控制台打印质量日志摘要。"""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     input_files = find_input_files(config)
@@ -60,14 +77,16 @@ def run_pipeline(config: PipelineConfig) -> int:
 
     input_file = input_files[0]
     config.processed_dir.mkdir(parents=True, exist_ok=True)
-    output_file = config.processed_dir / f'{input_file.stem}_处理后.xlsx'
-    error_log_csv_file = config.processed_dir / f'{input_file.stem}_处理后_error_log.csv'
-    etl = CostingWorkbookETL(
-        skip_rows=2,
-        product_order=config.product_order,
-        standalone_cost_items=config.standalone_cost_items,
-        product_anomaly_scope_mode=config.product_anomaly_scope_mode,
-    )
+    output_file, error_log_csv_file = _build_output_paths(config.processed_dir, input_file, month_range)
+    etl_kwargs = {
+        'skip_rows': 2,
+        'product_order': config.product_order,
+        'standalone_cost_items': config.standalone_cost_items,
+        'product_anomaly_scope_mode': config.product_anomaly_scope_mode,
+    }
+    if month_range is not None:
+        etl_kwargs['month_range'] = month_range
+    etl = CostingWorkbookETL(**etl_kwargs)
 
     if not etl.process_file(input_file, output_file):
         logger.error('处理失败: %s', input_file.name)
@@ -80,6 +99,7 @@ def run_pipeline(config: PipelineConfig) -> int:
         output_path=output_file,
         error_log_count=etl.last_error_log_count,
         quality_metrics=etl.last_quality_metrics,
+        month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
     )
     print(quality_log)
     logger.info('处理成功: %s', output_file)

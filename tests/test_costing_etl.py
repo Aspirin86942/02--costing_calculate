@@ -1831,6 +1831,35 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
     assert build_artifacts_mock.call_args.kwargs['product_anomaly_scope_mode'] == GB_PIPELINE.product_anomaly_scope_mode
 
 
+def test_filter_product_summary_frame_by_whitelist_stays_in_polars(monkeypatch) -> None:
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(('P002', '产品B'), ('P001', '产品A')),
+        ensure_output_directories=False,
+    )
+    summary_frame = pl.DataFrame(
+        [
+            {'product_code': 'P001', 'product_name': '产品A', 'period': '2025-02', 'value': 1},
+            {'product_code': 'P003', 'product_name': '产品C', 'period': '2025-01', 'value': 3},
+            {'product_code': 'P002', 'product_name': '产品B', 'period': '2025-01', 'value': 2},
+        ]
+    )
+
+    monkeypatch.setattr(
+        pl.DataFrame,
+        'to_dicts',
+        lambda self: (_ for _ in ()).throw(AssertionError('must stay in Polars')),
+    )
+
+    result = etl._filter_product_summary_frame_by_whitelist(summary_frame)
+
+    assert result.select(['product_code', 'product_name', 'period']).to_dict(as_series=False) == {
+        'product_code': ['P002', 'P001'],
+        'product_name': ['产品B', '产品A'],
+        'period': ['2025-01', '2025-02'],
+    }
+
+
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:
     """真实链路校验：SK 应输出软件费用列，GB 不应输出软件费用列。"""
     input_path = tmp_path / 'input.xlsx'

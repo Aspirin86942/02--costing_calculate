@@ -380,6 +380,31 @@ class CostingWorkbookETL:
             key=lambda section: self._product_order_index[(str(section.product_code), str(section.product_name))],
         )
 
+    def _filter_product_summary_frame_by_whitelist(self, summary_frame: pl.DataFrame) -> pl.DataFrame:
+        """用 Polars join 过滤产品摘要事实，避免 pandas round-trip。"""
+        if summary_frame.is_empty() or not self.product_order:
+            return summary_frame
+
+        required_columns = {'product_code', 'product_name'}
+        if not required_columns.issubset(summary_frame.columns):
+            return summary_frame
+
+        whitelist = pl.DataFrame(
+            {
+                'product_code': [code for code, _name in self.product_order],
+                'product_name': [name for _code, name in self.product_order],
+                '_order_idx': list(range(len(self.product_order))),
+            }
+        )
+        sort_columns = ['_order_idx']
+        if 'period' in summary_frame.columns:
+            sort_columns.append('period')
+        return (
+            whitelist.join(summary_frame, on=['product_code', 'product_name'], how='inner')
+            .sort(sort_columns)
+            .drop('_order_idx')
+        )
+
     def _filter_fact_bundle_for_whitelist(self, fact_bundle: FactBundle | None) -> FactBundle | None:
         """在 presentation 前裁剪产品汇总事实，避免 SheetModel 层整表物化。"""
         if fact_bundle is None or not self.product_order:
@@ -389,18 +414,7 @@ class CostingWorkbookETL:
         if summary_frame.is_empty():
             return fact_bundle
 
-        summary_df = pd.DataFrame(summary_frame.to_dicts())
-        filtered_summary_df = self._filter_dataframe_by_whitelist(
-            summary_df,
-            code_col='product_code',
-            name_col='product_name',
-            sort_cols=['period'],
-        )
-        filtered_summary_frame = (
-            pl.DataFrame(schema=summary_frame.schema)
-            if filtered_summary_df.empty
-            else pl.DataFrame(filtered_summary_df.to_dict(orient='list'))
-        )
+        filtered_summary_frame = self._filter_product_summary_frame_by_whitelist(summary_frame)
         return FactBundle(
             detail_fact=fact_bundle.detail_fact,
             qty_fact=fact_bundle.qty_fact,

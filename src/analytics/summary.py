@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
 from src.analytics.contracts import QualityMetric
-from src.etl.month_filter import MonthFilterSummary
 
 
 def _value_counts(frame: pd.DataFrame, column_name: str, *, drop_blank: bool = True) -> dict[str, int]:
@@ -31,7 +31,7 @@ def _quality_metric_payload(quality_metrics: Iterable[QualityMetric]) -> dict[st
     }
 
 
-def _month_filter_payload(month_filter_summary: MonthFilterSummary | None) -> dict[str, object] | None:
+def _month_filter_payload(month_filter_summary: Any | None) -> dict[str, object] | None:
     if month_filter_summary is None:
         return None
     return {
@@ -53,7 +53,7 @@ def build_summary_payload(
     quality_metrics: Iterable[QualityMetric],
     error_log_frame: pd.DataFrame,
     work_order_sheet_frame: pd.DataFrame,
-    month_filter_summary: MonthFilterSummary | None,
+    month_filter_summary: Any | None,
 ) -> dict[str, object]:
     """从同一次 ETL 产物汇总审计摘要，避免重新计算另一套口径。"""
     return {

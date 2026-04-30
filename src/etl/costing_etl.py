@@ -16,6 +16,7 @@ try:
     from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
     from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
+    from src.etl.month_filter import MonthFilterSummary, MonthRange
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
 except ModuleNotFoundError:
@@ -27,6 +28,7 @@ except ModuleNotFoundError:
     from src.analytics.contracts import AnalysisArtifacts, FactBundle, FlatSheet, ProductAnomalySection, QualityMetric
     from src.config.pipelines import GB_PIPELINE, normalize_product_anomaly_scope_mode
     from src.config.settings import GB_PROCESSED_DIR, GB_RAW_DIR, ensure_directories
+    from src.etl.month_filter import MonthFilterSummary, MonthRange
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
 
@@ -176,9 +178,11 @@ class CostingWorkbookETL:
         product_order: tuple[tuple[str, str], ...] | None = None,
         standalone_cost_items: tuple[str, ...] | None = None,
         product_anomaly_scope_mode: str | None = None,
+        month_range: MonthRange | None = None,
     ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
+        self.month_range = month_range
         base_order = GB_PIPELINE.product_order if product_order is None else product_order
         normalized_order = tuple((str(code), str(name)) for code, name in base_order)
         self.product_order: tuple[tuple[str, str], ...] = normalized_order
@@ -218,6 +222,7 @@ class CostingWorkbookETL:
         self.last_quality_metrics: tuple[QualityMetric, ...] = ()
         self.last_error_log_count: int = 0
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
+        self.last_month_filter_summary: MonthFilterSummary | None = None
         ensure_directories()
 
     def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
@@ -390,14 +395,17 @@ class CostingWorkbookETL:
             self.last_quality_metrics = ()
             self.last_error_log_count = 0
             self.last_error_log_frame = pd.DataFrame()
+            self.last_month_filter_summary = None
             logger.info('Processing file: %s', input_path)
 
             payload = self.pipeline.build_workbook_payload(
                 input_path,
                 standalone_cost_items=self.standalone_cost_items,
                 product_anomaly_scope_mode=self.product_anomaly_scope_mode,
+                month_range=self.month_range,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
+            self.last_month_filter_summary = self.pipeline.last_month_filter_summary
             self.last_quality_metrics = payload.quality_metrics
             self.last_error_log_count = payload.error_log_count
             self.last_error_log_frame = payload.error_log_export.copy()

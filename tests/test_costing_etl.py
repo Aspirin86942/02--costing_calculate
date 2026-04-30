@@ -25,6 +25,7 @@ from src.analytics.presentation_builder import build_sheet_models, dataframe_to_
 from src.analytics.qty_enricher import build_report_artifacts
 from src.config.pipelines import GB_PIPELINE
 from src.etl.costing_etl import CostingWorkbookETL
+from src.etl.month_filter import MonthRange
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
 from tests.contracts._workbook_contract_helper import extract_highlight_semantics
@@ -1610,6 +1611,25 @@ def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(t
     assert payload_mock.call_count == 1
     assert payload_mock.call_args.kwargs['standalone_cost_items'] == ('委外加工费', '软件费用')
     assert payload_mock.call_args.kwargs['product_anomaly_scope_mode'] == 'doc_type_split'
+
+
+def test_process_file_passes_month_range_to_pipeline_payload_builder(tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(skip_rows=2, month_range=MonthRange(start='2025-02', end='2025-03'))
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={},
+        error_log_export=pd.DataFrame(),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload) as payload_mock,
+        patch.object(etl.workbook_writer, 'write_workbook_from_models'),
+    ):
+        assert etl.process_file(tmp_path / 'input.xlsx', tmp_path / 'output.xlsx') is True
+
+    assert payload_mock.call_args.kwargs['month_range'] == MonthRange(start='2025-02', end='2025-03')
 
 
 def test_process_file_filters_whitelist_before_presentation_and_preserves_numeric_order_line_sort(tmp_path) -> None:

@@ -21,6 +21,7 @@ from src.analytics.contracts import (
 )
 from src.analytics.presentation_builder import build_sheet_models
 from src.analytics.qty_enricher import build_report_artifacts
+from src.etl.month_filter import MonthFilterSummary, MonthRange, apply_month_range_to_normalized_frame
 from src.etl.stages.cleaners import forward_fill_with_rules, remove_total_rows
 from src.etl.stages.column_resolution import infer_rename_map, resolve_columns
 from src.etl.stages.normalizer import build_normalized_cost_frame
@@ -95,6 +96,7 @@ class CostingEtlPipeline:
         self.vendor_columns = vendor_columns
         self.integrated_workshop_name = integrated_workshop_name
         self.logger = logger
+        self.last_month_filter_summary: MonthFilterSummary | None = None
 
     def load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
         """读取旧 ETL 路径需要的 pandas DataFrame。"""
@@ -205,10 +207,12 @@ class CostingEtlPipeline:
         *,
         standalone_cost_items: tuple[str, ...],
         product_anomaly_scope_mode: str = 'legacy_single_scope',
+        month_range: MonthRange | None = None,
         artifacts_transform: Callable[[AnalysisArtifacts], AnalysisArtifacts] | None = None,
     ) -> WorkbookPayload:
         """按全链路 Polars 路径构建 workbook payload。"""
         stage_timings: dict[str, float] = {}
+        self.last_month_filter_summary = None
 
         ingest_start = perf_counter()
         raw_workbook = self.load_raw_workbook_frame(input_path)
@@ -216,6 +220,8 @@ class CostingEtlPipeline:
 
         normalize_start = perf_counter()
         normalized_frame = self.build_normalized_cost_frame(raw_workbook)
+        normalized_frame, month_filter_summary = apply_month_range_to_normalized_frame(normalized_frame, month_range)
+        self.last_month_filter_summary = month_filter_summary
         stage_timings['normalize'] = perf_counter() - normalize_start
 
         fact_start = perf_counter()

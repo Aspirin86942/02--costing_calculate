@@ -24,6 +24,7 @@ from src.analytics.contracts import (
     WorkbookPayload,
 )
 from src.etl.costing_etl import CostingWorkbookETL
+from src.etl.month_filter import MonthRange
 from src.etl.stages.normalizer import build_normalized_cost_frame
 from src.etl.stages.reader import load_raw_workbook
 from src.etl.stages.splitter import split_normalized_frames
@@ -504,3 +505,71 @@ def test_pipeline_forward_fill_with_rules_pandas_path_does_not_call_pl_from_pand
     assert result.loc[1, '产品编码'] == 'P001'
     assert pd.isna(result.loc[1, '供应商编码'])
     assert pd.isna(result.loc[1, '供应商名称'])
+
+
+def test_build_workbook_payload_filters_normalized_frame_before_split(monkeypatch, tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(skip_rows=2)
+    raw = RawWorkbookFrame(
+        sheet_name='成本计算单',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年1期', '2025年2期', '2025年3期'], 'column_1': ['P001', 'P001', 'P001']}),
+    )
+    normalized = NormalizedCostFrame(
+        frame=pl.DataFrame(
+            {
+                '年期': ['2025年1期', '2025年2期', '2025年3期'],
+                '月份': ['2025年01期', '2025年02期', '2025年03期'],
+                '产品编码': ['P001', 'P001', 'P001'],
+            }
+        ),
+        key_columns=('月份', '产品编码'),
+    )
+
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(etl.pipeline, 'load_raw_workbook_frame', lambda input_path: raw)
+    monkeypatch.setattr(etl.pipeline, 'build_normalized_cost_frame', lambda raw_workbook: normalized)
+
+    def _fake_split(normalized_frame: NormalizedCostFrame) -> SplitResult:
+        seen['months'] = normalized_frame.frame['月份'].to_list()
+        return SplitResult(
+            detail_df=pl.DataFrame({'月份': ['2025年02期']}),
+            qty_df=pl.DataFrame({'月份': ['2025年02期']}),
+        )
+
+    monkeypatch.setattr(etl.pipeline, 'split_normalized_frames', _fake_split)
+    monkeypatch.setattr(
+        'src.etl.pipeline.build_report_artifacts',
+        lambda *args, **kwargs: AnalysisArtifacts(
+            fact_df=pd.DataFrame(),
+            qty_sheet_df=pd.DataFrame({'月份': ['2025年02期']}),
+            work_order_sheet=FlatSheet(data=pd.DataFrame({'月份': ['2025年02期']}), column_types={'月份': 'text'}),
+            product_anomaly_sections=[],
+            quality_metrics=(),
+            error_log=pd.DataFrame(columns=['row_id', 'issue_type', 'message']),
+        ),
+    )
+    monkeypatch.setattr(
+        'src.etl.pipeline.build_sheet_models',
+        lambda **kwargs: (
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('月份',),
+                rows_factory=lambda: iter([('2025年02期',)]),
+                column_types={'月份': 'text'},
+                number_formats={},
+            ),
+        ),
+    )
+
+    payload = etl.pipeline.build_workbook_payload(
+        tmp_path / 'input.xlsx',
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='legacy_single_scope',
+        month_range=MonthRange(start='2025-02', end='2025-03'),
+    )
+
+    assert seen['months'] == ['2025年02期', '2025年03期']
+    assert etl.pipeline.last_month_filter_summary is not None
+    assert etl.pipeline.last_month_filter_summary.output_rows == 2
+    assert payload.sheet_models[0].sheet_name == '成本明细'

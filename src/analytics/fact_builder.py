@@ -253,6 +253,38 @@ def map_component_bucket(cost_item: object) -> str | None:
     return MOH_COMPONENT_MAP.get(str(cost_item).strip())
 
 
+def map_broad_cost_bucket_expr(column_name: str) -> pl.Expr:
+    """用 Polars 表达式映射三大类成本项目，避免逐行 Python UDF。"""
+    normalized = pl.col(column_name).cast(pl.String, strict=False).str.strip_chars()
+    return (
+        pl.when(normalized == '直接材料')
+        .then(pl.lit('direct_material'))
+        .when(normalized == '直接人工')
+        .then(pl.lit('direct_labor'))
+        .when(normalized.str.starts_with('制造费用'))
+        .then(pl.lit('moh'))
+        .otherwise(None)
+    )
+
+
+def map_component_bucket_expr(column_name: str) -> pl.Expr:
+    """用 Polars 表达式映射制造费用明细项，保持现有枚举口径。"""
+    normalized = pl.col(column_name).cast(pl.String, strict=False).str.strip_chars()
+    return (
+        pl.when(normalized == '制造费用_其他')
+        .then(pl.lit('moh_other_amount'))
+        .when(normalized == '制造费用-人工')
+        .then(pl.lit('moh_labor_amount'))
+        .when(normalized == '制造费用_机物料及低耗')
+        .then(pl.lit('moh_consumables_amount'))
+        .when(normalized == '制造费用_折旧')
+        .then(pl.lit('moh_depreciation_amount'))
+        .when(normalized == '制造费用_水电费')
+        .then(pl.lit('moh_utilities_amount'))
+        .otherwise(None)
+    )
+
+
 def build_join_key(df: pd.DataFrame, columns: list[str], *, normalizer) -> pd.Series:
     """构建工单级 join key。"""
     parts = [
@@ -544,10 +576,8 @@ def build_fact_bundle(
             [
                 pl.col(detail_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
                 pl.col('cost_item').cast(pl.String, strict=False).str.strip_chars().alias('normalized_cost_item'),
-                pl.col('cost_item').map_elements(map_broad_cost_bucket, return_dtype=pl.String).alias('cost_bucket'),
-                pl.col('cost_item')
-                .map_elements(map_component_bucket, return_dtype=pl.String)
-                .alias('component_bucket'),
+                map_broad_cost_bucket_expr('cost_item').alias('cost_bucket'),
+                map_component_bucket_expr('cost_item').alias('component_bucket'),
                 normalize_money_expr('completed_amount').alias('amount'),
             ]
         )

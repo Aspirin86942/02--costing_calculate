@@ -118,6 +118,58 @@ def test_count_filtered_qty_rows_uses_polars_without_to_dicts(monkeypatch) -> No
     assert qty_enricher._count_filtered_qty_rows(qty_df) == (2, 1)
 
 
+def test_build_fact_bundle_cost_bucket_mapping_without_python_udf(monkeypatch) -> None:
+    detail_df = pl.DataFrame(
+        {
+            '月份': ['2025年01期', '2025年01期', '2025年01期'],
+            '产品编码': ['P001', 'P001', 'P001'],
+            '产品名称': ['产品A', '产品A', '产品A'],
+            '工单编号': ['WO-001', 'WO-001', 'WO-001'],
+            '工单行号': ['1', '1', '1'],
+            '成本项目名称': ['直接材料', '制造费用-人工', '未知项目'],
+            '本期完工金额': ['100', '20', '5'],
+        }
+    )
+    qty_df = pl.DataFrame(
+        {
+            '月份': ['2025年01期'],
+            '产品编码': ['P001'],
+            '产品名称': ['产品A'],
+            '工单编号': ['WO-001'],
+            '工单行号': ['1'],
+            '本期完工数量': ['10'],
+            '本期完工金额': ['120'],
+        }
+    )
+
+    from src.analytics import fact_builder
+
+    original_map_broad = fact_builder.map_broad_cost_bucket
+    original_map_component = fact_builder.map_component_bucket
+
+    def _blocked_broad(value):
+        raise AssertionError('broad mapping should use Polars expressions')
+
+    def _blocked_component(value):
+        raise AssertionError('component mapping should use Polars expressions')
+
+    monkeypatch.setattr(fact_builder, 'map_broad_cost_bucket', _blocked_broad)
+    monkeypatch.setattr(fact_builder, 'map_component_bucket', _blocked_component)
+
+    bundle = fact_builder.build_fact_bundle(detail_df, qty_df, standalone_cost_items=('委外加工费',))
+
+    monkeypatch.setattr(fact_builder, 'map_broad_cost_bucket', original_map_broad)
+    monkeypatch.setattr(fact_builder, 'map_component_bucket', original_map_component)
+
+    assert bundle.work_order_fact.select(['dm_amount', 'moh_amount', 'moh_labor_amount']).to_dict(
+        as_series=False
+    ) == {
+        'dm_amount': [Decimal('100.0000000000000000000000000000')],
+        'moh_amount': [Decimal('20.0000000000000000000000000000')],
+        'moh_labor_amount': [Decimal('20.0000000000000000000000000000')],
+    }
+
+
 def test_build_report_artifacts_enriches_qty_sheet() -> None:
     """测试数量页补强金额、单位成本和校验字段。"""
     df_detail = _build_base_detail_df()

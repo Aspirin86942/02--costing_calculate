@@ -413,6 +413,24 @@ def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_pa
     assert etl.last_stage_timings == {'ingest': 0.1, 'normalize': 0.2}
 
 
+def test_prepare_payload_stores_work_order_sheet_for_summary(tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(skip_rows=2, product_order=(), ensure_output_directories=False)
+    work_order_export = pd.DataFrame([{'异常等级': '关注', '异常主要来源': '材料异常'}])
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={},
+        error_log_export=pd.DataFrame(),
+        work_order_sheet_export=work_order_export,
+    )
+
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
+        assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
+
+    pd.testing.assert_frame_equal(etl.last_work_order_sheet_frame, work_order_export)
+
+
 def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_models.xlsx'
     writer = CostingWorkbookWriter()

@@ -94,6 +94,7 @@ class WorkbookPayload:
     error_log_count: int
     stage_timings: Mapping[str, float]
     error_log_export: pd.DataFrame = field(default_factory=pd.DataFrame)
+    work_order_sheet_export: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 @dataclass

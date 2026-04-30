@@ -239,6 +239,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         self.last_month_filter_summary: MonthFilterSummary | None = None
         self.last_stage_timings: dict[str, float] = {}
+        self.last_work_order_sheet_frame: pd.DataFrame = pd.DataFrame()
         if ensure_output_directories:
             ensure_directories()
 
@@ -260,6 +261,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame = pd.DataFrame()
         self.last_month_filter_summary = None
         self.last_stage_timings = {}
+        self.last_work_order_sheet_frame = pd.DataFrame()
 
     def _apply_payload_state(self, payload: WorkbookPayload) -> None:
         """把 payload 中可观测结果同步到 ETL 实例，供 runner 输出。"""
@@ -268,6 +270,7 @@ class CostingWorkbookETL:
         self.last_error_log_count = payload.error_log_count
         self.last_error_log_frame = payload.error_log_export.copy()
         self.last_stage_timings = dict(payload.stage_timings)
+        self.last_work_order_sheet_frame = payload.work_order_sheet_export.copy()
 
     def prepare_payload(self, input_path: Path) -> bool:
         """构建 workbook payload 但不写出文件，用于 check-only 预检。"""

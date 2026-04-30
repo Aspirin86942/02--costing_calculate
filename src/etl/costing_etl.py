@@ -193,6 +193,7 @@ class CostingWorkbookETL:
         standalone_cost_items: tuple[str, ...] | None = None,
         product_anomaly_scope_mode: str | None = None,
         month_range: MonthRange | None = None,
+        ensure_output_directories: bool = True,
     ):
         # Excel原始数据通常有两行表头，默认跳过前两行
         self.skip_rows = skip_rows
@@ -238,7 +239,8 @@ class CostingWorkbookETL:
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         self.last_month_filter_summary: MonthFilterSummary | None = None
         self.last_stage_timings: dict[str, float] = {}
-        ensure_directories()
+        if ensure_output_directories:
+            ensure_directories()
 
     def _log_quality_metrics(self, quality_metrics: tuple[QualityMetric, ...]) -> None:
         """将质量指标结果写入日志，避免继续输出到 Excel。"""

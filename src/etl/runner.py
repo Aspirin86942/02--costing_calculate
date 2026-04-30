@@ -127,6 +127,7 @@ def run_pipeline(
         standalone_cost_items=config.standalone_cost_items,
         product_anomaly_scope_mode=config.product_anomaly_scope_mode,
         month_range=month_range,
+        ensure_output_directories=not check_only,
     )
 
     if check_only:

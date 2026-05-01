@@ -10,6 +10,8 @@
   - 直接人工价量比
   - 制造费用价量比
 - 输出审计日志 `error_log`（外部 `*_处理后_error_log.csv`，记录未映射项目、缺失值、勾稽异常）
+- 输出质量摘要 `*_处理后_summary.json`，汇总质量指标、`error_log` 计数、异常等级/异常来源计数与月份过滤摘要
+- 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 字段名提取和标准化
 
 ## 安装
@@ -24,6 +26,10 @@ python main.py gb
 
 # SK 管线
 python main.py sk
+
+# 预检 + benchmark（不写 workbook/error_log/summary）
+python main.py gb --check-only --benchmark
+python main.py sk --check-only --benchmark
 ```
 
 ## 输出说明
@@ -38,7 +44,9 @@ python main.py sk
 
 - 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
 - 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后_error_log.csv`
+- 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后_summary.json`
 - 质量指标摘要仅输出到控制台，不再生成 `*_处理后.log`
+- `--check-only` 只做预检与摘要，不写 workbook、`error_log.csv` 或 `summary.json`
 
 ## 分析输出口径
 - 价量分析粒度：`产品编码 + 月份 + 成本类别`
@@ -62,6 +70,7 @@ python main.py sk
   - 总体：按产品在整个统计期间内建总体，月份仅作为标签与汇总字段
   - 规则：仅对大于 0 的单位成本计算对数与 Modified Z-score，阈值为 `2.5/3.5`
   - `委外加工费` 与 `软件费用`（仅 `sk`）只展示金额和单位成本，不输出 `log`、`Modified Z-score` 和异常标记，也不参与异常等级和异常主要来源判定
+  - 解释字段：`异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`
 - `按产品异常值分析` 保留为兼容摘要页
   - 字段：总成本、完工数量、单位成本、直接材料/人工/制造费用的成本、单位成本、贡献率
   - 不再执行 IQR 检测，仅输出月度摘要数据
@@ -82,7 +91,7 @@ python main.py sk
   - `fact_builder.py` - fact 构建与 Decimal 工具
   - `qty_enricher.py` - 数量页补强与报表产物编排
   - `table_rendering.py` - 三大类价量宽表与兼容摘要页
-  - `anomaly.py` / `quality.py` / `errors.py` - 工单异常、质量校验、error_log 契约
+  - `anomaly.py` / `scoring.py` / `summary.py` / `quality.py` / `errors.py` - 工单异常、评分工具、质量摘要、error_log 契约
 - `src/etl/` - ETL 处理模块
   - `costing_etl.py` - 单个工作簿 ETL 主流程
   - `runner.py` - 管线调度、输入匹配与质量日志输出
@@ -113,10 +122,10 @@ conda run -n test python -c "import sys; print(sys.executable)"
 conda run -n test python -m pytest -q
 
 # 代码检查
-conda run -n test ruff check .
+conda run -n test python -m ruff check src tests
 
 # 代码格式化检查
-conda run -n test ruff format . --check
+conda run -n test python -m ruff format src tests --check
 ```
 
 ## Contract Baseline
@@ -135,6 +144,7 @@ conda run -n test ruff format . --check
 - `Costing_Calculate.py` - 原始清洗脚本
 - `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
 - `抓取所有字段脚本.py` - 字段提取脚本
+- `src/excel/sheet_writers.py` - legacy 写出实现，已删除，统一使用 `src/excel/fast_writer.py`
 
 ## 已移除
 - `Costing_Allocation.py` - 成本分摊脚本（已废弃）

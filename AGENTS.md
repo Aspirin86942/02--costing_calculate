@@ -3,11 +3,11 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Python ETL 工具：
-- `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`quality.py`、`errors.py`）
+- `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
 - `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
-- `src/excel/`: Excel 写出与样式（`styles.py`、`sheet_writers.py`、`workbook_writer.py`）
+- `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）
 - `src/config/`: 路径与目录配置（`settings.py`）
-- `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`、`test_etl_pipeline.py`）
+- `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`、`test_etl_pipeline.py`、`test_summary.py`、`test_weighted_zscore.py`）
 - `tests/contracts/`: workbook / error_log / CLI 契约测试
 - `tests/architecture/`: 模块依赖边界测试
 - `data/raw/{gb,sk}/`: 原始 Excel 输入
@@ -17,6 +17,8 @@
 
 ### Build / Test / Dev Commands
 - `python -m pip install -e .`: 可编辑模式安装
+- `python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook/error_log/summary 文件
+- `python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook/error_log/summary 文件
 - `python main.py gb`: 执行 GB 管线
 - `python main.py sk`: 执行 SK 管线
 - `python -m pytest tests -q`: 运行测试
@@ -61,6 +63,8 @@
 ### 当前业务规则（GB / SK 分析输出）
 - 每个处理后的工作簿默认输出以下 7 张 Sheet：`成本明细`、`产品数量统计`、`直接材料_价量比`、`直接人工_价量比`、`制造费用_价量比`、`按工单按产品异常值分析`、`按产品异常值分析`。
 - 每次处理额外输出 `*_处理后_error_log.csv`，用于承载可审计异常明细。
+- 每次处理额外输出 `*_处理后_summary.json`，用于承载质量指标、`error_log` 计数、异常等级/异常来源计数与月份过滤摘要。
+- 质量校验结果默认输出到控制台摘要，不再生成同名 `.log` 文件；`--check-only` 只做预检与摘要，不写 workbook、`error_log.csv` 或 `summary.json`。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
 - 分析页仅展示白名单产品，匹配规则为`产品编码 + 产品名称`双字段精确匹配。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
@@ -76,6 +80,7 @@
   - 仅对大于 0 的单位成本计算对数与 Modified Z-score
   - 异常阈值：`|score| <= 2.5`为正常，`2.5 < |score| <= 3.5`为关注，`|score| > 3.5`为高度可疑
   - 独立成本项只展示金额和单位成本，不输出`log`、`Modified Z-score`和异常标记，也不参与`异常等级`与`异常主要来源`判定；`gb`下仅`委外加工费`适用，`sk`下`委外加工费`和`软件费用`均适用
+  - 解释字段新增：`异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
 - 质量校验结果默认输出到控制台摘要（不再生成同名 `.log` 文件），至少包含行数勾稽、空值率、工单主键唯一性和分析覆盖率。
 - `委外加工费`不归属`制造费用`，不纳入三大类价量分析，也不因为“不参与三大类分析”写入`error_log`；它只在`产品数量统计`和`按工单按产品异常值分析`中展示，并参与总完工成本勾稽。
 - `软件费用`仅在`sk`管线按独立成本项处理：不归属`制造费用`，不纳入三大类价量分析，也不因为“不参与三大类分析”写入`error_log`；它只在`产品数量统计`和`按工单按产品异常值分析`中展示，并参与`sk`口径下的总完工成本勾稽。

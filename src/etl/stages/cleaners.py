@@ -18,9 +18,7 @@ def remove_total_rows(
 
     keep_expr: pl.Expr = pl.lit(True)
     for column in columns_to_check:
-        keep_expr = keep_expr & ~(
-            pl.col(column).cast(pl.String).str.contains('合计', literal=True).fill_null(False)
-        )
+        keep_expr = keep_expr & ~(pl.col(column).cast(pl.String).str.contains('合计', literal=True).fill_null(False))
     return frame.filter(keep_expr)
 
 
@@ -42,20 +40,20 @@ def forward_fill_with_rules(
 
     result = frame
     if normal_fill_columns:
-        result = result.with_columns([pl.col(column).fill_null(strategy='forward').alias(column) for column in normal_fill_columns])
+        result = result.with_columns(
+            [pl.col(column).fill_null(strategy='forward').alias(column) for column in normal_fill_columns]
+        )
 
     if not actual_vendor_columns:
         return result
 
     if cost_center_column not in result.columns:
-        return result.with_columns([pl.col(column).fill_null(strategy='forward').alias(column) for column in actual_vendor_columns])
+        return result.with_columns(
+            [pl.col(column).fill_null(strategy='forward').alias(column) for column in actual_vendor_columns]
+        )
 
     integrated_mask = (
-        pl.col(cost_center_column)
-        .cast(pl.String)
-        .str.strip_chars()
-        .eq(integrated_workshop_name)
-        .fill_null(False)
+        pl.col(cost_center_column).cast(pl.String).str.strip_chars().eq(integrated_workshop_name).fill_null(False)
     )
     vendor_exprs: list[pl.Expr] = []
     for column in actual_vendor_columns:

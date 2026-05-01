@@ -91,7 +91,7 @@ python main.py sk
   - `utils.py` - 工具函数
 - `main.py` - 仓库根目录统一入口
 - `src/excel/` - Excel 写出与样式模块
-  - `styles.py` / `sheet_writers.py` / `workbook_writer.py`
+  - `styles.py` / `fast_writer.py` / `workbook_writer.py`
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
   - `gb/` - GB 系列原始成本计算单

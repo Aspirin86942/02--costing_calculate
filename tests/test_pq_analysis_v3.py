@@ -1,5 +1,6 @@
 """测试 V3 分析数据逻辑。"""
 
+import math
 from decimal import Decimal
 
 import pandas as pd
@@ -97,6 +98,75 @@ def _build_base_qty_df(*, total_amount: int) -> pd.DataFrame:
             }
         ]
     )
+
+
+def test_count_filtered_qty_rows_uses_polars_without_to_dicts(monkeypatch) -> None:
+    from src.analytics import qty_enricher
+
+    qty_df = pl.DataFrame(
+        {
+            '本期完工数量': ['10', '0', None, '5'],
+            '本期完工金额': ['100', '0', '50', None],
+        }
+    )
+
+    monkeypatch.setattr(
+        pl.DataFrame,
+        'to_dicts',
+        lambda self: (_ for _ in ()).throw(AssertionError('must stay in Polars')),
+    )
+
+    assert qty_enricher._count_filtered_qty_rows(qty_df) == (2, 1)
+
+
+def test_build_fact_bundle_cost_bucket_mapping_without_python_udf(monkeypatch) -> None:
+    detail_df = pl.DataFrame(
+        {
+            '月份': ['2025年01期', '2025年01期', '2025年01期'],
+            '产品编码': ['P001', 'P001', 'P001'],
+            '产品名称': ['产品A', '产品A', '产品A'],
+            '工单编号': ['WO-001', 'WO-001', 'WO-001'],
+            '工单行号': ['1', '1', '1'],
+            '成本项目名称': ['直接材料', '制造费用-人工', '未知项目'],
+            '本期完工金额': ['100', '20', '5'],
+        }
+    )
+    qty_df = pl.DataFrame(
+        {
+            '月份': ['2025年01期'],
+            '产品编码': ['P001'],
+            '产品名称': ['产品A'],
+            '工单编号': ['WO-001'],
+            '工单行号': ['1'],
+            '本期完工数量': ['10'],
+            '本期完工金额': ['120'],
+        }
+    )
+
+    from src.analytics import fact_builder
+
+    original_map_broad = fact_builder.map_broad_cost_bucket
+    original_map_component = fact_builder.map_component_bucket
+
+    def _blocked_broad(value):
+        raise AssertionError('broad mapping should use Polars expressions')
+
+    def _blocked_component(value):
+        raise AssertionError('component mapping should use Polars expressions')
+
+    monkeypatch.setattr(fact_builder, 'map_broad_cost_bucket', _blocked_broad)
+    monkeypatch.setattr(fact_builder, 'map_component_bucket', _blocked_component)
+
+    bundle = fact_builder.build_fact_bundle(detail_df, qty_df, standalone_cost_items=('委外加工费',))
+
+    monkeypatch.setattr(fact_builder, 'map_broad_cost_bucket', original_map_broad)
+    monkeypatch.setattr(fact_builder, 'map_component_bucket', original_map_component)
+
+    assert bundle.work_order_fact.select(['dm_amount', 'moh_amount', 'moh_labor_amount']).to_dict(as_series=False) == {
+        'dm_amount': [Decimal('100.0000000000000000000000000000')],
+        'moh_amount': [Decimal('20.0000000000000000000000000000')],
+        'moh_labor_amount': [Decimal('20.0000000000000000000000000000')],
+    }
 
 
 def test_build_report_artifacts_enriches_qty_sheet() -> None:
@@ -516,6 +586,11 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
     assert row['Modified Z-score_总单位完工成本'] is None
+    assert row['异常池样本数'] is None
+    assert row['异常池中心log值'] is None
+    assert row['异常池原始MAD'] is None
+    assert row['异常池有效MAD'] is None
+    assert row['相对中位偏离'] is None
     assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
 
 
@@ -1150,6 +1225,11 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
     assert suspicious_row['总成本异常标记'] == '高度可疑'
     assert suspicious_row['异常等级'] == '高度可疑'
     assert suspicious_row['异常主要来源'] == '总成本异常'
+    assert suspicious_row['异常池样本数'] == 3
+    assert suspicious_row['异常池中心log值'] == pytest.approx(math.log(11))
+    assert suspicious_row['异常池原始MAD'] == pytest.approx(math.log(11) - math.log(10))
+    assert suspicious_row['异常池有效MAD'] == pytest.approx(math.log(11) - math.log(10))
+    assert suspicious_row['相对中位偏离'] == pytest.approx((50 / 11) - 1)
 
 
 def test_build_report_artifacts_scores_normal_and_rework_in_separate_pools() -> None:

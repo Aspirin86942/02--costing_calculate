@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pandas as pd
 
 from src.analytics.contracts import ConditionalFormatRule, FlatSheet
@@ -15,6 +14,7 @@ from src.analytics.fact_builder import (
     StandaloneCostItemMeta,
     resolve_standalone_cost_item_metas,
 )
+from src.analytics.scoring import grade_score, resolve_effective_log_mad, weighted_mad, weighted_median
 from src.analytics.table_rendering import (
     DOC_TYPE_NORMAL_LABEL,
     DOC_TYPE_REWORK_LABEL,
@@ -53,68 +53,6 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '高度可疑': 'suspicious',
 }
 ANALYZABLE_PRODUCTION_SCOPE_LABELS = {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
-MIN_RELATIVE_MAD_RATIO = 0.005
-MIN_LOG_MAD = math.log1p(MIN_RELATIVE_MAD_RATIO)
-
-
-def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
-    """计算加权中位数。
-
-    Args:
-        values: 数值数组
-        weights: 权重数组（必须 > 0）
-
-    Returns:
-        加权中位数
-    """
-    if len(values) == 0:
-        return np.nan
-
-    # 按值排序
-    sorted_indices = np.argsort(values)
-    sorted_values = values[sorted_indices]
-    sorted_weights = weights[sorted_indices]
-
-    # 计算累计权重
-    cumsum = np.cumsum(sorted_weights)
-    total_weight = cumsum[-1]
-
-    # 找到累计权重 >= 总权重/2 的第一个位置
-    cutoff = total_weight / 2.0
-    median_idx = np.searchsorted(cumsum, cutoff, side='right')
-
-    return float(sorted_values[median_idx])
-
-
-def weighted_mad(values: np.ndarray, weights: np.ndarray, center: float) -> float:
-    """计算加权 MAD (Median Absolute Deviation)。
-
-    Args:
-        values: 数值数组
-        weights: 权重数组（必须 > 0）
-        center: 中心值（通常是加权中位数）
-
-    Returns:
-        加权 MAD
-    """
-    if len(values) == 0:
-        return np.nan
-
-    # 计算绝对偏差
-    abs_deviations = np.abs(values - center)
-
-    # 返回绝对偏差的加权中位数
-    return weighted_median(abs_deviations, weights)
-
-
-def resolve_effective_log_mad(mad: float) -> float:
-    """返回 log Modified Z-score 计算使用的有效 MAD。"""
-    if pd.isna(mad):
-        return np.nan
-
-    # 当大量高权重工单的单位成本几乎完全一致时，加权 MAD 会被压到接近 0。
-    # 这会把 1% 左右的正常波动放大成数万甚至数百万分，偏离人工复核直觉。
-    return max(float(mad), MIN_LOG_MAD)
 
 
 WORK_ORDER_OUTPUT_COLUMNS = [
@@ -176,6 +114,11 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_水电费异常标记',
     '异常等级',
     '异常主要来源',
+    '异常池样本数',
+    '异常池中心log值',
+    '异常池原始MAD',
+    '异常池有效MAD',
+    '相对中位偏离',
     '复核原因',
 ]
 
@@ -238,6 +181,11 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_水电费异常标记': 'text',
     '异常等级': 'text',
     '异常主要来源': 'text',
+    '异常池样本数': 'qty',
+    '异常池中心log值': 'score',
+    '异常池原始MAD': 'score',
+    '异常池有效MAD': 'score',
+    '相对中位偏离': 'pct',
     '复核原因': 'text',
 }
 
@@ -283,17 +231,6 @@ def build_work_order_conditional_formats(columns: list[str]) -> tuple[Conditiona
     return tuple(rules)
 
 
-def grade_score(score: float | None) -> str:
-    if score is None or pd.isna(score):
-        return ''
-    abs_score = abs(score)
-    if abs_score > 3.5:
-        return '高度可疑'
-    if abs_score > 2.5:
-        return '关注'
-    return '正常'
-
-
 def build_anomaly_sheet(
     work_order_df: pd.DataFrame,
     standalone_metas: tuple[StandaloneCostItemMeta, ...] | None = None,
@@ -309,9 +246,9 @@ def build_anomaly_sheet(
         anomaly_df['production_scope'] = DOC_TYPE_UNKNOWN_LABEL
 
     analyzable_scope_mask = anomaly_df['production_scope'].isin(ANALYZABLE_PRODUCTION_SCOPE_LABELS)
-    base_can_analyze = anomaly_df['completed_qty'].map(
-        lambda value: value is not None and value > ZERO
-    ) & anomaly_df['total_unit_cost'].map(lambda value: value is not None and value > ZERO)
+    base_can_analyze = anomaly_df['completed_qty'].map(lambda value: value is not None and value > ZERO) & anomaly_df[
+        'total_unit_cost'
+    ].map(lambda value: value is not None and value > ZERO)
     scope_not_analyzable_mask = ~analyzable_scope_mask
     anomaly_df['can_analyze'] = base_can_analyze & analyzable_scope_mask
     # 未归类单据无法进入正常生产/返工生产异常池，需显式保留复核原因。
@@ -324,8 +261,18 @@ def build_anomaly_sheet(
     for metric_key, display_name, flag_column, _reason in ANOMALY_METRICS:
         log_column = f'log_{metric_key}'
         score_column = f'modified_z_{metric_key}'
+        sample_size_column = f'audit_pool_sample_size_{metric_key}'
+        center_log_column = f'audit_pool_center_log_{metric_key}'
+        raw_mad_column = f'audit_pool_raw_mad_{metric_key}'
+        effective_mad_column = f'audit_pool_effective_mad_{metric_key}'
+        relative_deviation_column = f'audit_relative_deviation_{metric_key}'
         anomaly_df[log_column] = None
         anomaly_df[score_column] = None
+        anomaly_df[sample_size_column] = None
+        anomaly_df[center_log_column] = None
+        anomaly_df[raw_mad_column] = None
+        anomaly_df[effective_mad_column] = None
+        anomaly_df[relative_deviation_column] = None
 
         metric_positive = anomaly_df[metric_key].map(lambda value: value is not None and value > ZERO)
         reason_series = append_reason(reason_series, ~metric_positive, f'{display_name}小于等于0或为空')
@@ -367,6 +314,14 @@ def build_anomaly_sheet(
 
             scores = 0.6745 * (valid_values - median) / mad
             anomaly_df.loc[scores.index, score_column] = scores
+            # 解释字段复用同一轮评分统计量，避免摘要口径与实际评分口径分叉。
+            anomaly_df.loc[valid_values.index, sample_size_column] = len(valid_values)
+            anomaly_df.loc[valid_values.index, center_log_column] = median
+            anomaly_df.loc[valid_values.index, raw_mad_column] = raw_mad
+            anomaly_df.loc[valid_values.index, effective_mad_column] = mad
+            anomaly_df.loc[valid_values.index, relative_deviation_column] = valid_values.map(
+                lambda value, group_median=median: math.expm1(float(value) - group_median)
+            )
 
         anomaly_df[flag_column] = anomaly_df[score_column].map(grade_score)
 
@@ -417,6 +372,29 @@ def build_anomaly_sheet(
     highest_source.loc[unknown_scope_mask] = ''
     anomaly_df['异常等级'] = overall_level
     anomaly_df['异常主要来源'] = highest_source
+    anomaly_df['异常池样本数'] = None
+    anomaly_df['异常池中心log值'] = None
+    anomaly_df['异常池原始MAD'] = None
+    anomaly_df['异常池有效MAD'] = None
+    anomaly_df['相对中位偏离'] = None
+
+    for metric_key, _display_name, _flag_column, source_label in ANOMALY_METRICS:
+        source_mask = highest_source == source_label
+        if not source_mask.any():
+            continue
+        anomaly_df.loc[source_mask, '异常池样本数'] = anomaly_df.loc[
+            source_mask, f'audit_pool_sample_size_{metric_key}'
+        ]
+        anomaly_df.loc[source_mask, '异常池中心log值'] = anomaly_df.loc[
+            source_mask, f'audit_pool_center_log_{metric_key}'
+        ]
+        anomaly_df.loc[source_mask, '异常池原始MAD'] = anomaly_df.loc[source_mask, f'audit_pool_raw_mad_{metric_key}']
+        anomaly_df.loc[source_mask, '异常池有效MAD'] = anomaly_df.loc[
+            source_mask, f'audit_pool_effective_mad_{metric_key}'
+        ]
+        anomaly_df.loc[source_mask, '相对中位偏离'] = anomaly_df.loc[
+            source_mask, f'audit_relative_deviation_{metric_key}'
+        ]
 
     rename_map = {
         'period_display': '月份',

@@ -85,7 +85,12 @@ def split_normalized_frames(
     if cost_item_column in frame.columns:
         cost_item_tokens = pl.col(cost_item_column).cast(pl.String).str.strip_chars()
         no_cost_item_mask = cost_item_tokens.is_null() | cost_item_tokens.eq('')
-        expense_mask = no_material_mask & cost_item_tokens.is_not_null() & cost_item_tokens.ne('') & cost_item_tokens.ne('直接材料')
+        expense_mask = (
+            no_material_mask
+            & cost_item_tokens.is_not_null()
+            & cost_item_tokens.ne('')
+            & cost_item_tokens.ne('直接材料')
+        )
     else:
         no_cost_item_mask = pl.lit(True)
         expense_mask = pl.lit(False)

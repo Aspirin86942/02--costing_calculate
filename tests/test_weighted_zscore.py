@@ -3,6 +3,22 @@
 import numpy as np
 
 from src.analytics.anomaly import weighted_mad, weighted_median
+from src.analytics.scoring import resolve_effective_log_mad
+
+
+def test_anomaly_module_keeps_scoring_compatibility_exports():
+    """测试 anomaly 兼容导出仍指向 scoring 模块，避免重构破坏旧调用方。"""
+    from src.analytics import anomaly, scoring
+
+    assert anomaly.weighted_median is scoring.weighted_median
+    assert anomaly.weighted_mad is scoring.weighted_mad
+    assert anomaly.resolve_effective_log_mad is scoring.resolve_effective_log_mad
+
+
+def test_resolve_effective_log_mad_applies_minimum_dispersion():
+    """测试近零 MAD 使用最小 log 离散度，避免异常分数被无限放大。"""
+    assert resolve_effective_log_mad(0.0) > 0
+    assert resolve_effective_log_mad(1.23) == 1.23
 
 
 def test_weighted_median_simple():

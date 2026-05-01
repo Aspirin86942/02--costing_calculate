@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -7,7 +8,7 @@ import pandas as pd
 from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
 from src.config.pipelines import PipelineConfig
 from src.etl.month_filter import MonthFilterSummary, MonthRange
-from src.etl.runner import find_input_files, run_pipeline
+from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
 
 
 class _FakeGlobDir:
@@ -67,6 +68,7 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
             standalone_cost_items,
             product_anomaly_scope_mode,
             month_range=None,
+            ensure_output_directories=True,
         ) -> None:
             self.skip_rows = skip_rows
             self.product_order = product_order
@@ -102,6 +104,174 @@ def test_run_pipeline_prints_quality_summary_without_writing_log_file(
     )
     assert captured['standalone_cost_items'] == config.standalone_cost_items
     assert captured['product_anomaly_scope_mode'] == config.product_anomaly_scope_mode
+
+
+def test_run_pipeline_check_only_builds_payload_without_writing_outputs(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.write_text('placeholder', encoding='utf-8')
+    processed_dir = tmp_path / 'processed'
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    captured: dict[str, Path] = {}
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+            ensure_output_directories=True,
+        ) -> None:
+            self.last_quality_metrics = (
+                QualityMetric('行数勾稽', '产品数量统计输出行数', '3', '仅保留有效工单'),
+            )
+            self.last_error_log_count = 2
+            self.last_error_log_frame = pd.DataFrame([{'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT'}])
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'ingest': 0.1, 'normalize': 0.2}
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            captured['input_path'] = input_path
+            return True
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            raise AssertionError('check-only must not write workbook')
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, check_only=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert captured['input_path'] == input_file
+    assert 'mode=check-only' in stdout
+    assert 'pipeline=gb' in stdout
+    assert 'output=' in stdout
+    assert not processed_dir.exists()
+
+
+def test_run_pipeline_check_only_does_not_ask_etl_to_create_output_directories(monkeypatch, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.write_text('placeholder', encoding='utf-8')
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=tmp_path / 'processed',
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+    captured: dict[str, object] = {}
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+            ensure_output_directories=True,
+        ) -> None:
+            captured['ensure_output_directories'] = ensure_output_directories
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame()
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    assert run_pipeline(config, check_only=True) == 0
+    assert captured['ensure_output_directories'] is False
+
+
+def test_build_benchmark_log_text_reports_stage_timings_and_file_sizes(tmp_path) -> None:
+    input_file = tmp_path / 'input.xlsx'
+    output_file = tmp_path / 'output.xlsx'
+    error_log_file = tmp_path / 'error_log.csv'
+    input_file.write_bytes(b'abc')
+    output_file.write_bytes(b'output')
+    error_log_file.write_bytes(b'csv')
+
+    text = build_benchmark_log_text(
+        input_path=input_file,
+        output_path=output_file,
+        error_log_path=error_log_file,
+        error_log_count=4,
+        stage_timings={'ingest': 0.1, 'normalize': 0.2},
+        output_written=True,
+    )
+
+    assert '[benchmark]' in text
+    assert 'input_size_bytes=3' in text
+    assert 'output_size_bytes=6' in text
+    assert 'error_log_size_bytes=3' in text
+    assert 'stage_ingest_seconds=0.100' in text
+    assert 'stage_normalize_seconds=0.200' in text
+    assert 'error_log_count=4' in text
+
+
+def test_run_pipeline_check_only_benchmark_prints_planned_output_without_writing(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'SK-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    processed_dir = tmp_path / 'processed'
+    config = PipelineConfig(
+        name='sk',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('SK-*.xlsx',),
+        product_order=(('DP.C.P0197AA', '动力线'),),
+        product_anomaly_scope_mode='legacy_single_scope',
+    )
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+            ensure_output_directories=True,
+        ) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame()
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'ingest': 0.5}
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    exit_code = run_pipeline(config, check_only=True, benchmark=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert '[benchmark]' in stdout
+    assert 'output_written=false' in stdout
+    assert 'input_size_bytes=3' in stdout
+    assert 'stage_ingest_seconds=0.500' in stdout
+    assert not processed_dir.exists()
 
 
 def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypatch, capsys, tmp_path) -> None:
@@ -190,6 +360,55 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
     )
 
 
+def test_run_pipeline_writes_summary_json_after_success(monkeypatch, tmp_path) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.touch()
+    processed_dir = tmp_path / 'processed'
+    processed_dir.mkdir()
+    config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=processed_dir,
+        input_patterns=('GB-*.xlsx',),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        product_anomaly_scope_mode='doc_type_split',
+    )
+
+    class _DummyETL:
+        def __init__(
+            self,
+            skip_rows: int,
+            *,
+            product_order,
+            standalone_cost_items,
+            product_anomaly_scope_mode,
+            month_range=None,
+            ensure_output_directories=True,
+        ) -> None:
+            self.last_quality_metrics = (
+                QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),
+            )
+            self.last_error_log_count = 1
+            self.last_error_log_frame = pd.DataFrame([{'issue_type': 'MISSING_AMOUNT'}])
+            self.last_work_order_sheet_frame = pd.DataFrame([{'异常等级': '关注', '异常主要来源': '材料异常'}])
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            output_path.write_text('ok', encoding='utf-8')
+            return True
+
+    monkeypatch.setattr('src.etl.runner.CostingWorkbookETL', _DummyETL)
+
+    assert run_pipeline(config) == 0
+
+    summary_path = processed_dir / 'GB-成本计算单_处理后_summary.json'
+    payload = json.loads(summary_path.read_text(encoding='utf-8'))
+    assert payload['pipeline'] == 'gb'
+    assert payload['issue_type_counts'] == {'MISSING_AMOUNT': 1}
+    assert payload['anomaly_level_counts'] == {'关注': 1}
+
+
 def test_run_pipeline_uses_month_suffix_in_output_names(monkeypatch, capsys, tmp_path) -> None:
     input_file = tmp_path / 'GB-成本计算单.xlsx'
     input_file.touch()
@@ -217,6 +436,7 @@ def test_run_pipeline_uses_month_suffix_in_output_names(monkeypatch, capsys, tmp
             standalone_cost_items,
             product_anomaly_scope_mode,
             month_range,
+            ensure_output_directories=True,
         ) -> None:
             self.last_quality_metrics = ()
             self.last_error_log_count = 0
@@ -271,6 +491,7 @@ def test_run_pipeline_succeeds_when_month_range_matches_no_rows(monkeypatch, cap
             standalone_cost_items,
             product_anomaly_scope_mode,
             month_range,
+            ensure_output_directories=True,
         ) -> None:
             self.last_quality_metrics = ()
             self.last_error_log_count = 0

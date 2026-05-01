@@ -256,6 +256,7 @@ class CostingEtlPipeline:
             error_log_count=len(artifacts.error_log),
             stage_timings=stage_timings,
             error_log_export=_to_error_log_export_frame(artifacts.error_log),
+            work_order_sheet_export=artifacts.work_order_sheet.data.copy(),
         )
 
     def split_sheets(self, df_raw: pd.DataFrame, df_filled: pd.DataFrame) -> SplitResult:

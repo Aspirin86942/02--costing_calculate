@@ -375,6 +375,62 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     assert any('Timing | stage=export' in message for message in messages)
 
 
+def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(),
+        standalone_cost_items=('委外加工费',),
+        product_anomaly_scope_mode='doc_type_split',
+        month_range=MonthRange(start='2025-01', end='2025-03'),
+    )
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本明细',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('P001',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(QualityMetric('行数勾稽', '产品数量统计输出行数', '1', '仅保留有效工单'),),
+        error_log_count=1,
+        stage_timings={'ingest': 0.1, 'normalize': 0.2},
+        error_log_export=pd.DataFrame([{'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT'}]),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload) as payload_mock,
+        patch.object(etl.workbook_writer, 'write_workbook_from_models') as writer_mock,
+    ):
+        assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
+
+    payload_mock.assert_called_once()
+    writer_mock.assert_not_called()
+    assert etl.last_quality_metrics == payload.quality_metrics
+    assert etl.last_error_log_count == 1
+    pd.testing.assert_frame_equal(etl.last_error_log_frame, payload.error_log_export)
+    assert etl.last_stage_timings == {'ingest': 0.1, 'normalize': 0.2}
+
+
+def test_prepare_payload_stores_work_order_sheet_for_summary(tmp_path: Path) -> None:
+    etl = CostingWorkbookETL(skip_rows=2, product_order=(), ensure_output_directories=False)
+    work_order_export = pd.DataFrame([{'异常等级': '关注', '异常主要来源': '材料异常'}])
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={},
+        error_log_export=pd.DataFrame(),
+        work_order_sheet_export=work_order_export,
+    )
+
+    with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
+        assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
+
+    pd.testing.assert_frame_equal(etl.last_work_order_sheet_frame, work_order_export)
+
+
 def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_models.xlsx'
     writer = CostingWorkbookWriter()
@@ -1791,6 +1847,35 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
         ('GB_C.D.B0040AA', 'BMS-750W驱动器')
     ]
     assert build_artifacts_mock.call_args.kwargs['product_anomaly_scope_mode'] == GB_PIPELINE.product_anomaly_scope_mode
+
+
+def test_filter_product_summary_frame_by_whitelist_stays_in_polars(monkeypatch) -> None:
+    etl = CostingWorkbookETL(
+        skip_rows=2,
+        product_order=(('P002', '产品B'), ('P001', '产品A')),
+        ensure_output_directories=False,
+    )
+    summary_frame = pl.DataFrame(
+        [
+            {'product_code': 'P001', 'product_name': '产品A', 'period': '2025-02', 'value': 1},
+            {'product_code': 'P003', 'product_name': '产品C', 'period': '2025-01', 'value': 3},
+            {'product_code': 'P002', 'product_name': '产品B', 'period': '2025-01', 'value': 2},
+        ]
+    )
+
+    monkeypatch.setattr(
+        pl.DataFrame,
+        'to_dicts',
+        lambda self: (_ for _ in ()).throw(AssertionError('must stay in Polars')),
+    )
+
+    result = etl._filter_product_summary_frame_by_whitelist(summary_frame)
+
+    assert result.select(['product_code', 'product_name', 'period']).to_dict(as_series=False) == {
+        'product_code': ['P002', 'P001'],
+        'product_name': ['产品B', '产品A'],
+        'period': ['2025-01', '2025-02'],
+    }
 
 
 def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting_gb(tmp_path) -> None:

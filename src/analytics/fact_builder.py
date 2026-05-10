@@ -10,7 +10,7 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.contracts import FactBundle
-from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars, normalize_key_value
+from src.analytics.errors import ERROR_LOG_COLUMNS, empty_error_log_polars
 
 ZERO = Decimal('0')
 # Fact 层保留较高小数精度，避免在兼容边界前过早量化。
@@ -369,11 +369,49 @@ def _safe_divide_expr(numerator_column: str, denominator_column: str, alias: str
 
 
 def _normalize_key_expr(column_name: str) -> pl.Expr:
-    return pl.col(column_name).map_elements(normalize_key_value, return_dtype=pl.String)
+    normalized = pl.col(column_name).cast(pl.String, strict=False).str.strip_chars()
+    integer_suffix_trimmed = normalized.str.slice(0, normalized.str.len_chars() - 2)
+    return (
+        pl.when(pl.col(column_name).is_null())
+        .then(pl.lit(''))
+        .when(normalized.str.ends_with('.0') & integer_suffix_trimmed.str.contains(r'^\d+$'))
+        .then(integer_suffix_trimmed)
+        .otherwise(normalized)
+    )
 
 
-def _is_missing_decimal_value(value: object) -> bool:
-    return to_decimal(value) is None
+def _normalized_period_expr(column_name: str) -> pl.Expr:
+    text_expr = pl.col(column_name).cast(pl.String, strict=False).str.strip_chars()
+    captured = text_expr.str.extract_groups(r'(\d{4})\D*(\d{1,2})')
+    year_expr = captured.struct.field('1').cast(pl.Int32, strict=False)
+    month_expr = captured.struct.field('2').cast(pl.Int32, strict=False)
+    return (
+        pl.when(
+            pl.col(column_name).is_not_null()
+            & year_expr.is_not_null()
+            & month_expr.is_between(1, 12, closed='both')
+        )
+        .then(year_expr.cast(pl.String).str.zfill(4) + pl.lit('-') + month_expr.cast(pl.String).str.zfill(2))
+        .otherwise(None)
+    )
+
+
+def _period_display_expr(column_name: str) -> pl.Expr:
+    normalized_period = _normalized_period_expr(column_name)
+    return (
+        pl.when(normalized_period.is_not_null())
+        .then(normalized_period.str.slice(0, 4) + pl.lit('年') + normalized_period.str.slice(5, 2) + pl.lit('期'))
+        .otherwise(pl.lit(''))
+    )
+
+
+def _is_positive_money_expr(column_name: str) -> pl.Expr:
+    normalized_money = normalize_money_expr(column_name)
+    return normalized_money.is_not_null() & (normalized_money > _money_zero_expr())
+
+
+def _is_missing_money_expr(column_name: str) -> pl.Expr:
+    return normalize_money_expr(column_name).is_null()
 
 
 def _safe_divide_decimal(numerator: object, denominator: object) -> Decimal | None:
@@ -478,7 +516,7 @@ def _build_product_summary_fact(work_order_fact: pl.DataFrame) -> pl.DataFrame:
 
     return summary.with_columns(
         [
-            pl.col('period').map_elements(period_to_display, return_dtype=pl.String).alias('period_display'),
+            _period_display_expr('period').alias('period_display'),
             _safe_divide_expr('total_cost', 'completed_qty', 'unit_cost'),
             _safe_divide_expr('dm_cost', 'completed_qty', 'dm_unit_cost'),
             _safe_divide_expr('dl_cost', 'completed_qty', 'dl_unit_cost'),
@@ -574,7 +612,7 @@ def build_fact_bundle(
         )
         .with_columns(
             [
-                pl.col(detail_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
+                _normalized_period_expr(detail_period_col).alias('period'),
                 pl.col('cost_item').cast(pl.String, strict=False).str.strip_chars().alias('normalized_cost_item'),
                 map_broad_cost_bucket_expr('cost_item').alias('cost_bucket'),
                 map_component_bucket_expr('cost_item').alias('component_bucket'),
@@ -668,8 +706,8 @@ def build_fact_bundle(
         qty_df.with_row_index('_source_row')
         .with_columns(
             [
-                pl.col(qty_period_col).map_elements(normalize_period, return_dtype=pl.String).alias('period'),
-                pl.col(qty_period_col).map_elements(period_to_display, return_dtype=pl.String).alias('period_display'),
+                _normalized_period_expr(qty_period_col).alias('period'),
+                _period_display_expr(qty_period_col).alias('period_display'),
                 pl.col('产品编码').cast(pl.String, strict=False).alias('product_code'),
                 pl.col('产品名称').cast(pl.String, strict=False).alias('product_name'),
                 pl.col('工单编号').alias('order_no'),
@@ -689,14 +727,8 @@ def build_fact_bundle(
                 pl.concat_str([_normalize_key_expr(column) for column in WORK_ORDER_KEY_COLS], separator='|').alias(
                     '_join_key'
                 ),
-                pl.col('completed_qty_raw')
-                .map_elements(is_positive_decimal, return_dtype=pl.Boolean)
-                .fill_null(False)
-                .alias('_valid_completed_qty'),
-                pl.col('completed_amount_total_raw')
-                .map_elements(_is_missing_decimal_value, return_dtype=pl.Boolean)
-                .fill_null(True)
-                .alias('_missing_total_amount'),
+                _is_positive_money_expr('completed_qty_raw').fill_null(False).alias('_valid_completed_qty'),
+                _is_missing_money_expr('completed_amount_total_raw').fill_null(True).alias('_missing_total_amount'),
             ]
         )
     )

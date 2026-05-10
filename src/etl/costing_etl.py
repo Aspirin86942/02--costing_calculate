@@ -488,7 +488,9 @@ class CostingWorkbookETL:
                 output_path,
                 sheet_models=payload.sheet_models,
             )
-            logger.info('Timing | stage=export | seconds=%.3f', perf_counter() - export_start)
+            export_seconds = perf_counter() - export_start
+            self.last_stage_timings['export'] = export_seconds
+            logger.info('Timing | stage=export | seconds=%.3f', export_seconds)
             logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)
             logger.info('Output saved: %s', output_path)
             if self.last_error_log_count > 0:

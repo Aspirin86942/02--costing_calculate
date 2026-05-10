@@ -373,6 +373,8 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     assert any('Timing | stage=analysis' in message for message in messages)
     assert any('Timing | stage=presentation' in message for message in messages)
     assert any('Timing | stage=export' in message for message in messages)
+    assert 'export' in etl.last_stage_timings
+    assert etl.last_stage_timings['export'] >= 0
 
 
 def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:

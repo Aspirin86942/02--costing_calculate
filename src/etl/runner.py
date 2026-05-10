@@ -73,6 +73,8 @@ def build_benchmark_log_text(
     output_written: bool,
 ) -> str:
     """构建稳定 benchmark 文本，测试只依赖字段存在，不断言秒数快慢。"""
+    export_seconds = float(stage_timings.get('export', 0.0)) if output_written else 0.0
+    payload_total = sum(float(seconds) for stage, seconds in stage_timings.items() if stage != 'export')
     lines = [
         '',
         '[benchmark]',
@@ -83,6 +85,8 @@ def build_benchmark_log_text(
         f'planned_output={output_path}',
         f'planned_error_log={error_log_path}',
         f'error_log_count={error_log_count}',
+        f'payload_total_seconds={payload_total:.3f}',
+        f'export_seconds={export_seconds:.3f}',
     ]
     total = 0.0
     for stage_name in sorted(stage_timings):

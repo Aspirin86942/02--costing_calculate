@@ -228,6 +228,7 @@ def test_workbook_ingestor_calamine_fast_path_preserves_contract(tmp_path: Path)
     result = ingestor.load(workbook_path, skip_rows=2)
 
     assert result.sheet_name == 'FastSheet'
+    assert result.ingest_backend == 'calamine'
     assert result.header_rows == (('年期', '产品编码'), ('', '产品名称'))
     assert result.frame.columns == ['column_0', 'column_1']
     assert result.frame.row(0) == ('2026年3期', 'P002')
@@ -285,6 +286,7 @@ def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tm
         result = ingestor.load(workbook_path, skip_rows=2)
 
     assert result.sheet_name == 'FallbackSheet'
+    assert result.ingest_backend == 'openpyxl'
     assert result.header_rows == (('主表头', '产品编码'), ('次表头', '产品名称'))
     assert isinstance(result.frame, pl.DataFrame)
     assert result.frame.columns == ['column_0', 'column_1']

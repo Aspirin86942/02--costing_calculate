@@ -97,6 +97,7 @@ class CostingEtlPipeline:
         self.integrated_workshop_name = integrated_workshop_name
         self.logger = logger
         self.last_month_filter_summary: MonthFilterSummary | None = None
+        self.last_ingest_backend: str = 'unknown'
 
     def load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
         """读取旧 ETL 路径需要的 pandas DataFrame。"""
@@ -217,6 +218,7 @@ class CostingEtlPipeline:
 
         ingest_start = perf_counter()
         raw_workbook = self.load_raw_workbook_frame(input_path)
+        self.last_ingest_backend = raw_workbook.ingest_backend
         stage_timings['ingest'] = perf_counter() - ingest_start
 
         normalize_start = perf_counter()

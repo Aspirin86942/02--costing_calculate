@@ -154,7 +154,7 @@ class TestCostingWorkbookETL:
         etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame(columns=['物料编码', '成本项目', '其他列'])
 
-        col_map = etl._auto_rename_columns(df)
+        col_map = etl.pipeline.infer_rename_map(df)
 
         assert col_map['物料编码'] == '子项物料编码'
         assert col_map['成本项目'] == '成本项目名称'
@@ -164,7 +164,7 @@ class TestCostingWorkbookETL:
         etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame({'年期': ['2024年01期', '合计', '2024年03期'], '数据': [1, 2, 3]})
 
-        result = etl._remove_total_rows(df)
+        result = etl.pipeline.remove_total_rows(df)
 
         assert len(result) == 2
         assert '合计' not in result['年期'].tolist()
@@ -181,7 +181,7 @@ class TestCostingWorkbookETL:
             }
         )
 
-        result = etl._forward_fill_with_rules(df_raw)
+        result = etl.pipeline.forward_fill_with_rules(df_raw)
 
         assert result.loc[1, '成本中心名称'] == '集成车间'
         assert result.loc[1, '产品编码'] == 'P001'
@@ -373,6 +373,8 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     assert any('Timing | stage=analysis' in message for message in messages)
     assert any('Timing | stage=presentation' in message for message in messages)
     assert any('Timing | stage=export' in message for message in messages)
+    assert 'export' in etl.last_stage_timings
+    assert etl.last_stage_timings['export'] >= 0
 
 
 def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:

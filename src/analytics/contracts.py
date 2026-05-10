@@ -20,6 +20,7 @@ class RawWorkbookFrame:
     sheet_name: str
     header_rows: tuple[tuple[str, ...], tuple[str, ...]]
     frame: pl.DataFrame
+    ingest_backend: str = 'unknown'
 
 
 @dataclass(frozen=True)

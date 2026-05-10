@@ -239,6 +239,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         self.last_month_filter_summary: MonthFilterSummary | None = None
         self.last_stage_timings: dict[str, float] = {}
+        self.last_ingest_backend: str = 'unknown'
         self.last_work_order_sheet_frame: pd.DataFrame = pd.DataFrame()
         if ensure_output_directories:
             ensure_directories()
@@ -261,6 +262,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame = pd.DataFrame()
         self.last_month_filter_summary = None
         self.last_stage_timings = {}
+        self.last_ingest_backend = 'unknown'
         self.last_work_order_sheet_frame = pd.DataFrame()
 
     def _apply_payload_state(self, payload: WorkbookPayload) -> None:
@@ -270,6 +272,7 @@ class CostingWorkbookETL:
         self.last_error_log_count = payload.error_log_count
         self.last_error_log_frame = payload.error_log_export.copy()
         self.last_stage_timings = dict(payload.stage_timings)
+        self.last_ingest_backend = self.pipeline.last_ingest_backend
         self.last_work_order_sheet_frame = payload.work_order_sheet_export.copy()
 
     def prepare_payload(self, input_path: Path) -> bool:
@@ -295,26 +298,6 @@ class CostingWorkbookETL:
             self.last_error_log_frame = pd.DataFrame()
             logger.error('Payload preparation failed: %s', exc, exc_info=True)
             return False
-
-    def _load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
-        """读取原始 workbook。"""
-        return self.pipeline.load_raw_dataframe(input_path)
-
-    def _resolve_columns(self, df: pd.DataFrame):
-        """生成关键列契约。"""
-        return self.pipeline.resolve_columns(df)
-
-    def _auto_rename_columns(self, df: pd.DataFrame) -> dict[str, str]:
-        """Infer key columns when source headers vary."""
-        return self.pipeline.infer_rename_map(df)
-
-    def _remove_total_rows(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Drop summary rows containing '合计'."""
-        return self.pipeline.remove_total_rows(df)
-
-    def _forward_fill_with_rules(self, df_raw: pd.DataFrame) -> pd.DataFrame:
-        """按业务规则执行向下填充。"""
-        return self.pipeline.forward_fill_with_rules(df_raw)
 
     def _filter_fact_df_for_analysis(self, fact_df: pd.DataFrame) -> pd.DataFrame:
         """按白名单过滤分析数据，仅输出目标产品。"""
@@ -451,17 +434,6 @@ class CostingWorkbookETL:
             fact_bundle=self._filter_fact_bundle_for_whitelist(artifacts.fact_bundle),
         )
 
-    def _split_sheets(
-        self,
-        df_raw: pd.DataFrame,
-        df_filled: pd.DataFrame,
-        target_mat: str,
-        target_item: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Split source rows into detail and quantity sheets."""
-        split_result = self.pipeline.split_sheets(df_raw, df_filled)
-        return split_result.detail_df, split_result.qty_df
-
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""
         try:
@@ -488,7 +460,9 @@ class CostingWorkbookETL:
                 output_path,
                 sheet_models=payload.sheet_models,
             )
-            logger.info('Timing | stage=export | seconds=%.3f', perf_counter() - export_start)
+            export_seconds = perf_counter() - export_start
+            self.last_stage_timings['export'] = export_seconds
+            logger.info('Timing | stage=export | seconds=%.3f', export_seconds)
             logger.info('Timing | stage=total | seconds=%.3f', perf_counter() - total_start)
             logger.info('Output saved: %s', output_path)
             if self.last_error_log_count > 0:

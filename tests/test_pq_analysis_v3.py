@@ -170,6 +170,14 @@ def test_build_fact_bundle_cost_bucket_mapping_without_python_udf(monkeypatch) -
     }
 
 
+def test_fact_builder_keeps_only_decimal_division_map_elements() -> None:
+    from pathlib import Path
+
+    source = Path('src/analytics/fact_builder.py').read_text(encoding='utf-8')
+    assert source.count('.map_elements(') == 1
+    assert '.map_elements(\n            lambda row: _safe_divide_decimal' in source
+
+
 def test_build_report_artifacts_enriches_qty_sheet() -> None:
     """测试数量页补强金额、单位成本和校验字段。"""
     df_detail = _build_base_detail_df()

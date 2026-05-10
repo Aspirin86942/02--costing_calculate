@@ -296,26 +296,6 @@ class CostingWorkbookETL:
             logger.error('Payload preparation failed: %s', exc, exc_info=True)
             return False
 
-    def _load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
-        """读取原始 workbook。"""
-        return self.pipeline.load_raw_dataframe(input_path)
-
-    def _resolve_columns(self, df: pd.DataFrame):
-        """生成关键列契约。"""
-        return self.pipeline.resolve_columns(df)
-
-    def _auto_rename_columns(self, df: pd.DataFrame) -> dict[str, str]:
-        """Infer key columns when source headers vary."""
-        return self.pipeline.infer_rename_map(df)
-
-    def _remove_total_rows(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Drop summary rows containing '合计'."""
-        return self.pipeline.remove_total_rows(df)
-
-    def _forward_fill_with_rules(self, df_raw: pd.DataFrame) -> pd.DataFrame:
-        """按业务规则执行向下填充。"""
-        return self.pipeline.forward_fill_with_rules(df_raw)
-
     def _filter_fact_df_for_analysis(self, fact_df: pd.DataFrame) -> pd.DataFrame:
         """按白名单过滤分析数据，仅输出目标产品。"""
         return self._filter_dataframe_by_whitelist(
@@ -450,17 +430,6 @@ class CostingWorkbookETL:
             error_log=artifacts.error_log,
             fact_bundle=self._filter_fact_bundle_for_whitelist(artifacts.fact_bundle),
         )
-
-    def _split_sheets(
-        self,
-        df_raw: pd.DataFrame,
-        df_filled: pd.DataFrame,
-        target_mat: str,
-        target_item: str,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """Split source rows into detail and quantity sheets."""
-        split_result = self.pipeline.split_sheets(df_raw, df_filled)
-        return split_result.detail_df, split_result.qty_df
 
     def process_file(self, input_path: Path, output_path: Path) -> bool:
         """Read one workbook and write split output workbook."""

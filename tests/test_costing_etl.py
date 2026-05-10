@@ -154,7 +154,7 @@ class TestCostingWorkbookETL:
         etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame(columns=['物料编码', '成本项目', '其他列'])
 
-        col_map = etl._auto_rename_columns(df)
+        col_map = etl.pipeline.infer_rename_map(df)
 
         assert col_map['物料编码'] == '子项物料编码'
         assert col_map['成本项目'] == '成本项目名称'
@@ -164,7 +164,7 @@ class TestCostingWorkbookETL:
         etl = CostingWorkbookETL(skip_rows=2)
         df = pd.DataFrame({'年期': ['2024年01期', '合计', '2024年03期'], '数据': [1, 2, 3]})
 
-        result = etl._remove_total_rows(df)
+        result = etl.pipeline.remove_total_rows(df)
 
         assert len(result) == 2
         assert '合计' not in result['年期'].tolist()
@@ -181,7 +181,7 @@ class TestCostingWorkbookETL:
             }
         )
 
-        result = etl._forward_fill_with_rules(df_raw)
+        result = etl.pipeline.forward_fill_with_rules(df_raw)
 
         assert result.loc[1, '成本中心名称'] == '集成车间'
         assert result.loc[1, '产品编码'] == 'P001'

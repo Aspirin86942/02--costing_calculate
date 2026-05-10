@@ -318,11 +318,13 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
         standalone_cost_items: tuple[str, ...],
         product_anomaly_scope_mode: str,
         month_range=None,
+        presentation_product_order=(),
         artifacts_transform=None,
     ):
         captured['input_path'] = input_path
         captured['standalone_cost_items'] = standalone_cost_items
         captured['product_anomaly_scope_mode'] = product_anomaly_scope_mode
+        captured['presentation_product_order'] = presentation_product_order
         captured['artifacts_transform'] = artifacts_transform
         return payload
 
@@ -351,6 +353,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
     assert captured['output_path'] == processed_dir / 'GB-成本计算单_处理后.xlsx'
     assert captured['standalone_cost_items'] == ('委外加工费',)
     assert captured['product_anomaly_scope_mode'] == 'doc_type_split'
+    assert captured['presentation_product_order'] == (('GB_C.D.B0040AA', 'BMS-750W驱动器'),)
     assert callable(captured['artifacts_transform'])
     assert captured['sheet_names'] == ['成本明细']
     pd.testing.assert_frame_equal(

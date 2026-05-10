@@ -208,6 +208,7 @@ class CostingEtlPipeline:
         standalone_cost_items: tuple[str, ...],
         product_anomaly_scope_mode: str = 'legacy_single_scope',
         month_range: MonthRange | None = None,
+        presentation_product_order: tuple[tuple[str, str], ...] = (),
         artifacts_transform: Callable[[AnalysisArtifacts], AnalysisArtifacts] | None = None,
     ) -> WorkbookPayload:
         """按全链路 Polars 路径构建 workbook payload。"""
@@ -235,6 +236,7 @@ class CostingEtlPipeline:
             standalone_cost_items=standalone_cost_items,
             product_anomaly_scope_mode=product_anomaly_scope_mode,
             month_filter_empty_result=bool(month_filter_summary is not None and month_filter_summary.output_rows == 0),
+            presentation_product_order=presentation_product_order,
         )
         if artifacts_transform is not None:
             artifacts = artifacts_transform(artifacts)

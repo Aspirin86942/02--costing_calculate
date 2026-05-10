@@ -48,7 +48,12 @@ class WorkbookIngestor:
         ]
         # 允许扫描整列后再推断 schema，避免前段全是数值、后段才出现空字符串时误退回 fallback。
         frame = pl.DataFrame(padded_rows, schema=columns, orient='row', infer_schema_length=None)
-        return RawWorkbookFrame(sheet_name=sheet.name, header_rows=(header_top, header_bottom), frame=frame)
+        return RawWorkbookFrame(
+            sheet_name=sheet.name,
+            header_rows=(header_top, header_bottom),
+            frame=frame,
+            ingest_backend='calamine',
+        )
 
     def _load_with_openpyxl(self, input_path: Path, *, skip_rows: int) -> RawWorkbookFrame:
         # openpyxl 路径仅用于兼容，仍需保证列名格式一致
@@ -68,4 +73,5 @@ class WorkbookIngestor:
             sheet_name=sheet_name,
             header_rows=(header_top, header_bottom),
             frame=pl.DataFrame(frame_dict, strict=False),
+            ingest_backend='openpyxl',
         )

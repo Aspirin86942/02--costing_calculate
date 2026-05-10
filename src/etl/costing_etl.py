@@ -239,6 +239,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame: pd.DataFrame = pd.DataFrame()
         self.last_month_filter_summary: MonthFilterSummary | None = None
         self.last_stage_timings: dict[str, float] = {}
+        self.last_ingest_backend: str = 'unknown'
         self.last_work_order_sheet_frame: pd.DataFrame = pd.DataFrame()
         if ensure_output_directories:
             ensure_directories()
@@ -261,6 +262,7 @@ class CostingWorkbookETL:
         self.last_error_log_frame = pd.DataFrame()
         self.last_month_filter_summary = None
         self.last_stage_timings = {}
+        self.last_ingest_backend = 'unknown'
         self.last_work_order_sheet_frame = pd.DataFrame()
 
     def _apply_payload_state(self, payload: WorkbookPayload) -> None:
@@ -270,6 +272,7 @@ class CostingWorkbookETL:
         self.last_error_log_count = payload.error_log_count
         self.last_error_log_frame = payload.error_log_export.copy()
         self.last_stage_timings = dict(payload.stage_timings)
+        self.last_ingest_backend = self.pipeline.last_ingest_backend
         self.last_work_order_sheet_frame = payload.work_order_sheet_export.copy()
 
     def prepare_payload(self, input_path: Path) -> bool:

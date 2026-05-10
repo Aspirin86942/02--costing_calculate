@@ -216,6 +216,7 @@ def test_build_benchmark_log_text_reports_stage_timings_and_file_sizes(tmp_path)
         error_log_path=error_log_file,
         error_log_count=4,
         stage_timings={'ingest': 0.1, 'normalize': 0.2, 'export': 0.3},
+        ingest_backend='calamine',
         output_written=True,
     )
 
@@ -223,6 +224,7 @@ def test_build_benchmark_log_text_reports_stage_timings_and_file_sizes(tmp_path)
     assert 'input_size_bytes=3' in text
     assert 'output_size_bytes=6' in text
     assert 'error_log_size_bytes=3' in text
+    assert 'ingest_backend=calamine' in text
     assert 'payload_total_seconds=0.300' in text
     assert 'export_seconds=0.300' in text
     assert 'stage_export_seconds=0.300' in text
@@ -261,6 +263,7 @@ def test_run_pipeline_check_only_benchmark_prints_planned_output_without_writing
             self.last_error_log_frame = pd.DataFrame()
             self.last_month_filter_summary = None
             self.last_stage_timings = {'ingest': 0.5}
+            self.last_ingest_backend = 'calamine'
 
         def prepare_payload(self, input_path: Path) -> bool:
             return True
@@ -273,6 +276,7 @@ def test_run_pipeline_check_only_benchmark_prints_planned_output_without_writing
     assert exit_code == 0
     assert '[benchmark]' in stdout
     assert 'output_written=false' in stdout
+    assert 'ingest_backend=calamine' in stdout
     assert 'input_size_bytes=3' in stdout
     assert 'payload_total_seconds=0.500' in stdout
     assert 'export_seconds=0.000' in stdout
@@ -311,6 +315,7 @@ def test_run_pipeline_normal_benchmark_reports_export_timing(monkeypatch, capsys
             self.last_work_order_sheet_frame = pd.DataFrame()
             self.last_month_filter_summary = None
             self.last_stage_timings = {'ingest': 0.5, 'analysis': 1.25, 'export': 0.75}
+            self.last_ingest_backend = 'openpyxl'
 
         def process_file(self, input_path: Path, output_path: Path) -> bool:
             output_path.write_text('ok', encoding='utf-8')
@@ -324,6 +329,7 @@ def test_run_pipeline_normal_benchmark_reports_export_timing(monkeypatch, capsys
     assert exit_code == 0
     assert '[benchmark]' in stdout
     assert 'output_written=true' in stdout
+    assert 'ingest_backend=openpyxl' in stdout
     assert 'payload_total_seconds=1.750' in stdout
     assert 'export_seconds=0.750' in stdout
     assert 'stage_export_seconds=0.750' in stdout

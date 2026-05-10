@@ -70,6 +70,7 @@ def build_benchmark_log_text(
     error_log_path: Path,
     error_log_count: int,
     stage_timings: dict[str, float],
+    ingest_backend: str = 'unknown',
     output_written: bool,
 ) -> str:
     """构建稳定 benchmark 文本，测试只依赖字段存在，不断言秒数快慢。"""
@@ -85,6 +86,7 @@ def build_benchmark_log_text(
         f'planned_output={output_path}',
         f'planned_error_log={error_log_path}',
         f'error_log_count={error_log_count}',
+        f'ingest_backend={ingest_backend}',
         f'payload_total_seconds={payload_total:.3f}',
         f'export_seconds={export_seconds:.3f}',
     ]
@@ -164,6 +166,7 @@ def run_pipeline(
                     error_log_path=error_log_csv_file,
                     error_log_count=etl.last_error_log_count,
                     stage_timings=getattr(etl, 'last_stage_timings', {}),
+                    ingest_backend=getattr(etl, 'last_ingest_backend', 'unknown'),
                     output_written=False,
                 )
             )
@@ -204,6 +207,7 @@ def run_pipeline(
                 error_log_path=error_log_csv_file,
                 error_log_count=etl.last_error_log_count,
                 stage_timings=getattr(etl, 'last_stage_timings', {}),
+                ingest_backend=getattr(etl, 'last_ingest_backend', 'unknown'),
                 output_written=True,
             )
         )

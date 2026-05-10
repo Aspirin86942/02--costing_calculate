@@ -6,7 +6,7 @@ import pandas as pd
 import polars as pl
 
 from src.analytics.anomaly import ANOMALY_METRICS, build_anomaly_sheet
-from src.analytics.contracts import AnalysisArtifacts
+from src.analytics.contracts import AnalysisArtifacts, FactBundle
 from src.analytics.errors import build_error_frame, concat_error_logs
 from src.analytics.fact_builder import (
     DEFAULT_STANDALONE_COST_ITEMS,
@@ -41,11 +41,21 @@ from src.analytics.fact_builder import (
 )
 from src.analytics.quality import build_quality_metrics
 from src.analytics.table_rendering import (
+    DOC_TYPE_NORMAL_LABEL,
+    DOC_TYPE_REWORK_LABEL,
     DOC_TYPE_SPLIT_SCOPE_MODE,
+    DOC_TYPE_TO_SECTION_LABEL,
     build_product_anomaly_sections,
     build_product_summary_df,
 )
 from src.config.pipelines import normalize_product_anomaly_scope_mode
+
+ProductOrder = tuple[tuple[str, str], ...]
+ANALYZABLE_DOC_TYPES = tuple(
+    doc_type
+    for doc_type, scope_label in DOC_TYPE_TO_SECTION_LABEL.items()
+    if scope_label in {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
+)
 
 
 def build_report_artifacts(
@@ -54,13 +64,12 @@ def build_report_artifacts(
     standalone_cost_items: tuple[str, ...] | list[str] | None = DEFAULT_STANDALONE_COST_ITEMS,
     product_anomaly_scope_mode: str = 'legacy_single_scope',
     month_filter_empty_result: bool = False,
+    presentation_product_order: ProductOrder = (),
 ) -> AnalysisArtifacts:
     """构建 V3 报表所需的全部分析产物（Polars 构建 + pandas 兼容输出）。"""
     validated_scope_mode = normalize_product_anomaly_scope_mode(product_anomaly_scope_mode)
     detail_pl = _to_polars_frame(df_detail)
     qty_pl = _to_polars_frame(df_qty)
-    detail_pd = _to_pandas_frame(df_detail)
-    qty_pd = _to_pandas_frame(df_qty)
 
     standalone_metas = resolve_standalone_cost_item_metas(standalone_cost_items)
     total_match_column = build_total_match_column_name(standalone_metas)
@@ -68,6 +77,21 @@ def build_report_artifacts(
         detail_pl,
         qty_pl,
         standalone_cost_items=tuple(meta.cost_item for meta in standalone_metas),
+    )
+    presentation_work_order_fact = _filter_polars_frame_by_product_order(
+        fact_bundle.work_order_fact,
+        presentation_product_order,
+    )
+    presentation_product_summary_fact = _filter_polars_frame_by_product_order(
+        fact_bundle.product_summary_fact,
+        presentation_product_order,
+    )
+    presentation_fact_bundle = FactBundle(
+        detail_fact=fact_bundle.detail_fact,
+        qty_fact=fact_bundle.qty_fact,
+        work_order_fact=fact_bundle.work_order_fact,
+        product_summary_fact=presentation_product_summary_fact,
+        error_fact=fact_bundle.error_fact,
     )
     qty_output_columns = _build_qty_output_columns(qty_pl.columns, standalone_metas, total_match_column)
     qty_sheet_with_key = _select_columns_with_fallback(
@@ -89,19 +113,24 @@ def build_report_artifacts(
         error_frames.append(error_fact_pd)
     _append_non_positive_unit_cost_errors(work_order_source_pd, error_frames)
 
-    work_order_sheet = build_anomaly_sheet(work_order_source_pd, standalone_metas=standalone_metas)
-    product_summary_df = build_product_summary_df(work_order_source_pd)
+    presentation_work_order_source_pd = _restore_work_order_precision(
+        _polars_to_pandas(presentation_work_order_fact),
+        standalone_metas,
+    )
+    work_order_sheet = build_anomaly_sheet(presentation_work_order_source_pd, standalone_metas=standalone_metas)
+    product_summary_df = build_product_summary_df(presentation_work_order_source_pd)
     # doc_type_split 依赖工单层单据类型做分段，不能提前聚合到产品维度。
     product_anomaly_source_df = (
-        work_order_source_pd if validated_scope_mode == DOC_TYPE_SPLIT_SCOPE_MODE else product_summary_df
+        presentation_work_order_source_pd if validated_scope_mode == DOC_TYPE_SPLIT_SCOPE_MODE else product_summary_df
     )
-    fact_df = build_fact_table(work_order_source_pd)
+    fact_df = build_fact_table(presentation_work_order_source_pd)
     filtered_invalid_qty_count, filtered_missing_total_amount_count = _count_filtered_qty_rows(qty_pl)
+    analysis_coverage_frame = _build_analysis_coverage_frame(fact_bundle.work_order_fact)
     quality_metrics = build_quality_metrics(
-        detail_pd,
-        qty_pd,
-        qty_sheet_with_key_pd,
-        work_order_sheet.data,
+        detail_pl,
+        qty_pl,
+        qty_sheet_with_key,
+        analysis_coverage_frame,
         filtered_invalid_qty_count,
         filtered_missing_total_amount_count,
         month_filter_empty_result=month_filter_empty_result,
@@ -119,7 +148,7 @@ def build_report_artifacts(
         ),
         quality_metrics=quality_metrics,
         error_log=error_log,
-        fact_bundle=fact_bundle,
+        fact_bundle=presentation_fact_bundle,
     )
 
 
@@ -139,6 +168,52 @@ def _polars_to_pandas(frame: pl.DataFrame) -> pd.DataFrame:
     if frame.is_empty():
         return pd.DataFrame(columns=frame.columns)
     return pd.DataFrame(frame.to_dicts())
+
+
+def _filter_polars_frame_by_product_order(frame: pl.DataFrame, product_order: ProductOrder) -> pl.DataFrame:
+    """按展示白名单裁剪 Polars frame，避免先生成全量展示页再过滤。"""
+    if frame.is_empty() or not product_order:
+        return frame
+    required_columns = {'product_code', 'product_name'}
+    if not required_columns.issubset(frame.columns):
+        return frame
+
+    whitelist = pl.DataFrame(
+        {
+            'product_code': [code for code, _name in product_order],
+            'product_name': [name for _code, name in product_order],
+            '_order_idx': list(range(len(product_order))),
+        }
+    )
+    filtered = whitelist.join(frame, on=['product_code', 'product_name'], how='inner')
+    sort_columns = ['_order_idx']
+    if '_source_row' in filtered.columns:
+        sort_columns.append('_source_row')
+    elif 'period' in filtered.columns:
+        sort_columns.append('period')
+    return filtered.sort(sort_columns).drop('_order_idx')
+
+
+def _build_analysis_coverage_frame(work_order_fact: pl.DataFrame) -> pl.DataFrame:
+    """构建全量分析覆盖率视图，避免质量指标依赖完整异常展示页。"""
+    if work_order_fact.is_empty():
+        return pl.DataFrame(schema={'是否可参与分析': pl.String})
+
+    doc_type_expr = (
+        pl.col('doc_type').cast(pl.String, strict=False).str.strip_chars()
+        if 'doc_type' in work_order_fact.columns
+        else pl.lit(None)
+    )
+    can_analyze_expr = (
+        pl.col('completed_qty').is_not_null()
+        & (pl.col('completed_qty') > ZERO)
+        & pl.col('total_unit_cost').is_not_null()
+        & (pl.col('total_unit_cost') > ZERO)
+        & doc_type_expr.is_in(ANALYZABLE_DOC_TYPES)
+    )
+    return work_order_fact.select(
+        pl.when(can_analyze_expr).then(pl.lit('是')).otherwise(pl.lit('否')).alias('是否可参与分析')
+    )
 
 
 def _select_columns_with_fallback(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:

@@ -7,6 +7,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from src.analytics.contracts import FlatSheet
 from src.analytics.fact_builder import (
     QTY_CHECK_STATUS,
     QTY_DM_AMOUNT,
@@ -234,6 +235,96 @@ def test_build_report_artifacts_passes_scope_mode_to_product_anomaly_sections(mo
     assert captured['scope_mode'] == 'doc_type_split'
     assert 'product_code' in captured['summary_columns']
     assert artifacts.product_anomaly_sections == []
+
+
+def test_build_report_artifacts_filters_presentation_before_expensive_sheet_builders(monkeypatch) -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'KEEP',
+                '产品名称': '保留产品',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-KEEP',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DROP',
+                '产品名称': '非展示产品',
+                '规格型号': 'S-02',
+                '工单编号': 'WO-DROP',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 50,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'KEEP',
+                '产品名称': '保留产品',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-KEEP',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 10,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'DROP',
+                '产品名称': '非展示产品',
+                '规格型号': 'S-02',
+                '工单编号': 'WO-DROP',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '本期完工数量': 5,
+                '本期完工金额': 50,
+            },
+        ]
+    )
+    captured: dict[str, list[str]] = {}
+
+    def _fake_build_anomaly_sheet(work_order_df: pd.DataFrame, standalone_metas=None):
+        captured['work_order_products'] = work_order_df['product_code'].tolist()
+        return FlatSheet(
+            data=pd.DataFrame(
+                {'product_code': work_order_df['product_code'], '是否可参与分析': ['是'] * len(work_order_df)}
+            ),
+            column_types={'product_code': 'text', '是否可参与分析': 'text'},
+        )
+
+    def _fake_build_product_anomaly_sections(summary_df: pd.DataFrame, *, scope_mode: str = 'legacy_single_scope'):
+        captured['section_products'] = summary_df['product_code'].tolist()
+        return []
+
+    monkeypatch.setattr('src.analytics.qty_enricher.build_anomaly_sheet', _fake_build_anomaly_sheet)
+    monkeypatch.setattr(
+        'src.analytics.qty_enricher.build_product_anomaly_sections',
+        _fake_build_product_anomaly_sections,
+    )
+
+    artifacts = build_report_artifacts(
+        df_detail,
+        df_qty,
+        presentation_product_order=(('KEEP', '保留产品'),),
+    )
+
+    metric_map = {metric.metric: metric.value for metric in artifacts.quality_metrics}
+    assert captured['work_order_products'] == ['KEEP']
+    assert captured['section_products'] == ['KEEP']
+    assert metric_map['产品数量统计输出行数'] == '2'
 
 
 def test_build_report_artifacts_rejects_invalid_scope_mode() -> None:

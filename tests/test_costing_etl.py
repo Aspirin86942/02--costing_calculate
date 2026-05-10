@@ -378,7 +378,7 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
 def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:
     etl = CostingWorkbookETL(
         skip_rows=2,
-        product_order=(),
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
         standalone_cost_items=('委外加工费',),
         product_anomaly_scope_mode='doc_type_split',
         month_range=MonthRange(start='2025-01', end='2025-03'),
@@ -406,6 +406,9 @@ def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_pa
         assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
 
     payload_mock.assert_called_once()
+    assert payload_mock.call_args.kwargs['presentation_product_order'] == (
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+    )
     writer_mock.assert_not_called()
     assert etl.last_quality_metrics == payload.quality_metrics
     assert etl.last_error_log_count == 1

@@ -282,6 +282,7 @@ class CostingWorkbookETL:
                 standalone_cost_items=self.standalone_cost_items,
                 product_anomaly_scope_mode=self.product_anomaly_scope_mode,
                 month_range=self.month_range,
+                presentation_product_order=self.product_order,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
             self._apply_payload_state(payload)
@@ -473,6 +474,7 @@ class CostingWorkbookETL:
                 standalone_cost_items=self.standalone_cost_items,
                 product_anomaly_scope_mode=self.product_anomaly_scope_mode,
                 month_range=self.month_range,
+                presentation_product_order=self.product_order,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
             )
             self._apply_payload_state(payload)

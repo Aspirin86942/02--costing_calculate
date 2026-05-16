@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.analytics.contracts import QualityMetric, SheetModel, WorkbookPayload
-from src.config.pipelines import PipelineConfig
+from src.config.pipelines import GB_PIPELINE, SK_PIPELINE, PipelineConfig
 from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
 
@@ -37,6 +37,37 @@ def test_find_input_files_preserves_pattern_order_and_deduplicates(tmp_path) -> 
     )
 
     assert find_input_files(config) == [same_file, second_file, third_file]
+
+
+def test_find_input_files_matches_uppercase_and_lowercase_pipeline_prefixes(tmp_path) -> None:
+    gb_upper = tmp_path / 'GB-成本计算单_202601.xlsx'
+    gb_lower = tmp_path / 'gb-成本计算单_202601.xlsx'
+    sk_upper = tmp_path / 'SK-成本计算单_202601.xlsx'
+    sk_lower = tmp_path / 'sk-成本计算单_202601.xlsx'
+    for path in (gb_upper, gb_lower, sk_upper, sk_lower):
+        path.touch()
+
+    gb_config = PipelineConfig(
+        name='gb',
+        raw_dir=tmp_path,
+        processed_dir=tmp_path,
+        input_patterns=GB_PIPELINE.input_patterns,
+        product_order=GB_PIPELINE.product_order,
+        standalone_cost_items=GB_PIPELINE.standalone_cost_items,
+        product_anomaly_scope_mode=GB_PIPELINE.product_anomaly_scope_mode,
+    )
+    sk_config = PipelineConfig(
+        name='sk',
+        raw_dir=tmp_path,
+        processed_dir=tmp_path,
+        input_patterns=SK_PIPELINE.input_patterns,
+        product_order=SK_PIPELINE.product_order,
+        standalone_cost_items=SK_PIPELINE.standalone_cost_items,
+        product_anomaly_scope_mode=SK_PIPELINE.product_anomaly_scope_mode,
+    )
+
+    assert set(find_input_files(gb_config)) == {gb_upper, gb_lower}
+    assert set(find_input_files(sk_config)) == {sk_upper, sk_lower}
 
 
 def test_run_pipeline_prints_quality_summary_without_writing_log_file(

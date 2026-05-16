@@ -23,11 +23,17 @@ def test_pipeline_input_patterns_are_defined_per_target() -> None:
         'GB-*成本计算单.xlsx',
         'GB-* 成本计算单.xlsx',
         'GB-*.xlsx',
+        'gb-*成本计算单.xlsx',
+        'gb-* 成本计算单.xlsx',
+        'gb-*.xlsx',
     )
     assert SK_PIPELINE.input_patterns == (
         'SK-*成本计算单.xlsx',
         'SK-* 成本计算单.xlsx',
         'SK-*.xlsx',
+        'sk-*成本计算单.xlsx',
+        'sk-* 成本计算单.xlsx',
+        'sk-*.xlsx',
     )
 
 

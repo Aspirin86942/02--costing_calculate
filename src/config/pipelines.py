@@ -83,9 +83,13 @@ GB_PIPELINE = PipelineConfig(
     product_order=GB_PRODUCT_ORDER,
     product_anomaly_scope_mode=PRODUCT_ANOMALY_SCOPE_DOC_TYPE_SPLIT,
     input_patterns=(
+        # Linux 的 Path.glob 大小写敏感，ERP 导出文件可能出现大小写两种前缀。
         'GB-*成本计算单.xlsx',
         'GB-* 成本计算单.xlsx',
         'GB-*.xlsx',
+        'gb-*成本计算单.xlsx',
+        'gb-* 成本计算单.xlsx',
+        'gb-*.xlsx',
     ),
 )
 
@@ -96,9 +100,13 @@ SK_PIPELINE = PipelineConfig(
     product_order=SK_PRODUCT_ORDER,
     product_anomaly_scope_mode=PRODUCT_ANOMALY_SCOPE_LEGACY,
     input_patterns=(
+        # Linux 的 Path.glob 大小写敏感，ERP 导出文件可能出现大小写两种前缀。
         'SK-*成本计算单.xlsx',
         'SK-* 成本计算单.xlsx',
         'SK-*.xlsx',
+        'sk-*成本计算单.xlsx',
+        'sk-* 成本计算单.xlsx',
+        'sk-*.xlsx',
     ),
     standalone_cost_items=('委外加工费', '软件费用'),
 )

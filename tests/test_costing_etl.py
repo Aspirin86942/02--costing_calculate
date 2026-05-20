@@ -1,5 +1,6 @@
 """测试主 ETL 输出与基础行为。"""
 
+import inspect
 import logging
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from src.analytics import contracts as analytics_contracts
 from src.analytics.contracts import (
     AnalysisArtifacts,
     ConditionalFormatRule,
@@ -346,20 +348,28 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
     with (
         patch.object(workbook_writer.sheet_writer, 'write_dataframe_fast') as fast_writer_mock,
         patch.object(workbook_writer.sheet_writer, 'write_dataframe_sheet') as dataframe_writer_mock,
-        patch.object(workbook_writer.sheet_writer, 'write_analysis_sheet') as analysis_writer_mock,
     ):
         workbook_writer.write_workbook(
             output_path,
             detail_df=detail_df,
             qty_sheet_df=qty_sheet_df,
-            analysis_tables={'直接材料_价量比': []},
             work_order_sheet=work_order_sheet,
             product_anomaly_sections=[],
         )
 
     assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本计算单总表', '成本计算单数量聚合维度']
     dataframe_writer_mock.assert_not_called()
-    analysis_writer_mock.assert_not_called()
+
+
+def test_legacy_price_volume_writer_api_is_not_exposed() -> None:
+    signature = inspect.signature(CostingWorkbookWriter.write_workbook)
+    legacy_param_name = 'analysis' + '_tables'
+    legacy_writer_name = 'write' + '_analysis' + '_sheet'
+    legacy_contract_name = 'Section' + 'Block'
+
+    assert legacy_param_name not in signature.parameters
+    assert not hasattr(FastSheetWriter, legacy_writer_name)
+    assert not hasattr(analytics_contracts, legacy_contract_name)
 
 
 def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplog, tmp_path: Path) -> None:

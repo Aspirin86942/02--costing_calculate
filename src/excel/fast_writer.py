@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock, SheetModel
+from src.analytics.contracts import FlatSheet, ProductAnomalySection, SheetModel
 from src.excel.conditional_formats import apply_work_order_highlights, resolve_highlight_style
 from src.excel.excel_values import (
     coerce_row_value_for_excel,
@@ -21,7 +21,6 @@ from src.excel.product_anomaly_writer import (
 )
 from src.excel.styles import (
     EXCEL_TWO_DECIMAL_FORMAT,
-    estimate_analysis_column_widths,
     estimate_flat_column_widths,
     resolve_metric_number_format,
     to_excel_number,
@@ -225,115 +224,6 @@ class FastSheetWriter:
             raise ValueError(
                 f'lightweight fast-path does not support special layout sheet: sheet_name={model.sheet_name}'
             )
-
-    def write_analysis_sheet(self, writer: pd.ExcelWriter, sheet_name: str, sections: list[SectionBlock]) -> None:
-        """写入三段分析块（Task 1 不迁移高亮/条件格式）。"""
-        workbook = writer.book
-        worksheet = workbook.add_worksheet(sheet_name)
-        writer.sheets[sheet_name] = worksheet
-
-        title_format = workbook.add_format({'bold': True, 'bg_color': '#FFD966', 'align': 'left', 'valign': 'vcenter'})
-        header_format = workbook.add_format(
-            {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
-        )
-        text_format = workbook.add_format({'align': 'left', 'valign': 'vcenter', 'border': 1})
-        right_text_format = workbook.add_format({'align': 'right', 'valign': 'vcenter', 'border': 1})
-        total_text_format = workbook.add_format(
-            {'bold': True, 'bg_color': '#BDD7EE', 'align': 'left', 'valign': 'vcenter', 'border': 1}
-        )
-        total_right_format = workbook.add_format(
-            {'bold': True, 'bg_color': '#BDD7EE', 'align': 'right', 'valign': 'vcenter', 'border': 1}
-        )
-        metric_format_cache: dict[str, Any] = {}
-        total_metric_format_cache: dict[str, Any] = {}
-
-        current_row = 0
-        first_filter_scope: tuple[int, int, int] | None = None
-        max_col_overall = 1
-
-        for section in sections:
-            write_section_df = section.data.copy()
-            if section.metric_type in {'amount', 'price', 'qty'}:
-                numeric_columns = [
-                    column_name
-                    for column_name in write_section_df.columns
-                    if column_name not in {'产品编码', '产品名称'}
-                ]
-                for column_name in numeric_columns:
-                    write_section_df[column_name] = write_section_df[column_name].map(to_excel_number)
-
-            columns = write_section_df.columns.tolist()
-            max_col_overall = max(max_col_overall, max(len(columns), 1))
-
-            worksheet.write(current_row, 0, section.title, title_format)
-            header_row = current_row + 1
-            for col_idx, column_name in enumerate(columns):
-                worksheet.write(header_row, col_idx, column_name, header_format)
-
-            number_format = resolve_metric_number_format(section.metric_type, qty_format=EXCEL_TWO_DECIMAL_FORMAT)
-            metric_format = None
-            total_metric_format = None
-            if number_format is not None:
-                metric_format = metric_format_cache.setdefault(
-                    number_format,
-                    workbook.add_format(
-                        {'align': 'right', 'valign': 'vcenter', 'border': 1, 'num_format': number_format}
-                    ),
-                )
-                total_metric_format = total_metric_format_cache.setdefault(
-                    number_format,
-                    workbook.add_format(
-                        {
-                            'bold': True,
-                            'bg_color': '#BDD7EE',
-                            'align': 'right',
-                            'valign': 'vcenter',
-                            'border': 1,
-                            'num_format': number_format,
-                        }
-                    ),
-                )
-
-            for row_offset, row_data in enumerate(write_section_df.itertuples(index=False, name=None)):
-                excel_row = header_row + 1 + row_offset
-                for col_idx, value in enumerate(row_data):
-                    if col_idx <= 1:
-                        cell_format = text_format
-                    elif metric_format is not None:
-                        cell_format = metric_format
-                    else:
-                        cell_format = right_text_format
-                    _write_cell(worksheet, excel_row, col_idx, value, cell_format)
-
-            if section.has_total_row and not write_section_df.empty:
-                total_row = header_row + len(write_section_df)
-                total_values = write_section_df.iloc[-1].tolist()
-                for col_idx, value in enumerate(total_values):
-                    if col_idx <= 1:
-                        cell_format = total_text_format
-                    elif total_metric_format is not None:
-                        cell_format = total_metric_format
-                    else:
-                        cell_format = total_right_format
-                    _write_cell(worksheet, total_row, col_idx, value, cell_format)
-
-            section_end_row = max(header_row, header_row + len(write_section_df))
-            if first_filter_scope is None and columns:
-                first_filter_scope = (header_row, len(columns) - 1, section_end_row)
-            current_row = current_row + len(write_section_df) + 3
-
-        if first_filter_scope is not None:
-            header_row, last_col_idx, end_row = first_filter_scope
-            worksheet.autofilter(header_row, 0, end_row, last_col_idx)
-
-        freeze_row, freeze_col = _freeze_panes_to_rc('C3')
-        worksheet.freeze_panes(freeze_row, freeze_col)
-
-        width_map = estimate_analysis_column_widths([(section.title, section.data) for section in sections])
-        for col_idx in range(max_col_overall):
-            width = width_map.get(col_idx + 1, 12.0)
-            default_format = text_format if col_idx < 2 else right_text_format
-            worksheet.set_column(col_idx, col_idx, width, default_format)
 
     def write_flat_sheet(
         self,

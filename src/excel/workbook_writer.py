@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock, SheetModel
+from src.analytics.contracts import FlatSheet, ProductAnomalySection, SheetModel
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.product_anomaly_writer import build_product_anomaly_sections_from_model
 
@@ -61,7 +61,6 @@ class CostingWorkbookWriter:
         *,
         detail_df: pd.DataFrame,
         qty_sheet_df: pd.DataFrame,
-        analysis_tables: dict[str, list[SectionBlock]],
         work_order_sheet: FlatSheet,
         product_anomaly_sections: list[ProductAnomalySection],
     ) -> None:

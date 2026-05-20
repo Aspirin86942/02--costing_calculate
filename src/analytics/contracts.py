@@ -99,16 +99,6 @@ class WorkbookPayload:
 
 
 @dataclass
-class SectionBlock:
-    """单个价量分析分段。"""
-
-    title: str
-    data: pd.DataFrame
-    metric_type: str
-    has_total_row: bool
-
-
-@dataclass
 class ProductAnomalySection:
     """单个产品兼容摘要分段。"""
 

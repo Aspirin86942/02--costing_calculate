@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from src.analytics.contracts import QualityMetric
@@ -77,12 +78,19 @@ def _succeeded_result(
     )
 
 
-def _failed_result(workbook_path: Path, message: str = '处理失败') -> CostingRunResult:
+def _failed_result(
+    workbook_path: Path,
+    message: str = '处理失败',
+    *,
+    error_code: str = 'ETL_FAILED',
+    technical_detail: str | None = None,
+) -> CostingRunResult:
     return CostingRunResult(
         status=ServiceStatus.FAILED,
         message=message,
         workbook_path=workbook_path,
-        error_code='ETL_FAILED',
+        error_code=error_code,
+        technical_detail=technical_detail,
     )
 
 
@@ -349,6 +357,67 @@ def test_run_pipeline_returns_one_when_service_fails(monkeypatch, tmp_path) -> N
     )
 
     assert run_pipeline(config) == 1
+
+
+def test_run_pipeline_check_only_failure_logs_service_error_code(monkeypatch, caplog, tmp_path) -> None:
+    caplog.set_level(logging.ERROR, logger='src.etl.runner')
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    config = _config(tmp_path)
+    planned_workbook = config.processed_dir / 'GB-成本计算单_处理后.xlsx'
+
+    monkeypatch.setattr(
+        runner,
+        'load_product_order_for_pipeline',
+        lambda pipeline_name: (('GB_SERVICE', '服务白名单'),),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        'precheck_costing_run',
+        lambda request: _failed_result(planned_workbook, '输出 workbook 已存在', error_code='OUTPUT_EXISTS'),
+        raising=False,
+    )
+
+    assert run_pipeline(config, check_only=True) == 1
+
+    error_text = '\n'.join(record.message for record in caplog.records)
+    assert '预检失败' in error_text
+    assert '输出 workbook 已存在' in error_text
+    assert 'error_code=OUTPUT_EXISTS' in error_text
+
+
+def test_run_pipeline_normal_failure_logs_service_technical_detail(monkeypatch, caplog, tmp_path) -> None:
+    caplog.set_level(logging.ERROR, logger='src.etl.runner')
+    input_file = tmp_path / 'SK-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    config = _config(tmp_path, name='sk')
+    planned_workbook = config.processed_dir / 'SK-成本计算单_处理后.xlsx'
+
+    monkeypatch.setattr(
+        runner,
+        'load_product_order_for_pipeline',
+        lambda pipeline_name: (('SK_SERVICE', '服务白名单'),),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        'run_costing_request',
+        lambda request: _failed_result(
+            planned_workbook,
+            '处理失败，请查看日志详情',
+            error_code='ETL_FAILED',
+            technical_detail='openpyxl failed to parse workbook',
+        ),
+        raising=False,
+    )
+
+    assert run_pipeline(config) == 1
+
+    error_text = '\n'.join(record.message for record in caplog.records)
+    assert '处理失败' in error_text
+    assert 'error_code=ETL_FAILED' in error_text
+    assert 'technical_detail=openpyxl failed to parse workbook' in error_text
 
 
 def test_run_pipeline_returns_one_when_product_whitelist_loader_fails(monkeypatch, tmp_path) -> None:

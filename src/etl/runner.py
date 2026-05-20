@@ -181,6 +181,13 @@ def _exit_code_from_status(status: ServiceStatus) -> int:
     return 0 if status == ServiceStatus.SUCCEEDED else 1
 
 
+def _log_failed_result(prefix: str, result: CostingRunResult) -> None:
+    error_code = result.error_code or '-'
+    logger.error('%s: %s | error_code=%s', prefix, result.message, error_code)
+    if result.technical_detail:
+        logger.error('%s technical_detail=%s', prefix, result.technical_detail)
+
+
 def run_pipeline(
     config: PipelineConfig,
     month_range: MonthRange | None = None,
@@ -212,7 +219,7 @@ def run_pipeline(
         if result.status == ServiceStatus.SUCCEEDED:
             logger.info('预检成功: %s', input_file.name)
         else:
-            logger.error('预检失败: %s', result.message)
+            _log_failed_result('预检失败', result)
         return _exit_code_from_status(result.status)
 
     result = run_costing_request(request)
@@ -228,5 +235,5 @@ def run_pipeline(
     if result.status == ServiceStatus.SUCCEEDED:
         logger.info('处理成功: %s', output_file)
     else:
-        logger.error('处理失败: %s', result.message)
+        _log_failed_result('处理失败', result)
     return _exit_code_from_status(result.status)

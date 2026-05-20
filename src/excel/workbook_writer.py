@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.analytics.contracts import FlatSheet, ProductAnomalySection, SectionBlock, SheetModel
 from src.excel.fast_writer import FastSheetWriter
+from src.excel.product_anomaly_writer import build_product_anomaly_sections_from_model
 
 DETAIL_TWO_DECIMAL_COLUMNS = {'本期完工单位成本', '本期完工金额'}
 QTY_TWO_DECIMAL_COLUMNS = {
@@ -72,7 +73,7 @@ class CostingWorkbookWriter:
         ) as writer:
             self.sheet_writer.write_dataframe_fast(
                 writer,
-                '成本明细',
+                '成本计算单总表',
                 detail_df,
                 numeric_columns=DETAIL_TWO_DECIMAL_COLUMNS,
                 freeze_panes='A2',
@@ -80,17 +81,15 @@ class CostingWorkbookWriter:
             )
             self.sheet_writer.write_dataframe_fast(
                 writer,
-                '产品数量统计',
+                '成本计算单数量聚合维度',
                 qty_sheet_df,
                 numeric_columns=_resolve_qty_numeric_columns(qty_sheet_df),
                 freeze_panes='A2',
                 fixed_width=15,
             )
-            for sheet_name, sections in analysis_tables.items():
-                self.sheet_writer.write_analysis_sheet(writer, sheet_name, sections)
             work_order_worksheet = self.sheet_writer.write_flat_sheet(
                 writer,
-                '按工单按产品异常值分析',
+                '成本分析工单维度',
                 work_order_sheet,
                 freeze_panes='A2',
                 fixed_width=15,
@@ -101,7 +100,7 @@ class CostingWorkbookWriter:
                 columns=work_order_sheet.data.columns.tolist(),
                 max_row=len(work_order_sheet.data) + 1,
             )
-            self.sheet_writer.write_product_anomaly_sheet(writer, '按产品异常值分析', product_anomaly_sections)
+            self.sheet_writer.write_product_anomaly_sheet(writer, '成本分析产品维度', product_anomaly_sections)
 
     def write_workbook_from_models(self, output_path: Path, *, sheet_models: Sequence[SheetModel]) -> None:
         """按 SheetModel 契约写出完整 workbook。"""
@@ -111,6 +110,15 @@ class CostingWorkbookWriter:
             engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
         ) as writer:
             for model in sheet_models:
+                if model.sheet_name == '成本分析产品维度':
+                    if model.write_mode == 'dataframe_fast':
+                        raise ValueError(
+                            'lightweight fast-path does not support special layout sheet: '
+                            f'sheet_name={model.sheet_name}'
+                        )
+                    sections = build_product_anomaly_sections_from_model(model)
+                    self.sheet_writer.write_product_anomaly_sheet(writer, model.sheet_name, sections)
+                    continue
                 if model.write_mode == 'dataframe_fast':
                     self.sheet_writer.write_sheet_model_as_lightweight_table(writer, model)
                     continue

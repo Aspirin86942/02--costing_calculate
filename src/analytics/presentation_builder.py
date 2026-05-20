@@ -17,10 +17,6 @@ from src.analytics.contracts import (
     StyleProfile,
     WriteMode,
 )
-from src.analytics.table_rendering import (
-    PRODUCT_SUMMARY_SHEET_COLUMN_TYPES,
-    build_product_summary_sheet_frame,
-)
 
 _NUMBER_FORMAT_BY_TYPE: dict[str, str] = {
     'amount': '#,##0.00',
@@ -51,35 +47,6 @@ _QTY_TWO_DECIMAL_COLUMNS: set[str] = {
     '制造费用_折旧单位完工成本',
     '制造费用_水电费单位完工成本',
     '委外加工费单位完工成本',
-}
-_ANALYSIS_SHEET_COLUMN_LAYOUT: dict[str, tuple[str, ...]] = {
-    '直接材料_价量比': (
-        '产品编码',
-        '产品名称',
-        '月份',
-        '直接材料成本',
-        '完工数量',
-        '单位直接材料成本',
-        '直接材料贡献率',
-    ),
-    '直接人工_价量比': (
-        '产品编码',
-        '产品名称',
-        '月份',
-        '直接人工成本',
-        '完工数量',
-        '单位直接人工成本',
-        '直接人工贡献率',
-    ),
-    '制造费用_价量比': (
-        '产品编码',
-        '产品名称',
-        '月份',
-        '制造费用成本',
-        '完工数量',
-        '单位制造费用成本',
-        '制造费用贡献率',
-    ),
 }
 _FAST_EXPORT_WRITE_MODES: set[WriteMode] = {'dataframe_fast'}
 _FAST_EXPORT_STYLE_PROFILES: set[StyleProfile] = {'lightweight_flat'}
@@ -158,16 +125,9 @@ def build_sheet_models(
     work_order_sheet: FlatSheet,
     product_anomaly_sections: list[ProductAnomalySection],
 ) -> tuple[SheetModel, ...]:
-    """构建 workbook 的 7 张标准 SheetModel。"""
+    """构建 workbook 的 4 张业务 SheetModel。"""
     detail_frame = _to_polars_frame(detail_df)
     qty_frame = _to_polars_frame(qty_sheet_df)
-
-    summary_source = (
-        fact_bundle.product_summary_fact
-        if fact_bundle is not None
-        else pl.DataFrame(schema={'product_code': pl.String, 'product_name': pl.String, 'period_display': pl.String})
-    )
-    summary_df = build_product_summary_sheet_frame(summary_source)
 
     work_order_frame = _to_polars_frame(work_order_sheet.data)
     work_order_column_types = dict(work_order_sheet.column_types)
@@ -182,7 +142,7 @@ def build_sheet_models(
     product_anomaly_number_formats = _build_number_formats(product_anomaly_column_types)
 
     detail_model = dataframe_to_sheet_model(
-        sheet_name='成本明细',
+        sheet_name='成本计算单总表',
         frame=detail_frame,
         column_types=dict.fromkeys(detail_frame.columns, 'text'),
         number_formats={column: '#,##0.00' for column in detail_frame.columns if column in _DETAIL_TWO_DECIMAL_COLUMNS},
@@ -192,7 +152,7 @@ def build_sheet_models(
     )
     qty_two_decimal_columns = _resolve_qty_two_decimal_columns(tuple(qty_frame.columns))
     qty_model = dataframe_to_sheet_model(
-        sheet_name='产品数量统计',
+        sheet_name='成本计算单数量聚合维度',
         frame=qty_frame,
         column_types=dict.fromkeys(qty_frame.columns, 'text'),
         number_formats={column: '#,##0.00' for column in qty_frame.columns if column in qty_two_decimal_columns},
@@ -201,20 +161,15 @@ def build_sheet_models(
         source_frame=qty_frame,
     )
 
-    analysis_models = tuple(
-        _build_analysis_sheet_model(sheet_name=sheet_name, summary_df=summary_df)
-        for sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')
-    )
-
     work_order_model = dataframe_to_sheet_model(
-        sheet_name='按工单按产品异常值分析',
+        sheet_name='成本分析工单维度',
         frame=work_order_frame,
         column_types=work_order_column_types,
         number_formats=work_order_number_formats,
         conditional_formats=work_order_conditional_formats,
     )
     product_anomaly_model = dataframe_to_sheet_model(
-        sheet_name='按产品异常值分析',
+        sheet_name='成本分析产品维度',
         frame=product_anomaly_frame,
         column_types=product_anomaly_column_types,
         number_formats=product_anomaly_number_formats,
@@ -224,28 +179,8 @@ def build_sheet_models(
     return (
         detail_model,
         qty_model,
-        *analysis_models,
         work_order_model,
         product_anomaly_model,
-    )
-
-
-def _build_analysis_sheet_model(*, sheet_name: str, summary_df: pd.DataFrame) -> SheetModel:
-    columns = _ANALYSIS_SHEET_COLUMN_LAYOUT[sheet_name]
-    frame_df = summary_df.reindex(columns=columns)
-    frame = _to_polars_frame(frame_df)
-    column_types = {
-        column: PRODUCT_SUMMARY_SHEET_COLUMN_TYPES[column]
-        for column in columns
-        if column in PRODUCT_SUMMARY_SHEET_COLUMN_TYPES
-    }
-    number_formats = _build_number_formats(column_types)
-    return dataframe_to_sheet_model(
-        sheet_name=sheet_name,
-        frame=frame,
-        column_types=column_types,
-        number_formats=number_formats,
-        freeze_panes='C3',
     )
 
 

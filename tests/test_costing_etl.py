@@ -28,7 +28,12 @@ from src.etl.costing_etl import CostingWorkbookETL
 from src.etl.month_filter import MonthRange
 from src.excel.fast_writer import FastSheetWriter
 from src.excel.workbook_writer import CostingWorkbookWriter
-from tests.contracts._workbook_contract_helper import extract_highlight_semantics
+from tests.contracts._workbook_contract_helper import (
+    _extract_rule_fill,
+    _extract_rule_font,
+    _normalize_rule_formulas,
+    _normalize_sqref,
+)
 
 
 def _build_header_map(worksheet, header_row: int = 1) -> dict[str, int]:
@@ -66,6 +71,27 @@ def _assert_header_columns_fixed_width(
             fallback_width = worksheet.column_dimensions[column_letter].width
             width = None if fallback_width is None else float(fallback_width)
         assert width == expected_width
+
+
+def _extract_highlight_semantics(workbook_path: Path, sheet_name: str) -> dict[str, object]:
+    workbook = load_workbook(workbook_path)
+    worksheet = workbook[sheet_name]
+    rules: list[dict[str, object]] = []
+
+    for conditional_range, rule_list in worksheet.conditional_formatting._cf_rules.items():
+        sqref = _normalize_sqref(str(conditional_range.sqref))
+        for rule in rule_list:
+            rules.append(
+                {
+                    'sqref': sqref,
+                    'formula': _normalize_rule_formulas(rule.formula),
+                    'fill': _extract_rule_fill(rule),
+                    'font': _extract_rule_font(rule),
+                }
+            )
+
+    rules.sort(key=lambda item: (item['sqref'], tuple(item['formula'])))
+    return {'sheet': worksheet.title, 'rules': rules}
 
 
 def _build_workbook_payload_from_artifacts(
@@ -330,7 +356,7 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
             product_anomaly_sections=[],
         )
 
-    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本明细', '产品数量统计']
+    assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本计算单总表', '成本计算单数量聚合维度']
     dataframe_writer_mock.assert_not_called()
 
 
@@ -340,7 +366,7 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('产品编码',),
                 rows_factory=lambda: iter([('P001',)]),
                 column_types={'产品编码': 'text'},
@@ -388,7 +414,7 @@ def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_pa
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('产品编码',),
                 rows_factory=lambda: iter([('P001',)]),
                 column_types={'产品编码': 'text'},
@@ -441,7 +467,7 @@ def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_pa
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='按工单按产品异常值分析',
+            sheet_name='成本分析工单维度',
             columns=('直接材料单位完工成本', '直接材料异常标记'),
             rows_factory=lambda: iter([(18.0, '关注')]),
             column_types={'直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
@@ -462,10 +488,31 @@ def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_pa
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    worksheet = workbook['按工单按产品异常值分析']
+    worksheet = workbook['成本分析工单维度']
     assert worksheet.freeze_panes == 'A2'
     assert worksheet['A2'].number_format == '#,##0.00'
     assert worksheet.conditional_formatting
+
+
+def test_build_sheet_models_outputs_four_business_named_sheets() -> None:
+    models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        qty_sheet_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001', '产品名称': '产品A'}]),
+            column_types={'月份': 'text', '产品编码': 'text', '产品名称': 'text'},
+        ),
+        product_anomaly_sections=[],
+    )
+
+    assert [model.sheet_name for model in models] == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+        '成本分析产品维度',
+    ]
+    assert not any(model.sheet_name.endswith('_价量比') for model in models)
 
 
 def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> None:
@@ -502,8 +549,8 @@ def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> Non
             product_anomaly_sections=product_sections,
         )
 
-    assert len(models) == 7
-    product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    assert len(models) == 4
+    product_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
     assert product_model.freeze_panes == 'A6'
     assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
 
@@ -525,7 +572,7 @@ def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_col
         product_anomaly_sections=[],
     )
 
-    qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
+    qty_model = next(model for model in models if model.sheet_name == '成本计算单数量聚合维度')
     rows = list(qty_model.rows_factory())
     assert rows[0][1] is None
     assert rows[1][1] == '集成检测部'
@@ -565,14 +612,12 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
         product_anomaly_sections=[],
     )
 
-    detail_model = next(model for model in models if model.sheet_name == '成本明细')
-    qty_model = next(model for model in models if model.sheet_name == '产品数量统计')
-    work_order_model = next(model for model in models if model.sheet_name == '按工单按产品异常值分析')
-    product_anomaly_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
-    analysis_models = [
-        model for model in models if model.sheet_name in ('直接材料_价量比', '直接人工_价量比', '制造费用_价量比')
-    ]
+    detail_model = next(model for model in models if model.sheet_name == '成本计算单总表')
+    qty_model = next(model for model in models if model.sheet_name == '成本计算单数量聚合维度')
+    work_order_model = next(model for model in models if model.sheet_name == '成本分析工单维度')
+    product_anomaly_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
 
+    assert len(models) == 4
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
     assert isinstance(detail_model.source_frame, pl.DataFrame)
@@ -601,11 +646,6 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     assert product_anomaly_model.write_mode is None
     assert product_anomaly_model.style_profile is None
     assert product_anomaly_model.source_frame is None
-    assert analysis_models
-    for model in analysis_models:
-        assert model.write_mode is None
-        assert model.style_profile is None
-        assert model.source_frame is None
 
 
 def test_dataframe_to_sheet_model_rejects_invalid_fast_metadata() -> None:
@@ -703,7 +743,7 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    worksheet = workbook['按产品异常值分析']
+    worksheet = workbook['成本分析产品维度']
     assert worksheet['A1'].value == '四、按单个产品异常值分析'
     assert worksheet['A3'].value == '产品编码'
     assert worksheet['A4'].value == 'P001'
@@ -742,7 +782,7 @@ def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() ->
         ],
     )
 
-    product_model = next(model for model in models if model.sheet_name == '按产品异常值分析')
+    product_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
     rows = list(product_model.rows_factory())
 
     assert product_model.columns[:4] == ('产品编码', '产品名称', '分析口径', '月份')
@@ -786,7 +826,7 @@ def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    worksheet = workbook['按产品异常值分析']
+    worksheet = workbook['成本分析产品维度']
     assert worksheet['A1'].value == '四、按单个产品异常值分析'
     assert worksheet['A3'].value == '产品编码'
     assert worksheet['A4'].value == 'P001'
@@ -834,8 +874,8 @@ def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Pa
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    detail_sheet = workbook['成本明细']
-    qty_sheet = workbook['产品数量统计']
+    detail_sheet = workbook['成本计算单总表']
+    qty_sheet = workbook['成本计算单数量聚合维度']
     detail_headers = _build_header_map(detail_sheet)
     qty_headers = _build_header_map(qty_sheet)
 
@@ -850,7 +890,7 @@ def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writ
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='成本明细',
+            sheet_name='成本计算单总表',
             columns=('文本列', '金额列'),
             rows_factory=lambda: iter([('A', 10.0)]),
             column_types={'文本列': 'text', '金额列': 'amount'},
@@ -860,7 +900,7 @@ def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writ
             source_frame=pl.DataFrame({'文本列': ['A'], '金额列': [10.0]}),
         ),
         SheetModel(
-            sheet_name='按工单按产品异常值分析',
+            sheet_name='成本分析工单维度',
             columns=('直接材料单位完工成本', '直接材料异常标记'),
             rows_factory=lambda: iter([(18.0, '关注')]),
             column_types={'直接材料单位完工成本': 'price', '直接材料异常标记': 'text'},
@@ -885,8 +925,8 @@ def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writ
     ):
         writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
-    assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == ['成本明细']
-    assert [call.args[1].sheet_name for call in generic_mock.call_args_list] == ['按工单按产品异常值分析']
+    assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == ['成本计算单总表']
+    assert [call.args[1].sheet_name for call in generic_mock.call_args_list] == ['成本分析工单维度']
 
 
 def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) -> None:
@@ -894,7 +934,7 @@ def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) 
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='成本明细',
+            sheet_name='成本计算单总表',
             columns=('文本列', '金额列'),
             rows_factory=lambda: iter([('A', 10.0)]),
             column_types={'文本列': 'text', '金额列': 'amount'},
@@ -911,7 +951,7 @@ def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) 
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    worksheet = workbook['成本明细']
+    worksheet = workbook['成本计算单总表']
     assert worksheet.freeze_panes == 'A2'
     assert worksheet.auto_filter.ref == 'A1:B2'
     assert worksheet['B2'].number_format == '#,##0.00'
@@ -927,7 +967,7 @@ def test_sheet_model_fast_tabular_writer_keeps_blank_numeric_cell_format_lightwe
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='成本明细',
+            sheet_name='成本计算单总表',
             columns=('文本列', '金额列'),
             rows_factory=lambda: iter([('A', None)]),
             column_types={'文本列': 'text', '金额列': 'amount'},
@@ -944,7 +984,7 @@ def test_sheet_model_fast_tabular_writer_keeps_blank_numeric_cell_format_lightwe
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
     workbook = load_workbook(output_path)
-    worksheet = workbook['成本明细']
+    worksheet = workbook['成本计算单总表']
     value_cell = worksheet['B2']
 
     assert value_cell.value is None
@@ -961,7 +1001,7 @@ def test_sheet_model_fast_tabular_writer_skips_non_blank_numeric_rewrite(tmp_pat
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='成本明细',
+            sheet_name='成本计算单总表',
             columns=('文本列', '金额列'),
             rows_factory=lambda: iter([('A', 10.0)]),
             column_types={'文本列': 'text', '金额列': 'amount'},
@@ -986,7 +1026,7 @@ def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: P
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='成本明细',
+            sheet_name='成本计算单总表',
             columns=('文本列', '金额列'),
             rows_factory=lambda: iter([('A', 10.0)]),
             column_types={'文本列': 'text', '金额列': 'amount'},
@@ -1004,7 +1044,7 @@ def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: P
         ),
     )
 
-    with pytest.raises(ValueError, match='conditional_formats.*成本明细'):
+    with pytest.raises(ValueError, match='conditional_formats.*成本计算单总表'):
         writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
 
@@ -1013,7 +1053,7 @@ def test_sheet_model_fast_tabular_writer_rejects_product_anomaly_special_layout(
     writer = CostingWorkbookWriter()
     sheet_models = (
         SheetModel(
-            sheet_name='按产品异常值分析',
+            sheet_name='成本分析产品维度',
             columns=('产品编码', '产品名称', '月份', '总成本'),
             rows_factory=lambda: iter([('P001', '产品A', '2025年01期', 100.0)]),
             column_types={'产品编码': 'text', '产品名称': 'text', '月份': 'text', '总成本': 'amount'},
@@ -1026,7 +1066,7 @@ def test_sheet_model_fast_tabular_writer_rejects_product_anomaly_special_layout(
         ),
     )
 
-    with pytest.raises(ValueError, match='按产品异常值分析'):
+    with pytest.raises(ValueError, match='成本分析产品维度'):
         writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
 
 
@@ -1071,11 +1111,12 @@ def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> Non
             product_anomaly_sections=[],
         )
 
-    direct_material_model = next(model for model in models if model.sheet_name == '直接材料_价量比')
-    rows = list(direct_material_model.rows_factory())
-    assert rows
-    assert rows[0][0] == 'P001'
-    assert rows[0][3] == 70.0
+    assert [model.sheet_name for model in models] == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+        '成本分析产品维度',
+    ]
 
 
 def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:
@@ -1264,26 +1305,23 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
     expected_sheets = {
-        '成本明细',
-        '产品数量统计',
-        '直接材料_价量比',
-        '直接人工_价量比',
-        '制造费用_价量比',
-        '按工单按产品异常值分析',
-        '按产品异常值分析',
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+        '成本分析产品维度',
     }
     assert set(xls.sheet_names) == expected_sheets
-    assert len(xls.sheet_names) == 7
+    assert len(xls.sheet_names) == 4
 
     wb = load_workbook(output_path)
-    ws_detail = wb['成本明细']
+    ws_detail = wb['成本计算单总表']
     detail_headers = _build_header_map(ws_detail)
     assert ws_detail.freeze_panes == 'A2'
     assert ws_detail.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
     assert ws_detail.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
     assert isinstance(ws_detail.cell(2, detail_headers['本期完工单位成本']).value, (int, float))
 
-    ws_qty = wb['产品数量统计']
+    ws_qty = wb['成本计算单数量聚合维度']
     qty_headers = _build_header_map(ws_qty)
     qty_decimal_columns = [
         '本期完工金额',
@@ -1316,17 +1354,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         assert cell.number_format == '#,##0.00'
         assert isinstance(cell.value, (int, float))
 
-    ws_price = wb['直接材料_价量比']
-    price_headers = _build_header_map(ws_price)
-    assert ws_price['A1'].value == '产品编码'
-    assert ws_price.freeze_panes == 'C3'
-    assert ws_price.auto_filter.ref is not None
-    assert ws_price.cell(2, price_headers['直接材料成本']).number_format == '#,##0.00'
-    assert ws_price.cell(2, price_headers['完工数量']).number_format == '#,##0.00'
-    assert ws_price.cell(2, price_headers['单位直接材料成本']).number_format == '#,##0.00'
-    assert isinstance(ws_price.cell(2, price_headers['直接材料成本']).value, (int, float))
-
-    ws_work_order = wb['按工单按产品异常值分析']
+    ws_work_order = wb['成本分析工单维度']
     assert ws_work_order['A1'].value == '月份'
     assert ws_work_order['I2'].value == 'PCS'
     assert ws_work_order['J2'].value == 10
@@ -1338,7 +1366,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_work_order.freeze_panes == 'A2'
     assert ws_work_order.auto_filter.ref is not None
 
-    ws_product = wb['按产品异常值分析']
+    ws_product = wb['成本分析产品维度']
     assert ws_product['A1'].value == '四、按单个产品异常值分析'
     assert ws_product['A3'].value == '产品编码'
     assert ws_product['A4'].value == 'GB_C.D.B0040AA'
@@ -1365,7 +1393,7 @@ def test_process_file_logs_new_payload_stage_timings(caplog, tmp_path) -> None:
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('产品编码',),
                 rows_factory=lambda: iter([('P001',)]),
                 column_types={'产品编码': 'text'},
@@ -1443,33 +1471,30 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    assert len(xls.sheet_names) == 7
+    assert len(xls.sheet_names) == 4
     assert set(xls.sheet_names) == {
-        '成本明细',
-        '产品数量统计',
-        '直接材料_价量比',
-        '直接人工_价量比',
-        '制造费用_价量比',
-        '按工单按产品异常值分析',
-        '按产品异常值分析',
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+        '成本分析产品维度',
     }
 
     wb = load_workbook(output_path)
-    ws_detail = wb['成本明细']
+    ws_detail = wb['成本计算单总表']
     detail_headers = _build_header_map(ws_detail)
     assert ws_detail.freeze_panes == 'A2'
     assert ws_detail.cell(2, detail_headers['本期完工单位成本']).number_format == '#,##0.00'
     assert ws_detail.cell(2, detail_headers['本期完工金额']).number_format == '#,##0.00'
     _assert_header_columns_fixed_width(ws_detail, detail_headers)
 
-    ws_qty = wb['产品数量统计']
+    ws_qty = wb['成本计算单数量聚合维度']
     qty_headers = _build_header_map(ws_qty)
     assert ws_qty.freeze_panes == 'A2'
     assert ws_qty.cell(2, qty_headers['本期完工金额']).number_format == '#,##0.00'
     assert ws_qty.cell(2, qty_headers['本期完工直接材料合计完工金额']).number_format == '#,##0.00'
     _assert_header_columns_fixed_width(ws_qty, qty_headers)
 
-    ws_work_order = wb['按工单按产品异常值分析']
+    ws_work_order = wb['成本分析工单维度']
     work_order_headers = _build_header_map(ws_work_order)
     assert '生产类型' in work_order_headers
     assert ws_work_order.cell(2, work_order_headers['生产类型']).value == '正常生产'
@@ -1615,7 +1640,7 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
     with patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload):
         assert etl.process_file(input_path, output_path) is True
 
-    highlight_semantics = extract_highlight_semantics(output_path)
+    highlight_semantics = _extract_highlight_semantics(output_path, '成本分析工单维度')
 
     assert {
         'sqref': 'J2:J1048576',
@@ -1654,7 +1679,7 @@ def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(t
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('产品编码',),
                 rows_factory=lambda: iter([('DP.C.P0197AA',)]),
                 column_types={'产品编码': 'text'},
@@ -1830,7 +1855,7 @@ def test_process_file_filters_whitelist_before_presentation_and_preserves_numeri
             'src.etl.pipeline.build_sheet_models',
             return_value=(
                 SheetModel(
-                    sheet_name='成本明细',
+                    sheet_name='成本计算单总表',
                     columns=('产品编码',),
                     rows_factory=lambda: iter([('GB_C.D.B0040AA',)]),
                     column_types={'产品编码': 'text'},
@@ -1977,14 +2002,14 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
         assert etl_sk.process_file(input_path, sk_output_path) is True
 
     sk_wb = load_workbook(sk_output_path)
-    sk_qty_ws = sk_wb['产品数量统计']
+    sk_qty_ws = sk_wb['成本计算单数量聚合维度']
     sk_qty_headers = _build_header_map(sk_qty_ws)
     assert '本期完工软件费用合计完工金额' in sk_qty_headers
     assert '软件费用单位完工成本' in sk_qty_headers
     assert sk_qty_ws.cell(2, sk_qty_headers['本期完工软件费用合计完工金额']).number_format == '#,##0.00'
     assert sk_qty_ws.cell(2, sk_qty_headers['软件费用单位完工成本']).number_format == '#,##0.00'
 
-    sk_work_order_ws = sk_wb['按工单按产品异常值分析']
+    sk_work_order_ws = sk_wb['成本分析工单维度']
     sk_work_order_headers = _build_header_map(sk_work_order_ws)
     assert '软件费用合计完工金额' in sk_work_order_headers
     assert '软件费用单位完工成本' in sk_work_order_headers
@@ -1999,12 +2024,12 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
         assert etl_gb.process_file(input_path, gb_output_path) is True
 
     gb_wb = load_workbook(gb_output_path)
-    gb_qty_ws = gb_wb['产品数量统计']
+    gb_qty_ws = gb_wb['成本计算单数量聚合维度']
     gb_qty_headers = _build_header_map(gb_qty_ws)
     assert '本期完工软件费用合计完工金额' not in gb_qty_headers
     assert '软件费用单位完工成本' not in gb_qty_headers
 
-    gb_work_order_ws = gb_wb['按工单按产品异常值分析']
+    gb_work_order_ws = gb_wb['成本分析工单维度']
     gb_work_order_headers = _build_header_map(gb_work_order_ws)
     assert '软件费用合计完工金额' not in gb_work_order_headers
     assert '软件费用单位完工成本' not in gb_work_order_headers

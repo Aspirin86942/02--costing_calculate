@@ -467,7 +467,7 @@ class CostingWorkbookETL:
             logger.info('Output saved: %s', output_path)
             if self.last_error_log_count > 0:
                 logger.warning(
-                    'Detected %s data quality issues, error_log CSV export is required',
+                    'Detected %s data quality issues; review runtime error_log summary',
                     self.last_error_log_count,
                 )
             return True

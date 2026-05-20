@@ -415,6 +415,36 @@ def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplo
     assert etl.last_stage_timings['export'] >= 0
 
 
+def test_process_file_quality_warning_does_not_request_external_csv(caplog, tmp_path: Path) -> None:
+    caplog.set_level(logging.WARNING, logger='src.etl.costing_etl')
+    etl = CostingWorkbookETL(skip_rows=2, product_order=())
+    payload = WorkbookPayload(
+        sheet_models=(
+            SheetModel(
+                sheet_name='成本计算单总表',
+                columns=('产品编码',),
+                rows_factory=lambda: iter([('P001',)]),
+                column_types={'产品编码': 'text'},
+                number_formats={},
+            ),
+        ),
+        quality_metrics=(),
+        error_log_count=1,
+        stage_timings={},
+        error_log_export=pd.DataFrame([{'row_id': 'WO-001', 'issue_type': 'MISSING_AMOUNT'}]),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload),
+        patch.object(etl.workbook_writer, 'write_workbook_from_models'),
+    ):
+        assert etl.process_file(tmp_path / 'input.xlsx', tmp_path / 'output.xlsx') is True
+
+    warning_text = '\n'.join(record.message for record in caplog.records)
+    assert 'CSV export is required' not in warning_text
+    assert 'review runtime error_log summary' in warning_text
+
+
 def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_path: Path) -> None:
     etl = CostingWorkbookETL(
         skip_rows=2,

@@ -35,14 +35,77 @@ def test_save_and_load_round_trips_product_orders_and_writes_json(tmp_path: Path
     store = ProductWhitelistStore(config_path)
     store.save(product_orders)
     result = store.load()
+    saved_text = config_path.read_text(encoding='utf-8')
 
     assert result.exists is True
     assert result.product_orders == product_orders
+    assert json.loads(saved_text) == {
+        'gb': [{'product_code': 'GB-001', 'product_name': '产品甲'}],
+        'sk': [{'product_code': 'SK-001', 'product_name': '产品丙'}],
+    }
+    assert '\n  "gb": [' in saved_text
+    assert '\n      "product_code": "GB-001",' in saved_text
+    assert '产品甲' in saved_text
+    assert '\\u4ea7' not in saved_text
+
+
+def test_existing_config_missing_pipeline_key_returns_empty_tuple(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text(
+        json.dumps({'gb': [{'product_code': 'GB-001', 'product_name': '产品甲'}]}, ensure_ascii=False),
+        encoding='utf-8',
+    )
+
+    result = ProductWhitelistStore(config_path).load()
+
+    assert result.exists is True
+    assert result.product_orders['gb'] == (('GB-001', '产品甲'),)
+    assert result.product_orders['sk'] == ()
+
+
+def test_save_rejects_unknown_pipeline_key(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+
+    with pytest.raises(ProductWhitelistConfigError, match='未知管线'):
+        ProductWhitelistStore(config_path).save({'erp': (('ERP-001', '产品甲'),)})
+
+
+def test_load_rejects_unknown_pipeline_key(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text(json.dumps({'erp': []}, ensure_ascii=False), encoding='utf-8')
+
+    with pytest.raises(ProductWhitelistConfigError, match='未知管线'):
+        ProductWhitelistStore(config_path).load()
+
+
+def test_loading_non_object_payload_raises_chinese_error(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('[]', encoding='utf-8')
+
+    with pytest.raises(ProductWhitelistConfigError, match='JSON 对象'):
+        ProductWhitelistStore(config_path).load()
+
+
+def test_save_normalizes_two_item_tuple_and_list_items(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    store = ProductWhitelistStore(config_path)
+
+    store.save(
+        {
+            'gb': [(' GB-001 ', ' 产品甲 ')],
+            'sk': [[' SK-001 ', ' 产品丙 ']],
+        }
+    )
+    result = store.load()
+
+    assert result.product_orders == {
+        'gb': (('GB-001', '产品甲'),),
+        'sk': (('SK-001', '产品丙'),),
+    }
     assert json.loads(config_path.read_text(encoding='utf-8')) == {
         'gb': [{'product_code': 'GB-001', 'product_name': '产品甲'}],
         'sk': [{'product_code': 'SK-001', 'product_name': '产品丙'}],
     }
-    assert '\\u4ea7' not in config_path.read_text(encoding='utf-8')
 
 
 def test_loading_duplicate_product_pairs_raises_chinese_error(tmp_path: Path) -> None:

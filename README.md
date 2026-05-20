@@ -11,28 +11,30 @@
 
 ## 安装
 ```bash
-pip install -e .
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e .
 ```
 
 如需 GUI 和开发依赖：
 ```bash
-pip install -e '.[dev,gui]'
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 ```
+
+本文默认开发、测试、GUI 命令使用 Miniconda `test` 环境；仅纯运行时且当前解释器已安装依赖时，才可使用裸 `pip install -e .` / 裸 `python`。
 
 ## 使用
 ```bash
 # GB 管线
-conda run -n test python main.py gb
+/home/george/miniconda3/bin/conda run -n test python main.py gb
 
 # SK 管线
-conda run -n test python main.py sk
+/home/george/miniconda3/bin/conda run -n test python main.py sk
 
 # 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-conda run -n test python main.py gb --check-only --benchmark
-conda run -n test python main.py sk --check-only --benchmark
+/home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark
+/home/george/miniconda3/bin/conda run -n test python main.py sk --check-only --benchmark
 
 # GUI
-conda run -n test python -m src.gui.app
+/home/george/miniconda3/bin/conda run -n test python -m src.gui.app
 ```
 
 ## 输出说明
@@ -48,7 +50,7 @@ conda run -n test python -m src.gui.app
 - `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
 
 ## GUI 使用
-运行命令：`conda run -n test python -m src.gui.app`
+运行命令：`/home/george/miniconda3/bin/conda run -n test python -m src.gui.app`
 
 GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份范围、维护产品白名单池、预检和后台处理。产品白名单池按 `产品编码 + 产品名称` 精确匹配，只影响分析维度 Sheet，不过滤总表和数量聚合维度。
 
@@ -115,22 +117,22 @@ GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份
 ## 测试
 ```bash
 # GUI / 开发依赖
-conda run -n test python -m pip install -e '.[dev,gui]'
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 
 # 先确认解释器来自 test 环境
-conda run -n test python -c "import sys; print(sys.executable)"
+/home/george/miniconda3/bin/conda run -n test python -c "import sys; print(sys.executable)"
 
 # 运行测试
-conda run -n test python -m pytest -q
+/home/george/miniconda3/bin/conda run -n test python -m pytest -q
 
 # GUI 测试
-conda run -n test python -m pytest tests/test_gui_form_state.py tests/test_gui_main_window.py -q
+/home/george/miniconda3/bin/conda run -n test python -m pytest tests/test_gui_form_state.py tests/test_gui_main_window.py -q
 
 # 代码检查
-conda run -n test python -m ruff check src tests
+/home/george/miniconda3/bin/conda run -n test python -m ruff check src tests
 
 # 代码格式化检查
-conda run -n test python -m ruff format src tests --check
+/home/george/miniconda3/bin/conda run -n test python -m ruff format src tests --check
 ```
 
 ## Contract Baseline

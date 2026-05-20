@@ -65,13 +65,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 安装
-pip install -e .
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e .
 
 # 安装开发与 GUI 依赖
 /home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 
-# 运行 ETL (自动读取 data/raw/gb/下的 GB-*成本计算单*.xlsx)
-/home/george/miniconda3/bin/conda run -n test python -m src.etl.costing_etl
+# 运行 ETL
+/home/george/miniconda3/bin/conda run -n test python main.py gb
+/home/george/miniconda3/bin/conda run -n test python main.py sk
 
 # 预检 + benchmark（只跑分析链路，不落 workbook 或任何外部摘要文件）
 /home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark
@@ -84,15 +85,15 @@ pip install -e .
 /home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 
 # 测试 (需使用 conda test 环境)
-conda run -n test python -m pytest -q
+/home/george/miniconda3/bin/conda run -n test python -m pytest -q
 
 # 单测
-conda run -n test python -m pytest tests/ -k test_name -q
+/home/george/miniconda3/bin/conda run -n test python -m pytest tests/ -k test_name -q
 
 # 代码检查/格式化
-conda run -n test ruff check .
-conda run -n test ruff format . --check
-conda run -n test ruff format .
+/home/george/miniconda3/bin/conda run -n test ruff check .
+/home/george/miniconda3/bin/conda run -n test ruff format . --check
+/home/george/miniconda3/bin/conda run -n test ruff format .
 ```
 
 ## 测试契约 (Test Contracts)

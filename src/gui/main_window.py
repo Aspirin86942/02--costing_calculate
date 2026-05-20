@@ -499,6 +499,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_precheck(self, *_args: object) -> None:
         self.precheck_passed = False
+        self.last_output_dir = None
         self.candidate_table.setRowCount(0)
         self._refresh_buttons()
 

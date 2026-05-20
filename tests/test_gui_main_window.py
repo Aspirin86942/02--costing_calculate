@@ -306,3 +306,24 @@ def test_open_output_dir_logs_popen_oserror(
     main_window._open_output_dir()
 
     assert '打开输出目录失败: 无法启动' in main_window.log_edit.toPlainText()
+
+
+def test_output_context_change_drops_stale_last_output_dir(
+    main_window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    old_dir = tmp_path / 'old'
+    new_dir = tmp_path / 'new'
+    old_dir.mkdir()
+    new_dir.mkdir()
+    opened_args: list[list[str]] = []
+    main_window.last_output_dir = old_dir
+    monkeypatch.setattr(main_window_module.shutil, 'which', lambda _name: '/usr/bin/xdg-open')
+    monkeypatch.setattr(main_window_module.subprocess, 'Popen', opened_args.append)
+
+    main_window.output_edit.setText(str(new_dir))
+
+    assert main_window.last_output_dir is None
+    main_window._open_output_dir()
+    assert opened_args == [['/usr/bin/xdg-open', str(new_dir)]]

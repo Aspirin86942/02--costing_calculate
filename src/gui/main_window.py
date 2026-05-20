@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -324,6 +325,15 @@ class MainWindow(QMainWindow):
         overwrite_confirmed: bool,
         task_kind: TaskKind,
     ) -> None:
+        if self.busy or self.current_worker is not None:
+            self._append_log('任务正在运行，请等待当前任务完成')
+            self._refresh_buttons()
+            return
+        if task_kind == 'run' and not overwrite_confirmed and not self.precheck_passed:
+            self._append_log('请先完成预检，通过后再开始处理')
+            self._refresh_buttons()
+            return
+
         validation_message = self._validate_form()
         if validation_message is not None:
             self.precheck_passed = False
@@ -399,8 +409,7 @@ class MainWindow(QMainWindow):
             return
 
         if result.status == ServiceStatus.SUCCEEDED:
-            if result.candidate_products:
-                self._set_table_pairs(self.candidate_table, result.candidate_products)
+            self._set_table_pairs(self.candidate_table, result.candidate_products)
             self.precheck_passed = task_kind in {'precheck', 'run'}
             self._set_status(result.message, 'success')
         else:
@@ -490,6 +499,7 @@ class MainWindow(QMainWindow):
 
     def _invalidate_precheck(self, *_args: object) -> None:
         self.precheck_passed = False
+        self.candidate_table.setRowCount(0)
         self._refresh_buttons()
 
     def _set_status(self, text: str, status: str) -> None:
@@ -586,7 +596,7 @@ class MainWindow(QMainWindow):
             product_orders = {name: tuple(order) for name, order in loaded_orders.items()}
             product_orders[pipeline] = self._table_pairs(self.whitelist_table)
             self.whitelist_store.save(product_orders)
-        except ProductWhitelistConfigError as exc:
+        except (ProductWhitelistConfigError, OSError) as exc:
             self._append_log(f'保存失败: {exc}')
             return
 
@@ -607,7 +617,7 @@ class MainWindow(QMainWindow):
 
         try:
             self.whitelist_store.restore_default(pipeline)
-        except ProductWhitelistConfigError as exc:
+        except (ProductWhitelistConfigError, OSError) as exc:
             self._append_log(f'恢复默认失败: {exc}')
             return
 
@@ -638,7 +648,16 @@ class MainWindow(QMainWindow):
             self._append_log(f'输出目录不存在: {path}')
             return
 
-        subprocess.Popen(['xdg-open', str(path)])  # noqa: S603,S607
+        opener = shutil.which('xdg-open')
+        if opener is None:
+            self._append_log('未找到 xdg-open，无法打开输出目录')
+            return
+
+        try:
+            subprocess.Popen([opener, str(path)])  # noqa: S603
+        except OSError as exc:
+            self._append_log(f'打开输出目录失败: {exc}')
+            return
         self._append_log(f'已请求打开输出目录: {path}')
 
     def _quit_application(self) -> None:

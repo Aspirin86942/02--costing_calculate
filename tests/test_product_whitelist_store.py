@@ -98,6 +98,14 @@ def test_loading_invalid_json_reports_line_and_column(tmp_path: Path) -> None:
     assert '列' in message
 
 
+def test_loading_non_utf8_bytes_raises_chinese_error(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_bytes(b'\xff\xfe\x00')
+
+    with pytest.raises(ProductWhitelistConfigError, match='UTF-8'):
+        ProductWhitelistStore(config_path).load()
+
+
 def test_save_normalizes_two_item_tuple_and_list_items(tmp_path: Path) -> None:
     config_path = tmp_path / 'product_whitelists.json'
     store = ProductWhitelistStore(config_path)
@@ -159,6 +167,18 @@ def test_save_overwrites_invalid_json_using_defaults_for_unmentioned_pipelines(t
     assert json.loads(config_path.read_text(encoding='utf-8'))['gb'] == [
         {'product_code': 'GB-NEW', 'product_name': '产品甲'}
     ]
+
+
+def test_save_overwrites_non_utf8_config_using_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_bytes(b'\xff\xfe\x00')
+    custom_gb: ProductOrder = (('GB-NEW', '产品甲'),)
+
+    ProductWhitelistStore(config_path).save({'gb': custom_gb})
+    result = ProductWhitelistStore(config_path).load()
+
+    assert result.product_orders['gb'] == custom_gb
+    assert result.product_orders['sk'] == SK_PIPELINE.product_order
 
 
 def test_restore_default_overwrites_invalid_json(tmp_path: Path) -> None:

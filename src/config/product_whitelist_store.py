@@ -75,6 +75,8 @@ def _default_product_orders() -> dict[str, ProductOrder]:
 def _read_json_object(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding='utf-8'))
+    except UnicodeDecodeError as error:
+        raise ProductWhitelistConfigError('产品白名单配置必须使用 UTF-8 编码') from error
     except json.JSONDecodeError as error:
         raise ProductWhitelistConfigError(
             f'产品白名单配置不是有效 JSON: {error.msg} (行 {error.lineno}, 列 {error.colno})'

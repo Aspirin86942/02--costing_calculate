@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import GB_PIPELINE, SK_PIPELINE, PipelineConfig, ProductOrder
-from src.config.product_whitelist_store import ProductWhitelistConfigError
+from src.config.product_whitelist_store import DEFAULT_PRODUCT_WHITELIST_PATH, ProductWhitelistConfigError
 from src.etl import runner
 from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
@@ -457,7 +457,10 @@ def test_run_pipeline_falls_back_to_builtin_whitelist_when_loader_fails(monkeypa
     assert run_pipeline(config) == 0
     assert captured['loader_called'] is True
     assert requests[0].product_order == config.product_order
-    assert '产品白名单配置错误，已使用内置默认白名单' in '\n'.join(record.message for record in caplog.records)
+    warning_text = '\n'.join(record.message for record in caplog.records)
+    assert '产品白名单配置错误，已使用内置默认白名单' in warning_text
+    assert f'pipeline={config.name}' in warning_text
+    assert f'path={DEFAULT_PRODUCT_WHITELIST_PATH}' in warning_text
 
 
 def test_build_benchmark_log_text_reports_stage_timings_without_sidecar_fields(tmp_path) -> None:

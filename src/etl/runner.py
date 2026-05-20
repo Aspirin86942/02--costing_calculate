@@ -6,7 +6,11 @@ from pathlib import Path
 
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import PipelineConfig
-from src.config.product_whitelist_store import ProductWhitelistConfigError, load_product_order_for_pipeline
+from src.config.product_whitelist_store import (
+    DEFAULT_PRODUCT_WHITELIST_PATH,
+    ProductWhitelistConfigError,
+    load_product_order_for_pipeline,
+)
 from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.services.costing_service import (
     CostingRunRequest,
@@ -119,7 +123,12 @@ def _build_request(
     try:
         product_order = load_product_order_for_pipeline(config.name)
     except ProductWhitelistConfigError as exc:
-        logger.warning('产品白名单配置错误，已使用内置默认白名单: %s', exc)
+        logger.warning(
+            '产品白名单配置错误，已使用内置默认白名单: pipeline=%s path=%s error=%s',
+            config.name,
+            DEFAULT_PRODUCT_WHITELIST_PATH,
+            exc,
+        )
         product_order = config.product_order
     return CostingRunRequest(
         pipeline=config.name,

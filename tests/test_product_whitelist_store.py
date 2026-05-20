@@ -49,7 +49,7 @@ def test_save_and_load_round_trips_product_orders_and_writes_json(tmp_path: Path
     assert '\\u4ea7' not in saved_text
 
 
-def test_existing_config_missing_pipeline_key_returns_empty_tuple(tmp_path: Path) -> None:
+def test_existing_config_missing_pipeline_key_returns_builtin_default(tmp_path: Path) -> None:
     config_path = tmp_path / 'product_whitelists.json'
     config_path.write_text(
         json.dumps({'gb': [{'product_code': 'GB-001', 'product_name': '产品甲'}]}, ensure_ascii=False),
@@ -60,7 +60,7 @@ def test_existing_config_missing_pipeline_key_returns_empty_tuple(tmp_path: Path
 
     assert result.exists is True
     assert result.product_orders['gb'] == (('GB-001', '产品甲'),)
-    assert result.product_orders['sk'] == ()
+    assert result.product_orders['sk'] == SK_PIPELINE.product_order
 
 
 def test_save_rejects_unknown_pipeline_key(tmp_path: Path) -> None:
@@ -144,6 +144,32 @@ def test_partial_save_uses_defaults_for_missing_file_base(tmp_path: Path) -> Non
 
     assert result.product_orders['gb'] == GB_PIPELINE.product_order
     assert result.product_orders['sk'] == custom_sk
+
+
+def test_save_overwrites_invalid_json_using_defaults_for_unmentioned_pipelines(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('{"gb": [', encoding='utf-8')
+    custom_gb: ProductOrder = (('GB-NEW', '产品甲'),)
+
+    ProductWhitelistStore(config_path).save({'gb': custom_gb})
+    result = ProductWhitelistStore(config_path).load()
+
+    assert result.product_orders['gb'] == custom_gb
+    assert result.product_orders['sk'] == SK_PIPELINE.product_order
+    assert json.loads(config_path.read_text(encoding='utf-8'))['gb'] == [
+        {'product_code': 'GB-NEW', 'product_name': '产品甲'}
+    ]
+
+
+def test_restore_default_overwrites_invalid_json(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('{"gb": [', encoding='utf-8')
+
+    ProductWhitelistStore(config_path).restore_default('gb')
+    result = ProductWhitelistStore(config_path).load()
+
+    assert result.product_orders['gb'] == GB_PIPELINE.product_order
+    assert result.product_orders['sk'] == SK_PIPELINE.product_order
 
 
 def test_save_replaces_atomically_and_keeps_original_when_replace_fails(

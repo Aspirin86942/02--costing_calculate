@@ -116,7 +116,11 @@ def _build_request(
     month_range: MonthRange | None,
     benchmark: bool,
 ) -> CostingRunRequest:
-    product_order = load_product_order_for_pipeline(config.name)
+    try:
+        product_order = load_product_order_for_pipeline(config.name)
+    except ProductWhitelistConfigError as exc:
+        logger.warning('产品白名单配置错误，已使用内置默认白名单: %s', exc)
+        product_order = config.product_order
     return CostingRunRequest(
         pipeline=config.name,
         input_path=input_file,
@@ -203,11 +207,7 @@ def run_pipeline(
         return 1
 
     input_file = input_files[0]
-    try:
-        request = _build_request(config=config, input_file=input_file, month_range=month_range, benchmark=benchmark)
-    except ProductWhitelistConfigError as exc:
-        logger.error('产品白名单配置错误: %s', exc)
-        return 1
+    request = _build_request(config=config, input_file=input_file, month_range=month_range, benchmark=benchmark)
 
     if check_only:
         result = precheck_costing_run(request, validate_output_dir=False)

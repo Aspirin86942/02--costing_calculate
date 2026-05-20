@@ -434,10 +434,12 @@ def test_run_pipeline_normal_failure_logs_service_technical_detail(monkeypatch, 
     assert 'technical_detail=openpyxl failed to parse workbook' in error_text
 
 
-def test_run_pipeline_returns_one_when_product_whitelist_loader_fails(monkeypatch, tmp_path) -> None:
+def test_run_pipeline_falls_back_to_builtin_whitelist_when_loader_fails(monkeypatch, caplog, tmp_path) -> None:
+    caplog.set_level(logging.WARNING, logger='src.etl.runner')
     input_file = tmp_path / 'GB-成本计算单.xlsx'
     input_file.write_bytes(b'raw')
     config = _config(tmp_path)
+    requests: list[CostingRunRequest] = []
     captured = {'loader_called': False}
 
     def _fake_load_product_order_for_pipeline(pipeline_name: str) -> ProductOrder:
@@ -448,13 +450,14 @@ def test_run_pipeline_returns_one_when_product_whitelist_loader_fails(monkeypatc
     monkeypatch.setattr(
         runner,
         'run_costing_request',
-        lambda request: (_ for _ in ()).throw(AssertionError('service must not run when whitelist is invalid')),
+        lambda request: requests.append(request) or _succeeded_result(_planned_workbook_path(request)),
         raising=False,
     )
 
-    assert run_pipeline(config) == 1
+    assert run_pipeline(config) == 0
     assert captured['loader_called'] is True
-    assert not config.processed_dir.exists()
+    assert requests[0].product_order == config.product_order
+    assert '产品白名单配置错误，已使用内置默认白名单' in '\n'.join(record.message for record in caplog.records)
 
 
 def test_build_benchmark_log_text_reports_stage_timings_without_sidecar_fields(tmp_path) -> None:

@@ -38,7 +38,7 @@ class ProductWhitelistStore:
 
     def save(self, product_orders: dict[str, ProductOrder]) -> None:
         normalized_updates = _normalize_partial_payload(product_orders)
-        merged_product_orders = self.load().product_orders
+        merged_product_orders = self._load_product_orders_or_default()
         merged_product_orders.update(normalized_updates)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,9 +46,18 @@ class ProductWhitelistStore:
 
     def restore_default(self, pipeline_name: str) -> None:
         normalized_pipeline_name = _require_known_pipeline(pipeline_name)
-        product_orders = self.load().product_orders
+        product_orders = self._load_product_orders_or_default()
         product_orders[normalized_pipeline_name] = PIPELINES[normalized_pipeline_name].product_order
-        self.save(product_orders)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_atomically(self.path, _to_json_payload(product_orders))
+
+    def _load_product_orders_or_default(self) -> dict[str, ProductOrder]:
+        try:
+            return self.load().product_orders
+        except ProductWhitelistConfigError:
+            # 白名单配置是可编辑的本地偏好；保存/恢复默认时允许覆盖损坏文件，
+            # 避免用户被一个坏 JSON 永久卡住。
+            return _default_product_orders()
 
 
 def load_product_order_for_pipeline(
@@ -84,10 +93,10 @@ def _normalize_payload(payload: dict[str, Any]) -> dict[str, ProductOrder]:
     if unknown_pipeline_names:
         raise ProductWhitelistConfigError(f'产品白名单配置包含未知管线: {", ".join(unknown_pipeline_names)}')
 
-    return {
-        pipeline_name: _normalize_product_order(pipeline_name, payload.get(pipeline_name, ()))
-        for pipeline_name in PIPELINES
-    }
+    product_orders = _default_product_orders()
+    for pipeline_name, raw_items in payload.items():
+        product_orders[pipeline_name] = _normalize_product_order(pipeline_name, raw_items)
+    return product_orders
 
 
 def _normalize_partial_payload(payload: dict[str, Any]) -> dict[str, ProductOrder]:

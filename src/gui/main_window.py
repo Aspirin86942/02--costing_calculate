@@ -628,10 +628,7 @@ class MainWindow(QMainWindow):
     def _save_whitelist(self) -> None:
         pipeline = self.pipeline_combo.currentText()
         try:
-            loaded_orders = self.whitelist_store.load().product_orders
-            product_orders = {name: tuple(order) for name, order in loaded_orders.items()}
-            product_orders[pipeline] = self._table_pairs(self.whitelist_table)
-            self.whitelist_store.save(product_orders)
+            self.whitelist_store.save({pipeline: self._table_pairs(self.whitelist_table)})
         except (ProductWhitelistConfigError, OSError) as exc:
             self._append_log(f'保存失败: {exc}')
             return

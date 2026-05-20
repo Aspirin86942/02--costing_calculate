@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import types
 from pathlib import Path
@@ -13,6 +14,8 @@ pytest.importorskip('PySide6')
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import src.gui.main_window as main_window_module  # noqa: E402
+from src.config.pipelines import GB_PIPELINE  # noqa: E402
+from src.config.product_whitelist_store import ProductWhitelistStore  # noqa: E402
 from src.gui.main_window import MainWindow  # noqa: E402
 from src.services.costing_service import (  # noqa: E402
     CostingRunResult,
@@ -267,6 +270,48 @@ def test_restore_default_whitelist_logs_oserror_without_raising(
     main_window._restore_default_whitelist()
 
     assert '恢复默认失败: 配置目录不可写' in main_window.log_edit.toPlainText()
+
+
+def test_restore_default_whitelist_overwrites_invalid_json(
+    main_window: MainWindow,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('{"gb": [', encoding='utf-8')
+    main_window.whitelist_store = ProductWhitelistStore(config_path)
+    main_window._set_table_pairs(main_window.whitelist_table, (('GB-CUSTOM', '产品甲'),))
+    monkeypatch.setattr(
+        QMessageBox,
+        'question',
+        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    main_window._restore_default_whitelist()
+
+    assert main_window._table_pairs(main_window.whitelist_table) == GB_PIPELINE.product_order
+    assert json.loads(config_path.read_text(encoding='utf-8'))['gb'][0] == {
+        'product_code': GB_PIPELINE.product_order[0][0],
+        'product_name': GB_PIPELINE.product_order[0][1],
+    }
+    assert 'GB 默认白名单已恢复' in main_window.log_edit.toPlainText()
+
+
+def test_save_whitelist_overwrites_invalid_json(
+    main_window: MainWindow,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('{"gb": [', encoding='utf-8')
+    main_window.whitelist_store = ProductWhitelistStore(config_path)
+    main_window._set_table_pairs(main_window.whitelist_table, (('GB-SAVED', '产品甲'),))
+
+    main_window._save_whitelist()
+
+    assert json.loads(config_path.read_text(encoding='utf-8'))['gb'] == [
+        {'product_code': 'GB-SAVED', 'product_name': '产品甲'}
+    ]
+    assert '产品白名单已保存' in main_window.log_edit.toPlainText()
 
 
 def test_open_output_dir_logs_when_xdg_open_is_missing(

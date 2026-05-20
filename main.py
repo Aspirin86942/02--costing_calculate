@@ -12,7 +12,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('pipeline', choices=sorted(PIPELINES), help='选择要运行的管线: gb 或 sk')
     parser.add_argument('--month-start', dest='month_start', help='起始月份，格式 YYYY-MM')
     parser.add_argument('--month-end', dest='month_end', help='结束月份，格式 YYYY-MM')
-    parser.add_argument('--check-only', action='store_true', help='只执行预检和质量校验，不写出 workbook 或 CSV')
+    parser.add_argument('--check-only', action='store_true', help='只执行预检和质量校验，不写出 workbook')
     parser.add_argument('--benchmark', action='store_true', help='输出稳定的阶段耗时和文件规模摘要')
     return parser
 

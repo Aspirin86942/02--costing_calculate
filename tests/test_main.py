@@ -58,6 +58,16 @@ def test_main_passes_check_only_and_benchmark_flags_to_runner(monkeypatch) -> No
     assert captured['month_range'] is None
 
 
+def test_check_only_help_no_longer_mentions_csv_sidecar(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(['--help'])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert '不写出 workbook' in help_text
+    assert '不写出 workbook 或 CSV' not in help_text
+
+
 def test_main_rejects_invalid_month_argument() -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(['gb', '--month-start', '2025/01'])

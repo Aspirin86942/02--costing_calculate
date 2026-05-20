@@ -220,8 +220,13 @@ def test_run_pipeline_check_only_delegates_to_precheck_without_writing_outputs(m
     service_product_order = (('GB_SERVICE', '服务白名单'),)
     captured: dict[str, object] = {}
 
-    def _fake_precheck_costing_run(request: CostingRunRequest) -> CostingRunResult:
+    def _fake_precheck_costing_run(
+        request: CostingRunRequest,
+        *,
+        validate_output_dir: bool = True,
+    ) -> CostingRunResult:
         captured['request'] = request
+        captured['validate_output_dir'] = validate_output_dir
         return _succeeded_result(
             _planned_workbook_path(request),
             quality_metrics=(_metric('3'),),
@@ -256,6 +261,7 @@ def test_run_pipeline_check_only_delegates_to_precheck_without_writing_outputs(m
     assert request.benchmark is False
     assert request.overwrite_confirmed is True
     assert request.product_order == service_product_order
+    assert captured['validate_output_dir'] is False
     assert 'mode=check-only' in stdout
     assert 'pipeline=gb' in stdout
     assert '产品数量统计输出行数=3' in stdout
@@ -312,7 +318,11 @@ def test_run_pipeline_check_only_prints_month_filter_summary(monkeypatch, capsys
     config = _config(tmp_path, name='sk')
     month_range = MonthRange(start='2025-01', end='2025-03')
 
-    def _fake_precheck_costing_run(request: CostingRunRequest) -> CostingRunResult:
+    def _fake_precheck_costing_run(
+        request: CostingRunRequest,
+        *,
+        validate_output_dir: bool = True,
+    ) -> CostingRunResult:
         return _succeeded_result(
             _planned_workbook_path(request),
             quality_metrics=(_metric('2'),),
@@ -375,7 +385,11 @@ def test_run_pipeline_check_only_failure_logs_service_error_code(monkeypatch, ca
     monkeypatch.setattr(
         runner,
         'precheck_costing_run',
-        lambda request: _failed_result(planned_workbook, '输出 workbook 已存在', error_code='OUTPUT_EXISTS'),
+        lambda request, *, validate_output_dir=True: _failed_result(
+            planned_workbook,
+            '输出 workbook 已存在',
+            error_code='OUTPUT_EXISTS',
+        ),
         raising=False,
     )
 
@@ -482,7 +496,11 @@ def test_run_pipeline_check_only_benchmark_prints_service_timings_without_writin
     input_file.write_bytes(b'raw')
     config = _config(tmp_path, name='sk')
 
-    def _fake_precheck_costing_run(request: CostingRunRequest) -> CostingRunResult:
+    def _fake_precheck_costing_run(
+        request: CostingRunRequest,
+        *,
+        validate_output_dir: bool = True,
+    ) -> CostingRunResult:
         return _succeeded_result(
             _planned_workbook_path(request),
             stage_timings={'ingest': 0.5, 'export': 0.75},

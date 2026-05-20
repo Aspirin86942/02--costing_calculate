@@ -210,7 +210,7 @@ def run_pipeline(
         return 1
 
     if check_only:
-        result = precheck_costing_run(request)
+        result = precheck_costing_run(request, validate_output_dir=False)
         output_file = _result_workbook_path(result, config=config, input_file=input_file, month_range=month_range)
         print('mode=check-only')
         _print_quality_summary(result, config=config, input_file=input_file, output_file=output_file)

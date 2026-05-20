@@ -67,8 +67,8 @@ def build_output_workbook_path(
     return output_dir / f'{input_path.stem}_处理后{suffix}.xlsx'
 
 
-def precheck_costing_run(request: CostingRunRequest) -> CostingRunResult:
-    prepared, validation_error = _prepare_request(request)
+def precheck_costing_run(request: CostingRunRequest, *, validate_output_dir: bool = True) -> CostingRunResult:
+    prepared, validation_error = _prepare_request(request, validate_output_dir=validate_output_dir)
     if validation_error is not None:
         return validation_error
     assert prepared is not None
@@ -144,7 +144,11 @@ def run_costing_request(request: CostingRunRequest) -> CostingRunResult:
         )
 
 
-def _prepare_request(request: CostingRunRequest) -> tuple[_PreparedRequest | None, CostingRunResult | None]:
+def _prepare_request(
+    request: CostingRunRequest,
+    *,
+    validate_output_dir: bool = True,
+) -> tuple[_PreparedRequest | None, CostingRunResult | None]:
     if request.pipeline not in PIPELINES:
         return None, _failed(message=f'未知管线: {request.pipeline}', error_code='INVALID_INPUT')
     if not request.input_path.exists():
@@ -167,9 +171,10 @@ def _prepare_request(request: CostingRunRequest) -> tuple[_PreparedRequest | Non
     if whitelist_error is not None:
         return None, whitelist_error
 
-    output_dir_error = _validate_output_dir(request.output_dir)
-    if output_dir_error is not None:
-        return None, output_dir_error
+    if validate_output_dir:
+        output_dir_error = _validate_output_dir(request.output_dir)
+        if output_dir_error is not None:
+            return None, output_dir_error
 
     try:
         month_range = build_month_range(request.month_start, request.month_end)

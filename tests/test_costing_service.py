@@ -149,6 +149,55 @@ def test_precheck_rejects_output_dir_that_is_existing_file(tmp_path: Path) -> No
     assert result.error_code == 'OUTPUT_DIR_INVALID'
 
 
+def test_precheck_validates_output_dir_by_default_before_prepare_payload(monkeypatch, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    output_file = tmp_path / 'processed'
+    output_file.write_text('not a directory', encoding='utf-8')
+
+    class _UnexpectedETL:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError('default precheck must reject invalid output_dir before ETL preparation')
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _UnexpectedETL)
+
+    result = precheck_costing_run(replace(request, output_dir=output_file))
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'OUTPUT_DIR_INVALID'
+
+
+def test_precheck_can_skip_output_dir_validation_for_cli_check_only(monkeypatch, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    output_file = tmp_path / 'processed'
+    output_file.write_text('not a directory', encoding='utf-8')
+    captured: dict[str, Path | bool] = {}
+
+    class _DummyETL:
+        def __init__(self, *args, **kwargs) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_work_order_sheet_frame = pd.DataFrame()
+            self.last_stage_timings = {'ingest': 0.1}
+            self.last_ingest_backend = 'calamine'
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            captured['prepared'] = True
+            captured['input_path'] = input_path
+            return True
+
+        def process_file(self, input_path: Path, output_path: Path) -> bool:
+            raise AssertionError('precheck must not write workbook')
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
+
+    result = precheck_costing_run(replace(request, output_dir=output_file), validate_output_dir=False)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert result.workbook_path == output_file / 'GB-成本计算单_处理后.xlsx'
+    assert captured == {'prepared': True, 'input_path': request.input_path}
+    assert output_file.is_file()
+
+
 def test_precheck_rejects_output_dir_when_existing_parent_is_file(tmp_path: Path) -> None:
     request = _request(tmp_path)
     parent_file = tmp_path / 'blocked-parent'

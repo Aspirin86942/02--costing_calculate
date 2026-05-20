@@ -42,7 +42,7 @@ def test_polars_pipeline_contract_objects_are_constructible() -> None:
         key_columns=('年期', '产品编码'),
     )
     model = SheetModel(
-        sheet_name='成本明细',
+        sheet_name='成本计算单总表',
         columns=('年期', '产品编码'),
         rows_factory=lambda: iter([('2025-01', 'P001')]),
         column_types={'年期': 'text', '产品编码': 'text'},
@@ -63,7 +63,7 @@ def test_polars_pipeline_contract_objects_are_constructible() -> None:
     assert raw.sheet_name == '成本计算单'
     assert normalized.key_columns == ('年期', '产品编码')
     assert list(model.rows_factory()) == [('2025-01', 'P001')]
-    assert payload.sheet_models[0].sheet_name == '成本明细'
+    assert payload.sheet_models[0].sheet_name == '成本计算单总表'
 
 
 def test_fact_bundle_is_constructible_and_exposes_expected_frames() -> None:
@@ -555,7 +555,7 @@ def test_build_workbook_payload_filters_normalized_frame_before_split(monkeypatc
         'src.etl.pipeline.build_sheet_models',
         lambda **kwargs: (
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('月份',),
                 rows_factory=lambda: iter([('2025年02期',)]),
                 column_types={'月份': 'text'},
@@ -574,4 +574,4 @@ def test_build_workbook_payload_filters_normalized_frame_before_split(monkeypatc
     assert seen['months'] == ['2025年02期', '2025年03期']
     assert etl.pipeline.last_month_filter_summary is not None
     assert etl.pipeline.last_month_filter_summary.output_rows == 2
-    assert payload.sheet_models[0].sheet_name == '成本明细'
+    assert payload.sheet_models[0].sheet_name == '成本计算单总表'

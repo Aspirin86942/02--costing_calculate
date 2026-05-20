@@ -385,7 +385,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
     payload = WorkbookPayload(
         sheet_models=(
             SheetModel(
-                sheet_name='成本明细',
+                sheet_name='成本计算单总表',
                 columns=('产品编码',),
                 rows_factory=lambda: iter([('GB_C.D.B0040AA',)]),
                 column_types={'产品编码': 'text'},
@@ -447,7 +447,7 @@ def test_run_pipeline_real_payload_path_keeps_stdout_and_skips_log_file(monkeypa
     assert captured['product_anomaly_scope_mode'] == 'doc_type_split'
     assert captured['presentation_product_order'] == (('GB_C.D.B0040AA', 'BMS-750W驱动器'),)
     assert callable(captured['artifacts_transform'])
-    assert captured['sheet_names'] == ['成本明细']
+    assert captured['sheet_names'] == ['成本计算单总表']
     pd.testing.assert_frame_equal(
         pd.read_csv(error_log_csv_path, encoding='utf-8-sig'),
         payload.error_log_export,

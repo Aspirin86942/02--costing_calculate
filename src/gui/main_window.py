@@ -312,7 +312,7 @@ class MainWindow(QMainWindow):
         self._start_worker(
             '正在处理',
             run_costing_request,
-            overwrite_confirmed=True,
+            overwrite_confirmed=False,
             task_kind='run',
         )
 

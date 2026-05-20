@@ -241,6 +241,7 @@ class CostingWorkbookETL:
         self.last_stage_timings: dict[str, float] = {}
         self.last_ingest_backend: str = 'unknown'
         self.last_work_order_sheet_frame: pd.DataFrame = pd.DataFrame()
+        self.last_candidate_products: tuple[tuple[str, str], ...] = ()
         if ensure_output_directories:
             ensure_directories()
 
@@ -264,6 +265,7 @@ class CostingWorkbookETL:
         self.last_stage_timings = {}
         self.last_ingest_backend = 'unknown'
         self.last_work_order_sheet_frame = pd.DataFrame()
+        self.last_candidate_products = ()
 
     def _apply_payload_state(self, payload: WorkbookPayload) -> None:
         """把 payload 中可观测结果同步到 ETL 实例，供 runner 输出。"""
@@ -274,6 +276,7 @@ class CostingWorkbookETL:
         self.last_stage_timings = dict(payload.stage_timings)
         self.last_ingest_backend = self.pipeline.last_ingest_backend
         self.last_work_order_sheet_frame = payload.work_order_sheet_export.copy()
+        self.last_candidate_products = tuple(getattr(self.pipeline, 'last_candidate_products', ()))
 
     def prepare_payload(self, input_path: Path) -> bool:
         """构建 workbook payload 但不写出文件，用于 check-only 预检。"""

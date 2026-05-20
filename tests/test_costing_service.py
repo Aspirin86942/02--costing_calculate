@@ -4,9 +4,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
+import polars as pl
 
-from src.analytics.contracts import QualityMetric
+from src.analytics.contracts import QualityMetric, WorkbookPayload
 from src.config.pipelines import GB_PIPELINE, SK_PIPELINE
+from src.etl import pipeline as pipeline_module
+from src.etl.costing_etl import CostingWorkbookETL
 from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.services.costing_service import (
     CostingRunRequest,
@@ -302,6 +305,112 @@ def test_precheck_calls_prepare_payload_not_process_file(monkeypatch, tmp_path: 
     assert result.stage_timings == {'ingest': 0.1}
     assert captured == {'prepared': True, 'input_path': request.input_path}
     assert not request.output_dir.exists()
+
+
+def test_precheck_returns_candidate_products_from_normalized_payload(monkeypatch, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+
+    class _DummyPipeline:
+        last_month_filter_summary = None
+        last_ingest_backend = 'calamine'
+        last_candidate_products = ()
+
+        def build_workbook_payload(self, *args, **kwargs):
+            self.last_candidate_products = (
+                ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+                ('GB_C.D.B9999AA', '新产品'),
+            )
+            return WorkbookPayload(
+                sheet_models=(),
+                quality_metrics=(),
+                error_log_count=0,
+                stage_timings={},
+                error_log_export=pd.DataFrame(),
+                work_order_sheet_export=pd.DataFrame(),
+            )
+
+    class _DummyETL:
+        def __init__(self, *args, **kwargs) -> None:
+            self.pipeline = _DummyPipeline()
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_error_log_frame = pd.DataFrame()
+            self.last_work_order_sheet_frame = pd.DataFrame()
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+            self.last_ingest_backend = 'calamine'
+            self.last_candidate_products = ()
+
+        def _apply_payload_state(self, payload) -> None:
+            self.last_candidate_products = self.pipeline.last_candidate_products
+
+        def prepare_payload(self, input_path: Path) -> bool:
+            payload = self.pipeline.build_workbook_payload(input_path)
+            self._apply_payload_state(payload)
+            return True
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert result.candidate_products == (
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ('GB_C.D.B9999AA', '新产品'),
+    )
+
+
+def test_extract_candidate_products_from_normalized_keeps_order_and_skips_invalid_values() -> None:
+    extractor = getattr(pipeline_module, '_extract_candidate_products_from_normalized', None)
+    frame = pl.DataFrame(
+        {
+            '产品编码': ['P001', 'P001', 'P002', ' ', 'P003', None, 'P004'],
+            '产品名称': ['产品A', '产品A', '产品B', '空编码', '', '空编码', None],
+            '月份': ['2025-01'] * 7,
+        }
+    )
+
+    assert extractor is not None
+    assert extractor(frame) == (
+        ('P001', '产品A'),
+        ('P002', '产品B'),
+    )
+
+
+def test_extract_candidate_products_from_normalized_returns_empty_for_empty_or_missing_columns() -> None:
+    extractor = getattr(pipeline_module, '_extract_candidate_products_from_normalized', None)
+
+    assert extractor is not None
+    assert extractor(pl.DataFrame({'产品编码': [], '产品名称': []})) == ()
+    assert extractor(pl.DataFrame({'产品编码': ['P001']})) == ()
+    assert extractor(pl.DataFrame({'产品名称': ['产品A']})) == ()
+
+
+def test_costing_workbook_etl_copies_and_resets_candidate_products() -> None:
+    etl = CostingWorkbookETL(ensure_output_directories=False)
+    etl.pipeline.last_candidate_products = (
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ('GB_C.D.B9999AA', '新产品'),
+    )
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={},
+        error_log_export=pd.DataFrame(),
+        work_order_sheet_export=pd.DataFrame(),
+    )
+
+    etl._apply_payload_state(payload)
+
+    assert etl.last_candidate_products == (
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ('GB_C.D.B9999AA', '新产品'),
+    )
+
+    etl._reset_last_run_state()
+
+    assert etl.last_candidate_products == ()
 
 
 def test_run_costing_request_writes_only_workbook_and_returns_runtime_summary(monkeypatch, tmp_path: Path) -> None:

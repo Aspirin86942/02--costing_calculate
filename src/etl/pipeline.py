@@ -63,6 +63,34 @@ def _to_error_log_export_frame(error_log: pd.DataFrame | pl.DataFrame) -> pd.Dat
     return sanitized
 
 
+def _candidate_text(value: object) -> str:
+    if value is None:
+        return ''
+    try:
+        if bool(pd.isna(value)):
+            return ''
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _extract_candidate_products_from_normalized(frame: pl.DataFrame) -> tuple[tuple[str, str], ...]:
+    """从标准化成本表提取 GUI 白名单候选产品。"""
+    required_columns = {'产品编码', '产品名称'}
+    if frame.is_empty() or not required_columns.issubset(frame.columns):
+        return ()
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for code_value, name_value in frame.select(['产品编码', '产品名称']).iter_rows():
+        pair = (_candidate_text(code_value), _candidate_text(name_value))
+        if not pair[0] or not pair[1] or pair in seen:
+            continue
+        seen.add(pair)
+        pairs.append(pair)
+    return tuple(pairs)
+
+
 class CostingEtlPipeline:
     """组合读取、清洗、拆表各阶段。"""
 
@@ -98,6 +126,7 @@ class CostingEtlPipeline:
         self.logger = logger
         self.last_month_filter_summary: MonthFilterSummary | None = None
         self.last_ingest_backend: str = 'unknown'
+        self.last_candidate_products: tuple[tuple[str, str], ...] = ()
 
     def load_raw_dataframe(self, input_path: Path) -> pd.DataFrame:
         """读取旧 ETL 路径需要的 pandas DataFrame。"""
@@ -215,6 +244,7 @@ class CostingEtlPipeline:
         """按全链路 Polars 路径构建 workbook payload。"""
         stage_timings: dict[str, float] = {}
         self.last_month_filter_summary = None
+        self.last_candidate_products = ()
 
         ingest_start = perf_counter()
         raw_workbook = self.load_raw_workbook_frame(input_path)
@@ -225,6 +255,7 @@ class CostingEtlPipeline:
         normalized_frame = self.build_normalized_cost_frame(raw_workbook)
         normalized_frame, month_filter_summary = apply_month_range_to_normalized_frame(normalized_frame, month_range)
         self.last_month_filter_summary = month_filter_summary
+        self.last_candidate_products = _extract_candidate_products_from_normalized(normalized_frame.frame)
         stage_timings['normalize'] = perf_counter() - normalize_start
 
         fact_start = perf_counter()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,17 +37,12 @@ class ProductWhitelistStore:
         return ProductWhitelistStoreResult(exists=True, product_orders=product_orders)
 
     def save(self, product_orders: dict[str, ProductOrder]) -> None:
-        normalized_product_orders = _normalize_payload(product_orders)
-        payload = {
-            pipeline_name: [
-                {'product_code': product_code, 'product_name': product_name}
-                for product_code, product_name in normalized_product_orders[pipeline_name]
-            ]
-            for pipeline_name in PIPELINES
-        }
+        normalized_updates = _normalize_partial_payload(product_orders)
+        merged_product_orders = self.load().product_orders
+        merged_product_orders.update(normalized_updates)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        _write_json_atomically(self.path, _to_json_payload(merged_product_orders))
 
     def restore_default(self, pipeline_name: str) -> None:
         normalized_pipeline_name = _require_known_pipeline(pipeline_name)
@@ -71,7 +67,9 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding='utf-8'))
     except json.JSONDecodeError as error:
-        raise ProductWhitelistConfigError(f'产品白名单配置不是有效 JSON: {error.msg}') from error
+        raise ProductWhitelistConfigError(
+            f'产品白名单配置不是有效 JSON: {error.msg} (行 {error.lineno}, 列 {error.colno})'
+        ) from error
 
     if not isinstance(payload, dict):
         raise ProductWhitelistConfigError('产品白名单配置必须是 JSON 对象')
@@ -89,6 +87,20 @@ def _normalize_payload(payload: dict[str, Any]) -> dict[str, ProductOrder]:
     return {
         pipeline_name: _normalize_product_order(pipeline_name, payload.get(pipeline_name, ()))
         for pipeline_name in PIPELINES
+    }
+
+
+def _normalize_partial_payload(payload: dict[str, Any]) -> dict[str, ProductOrder]:
+    if not isinstance(payload, dict):
+        raise ProductWhitelistConfigError('产品白名单配置必须是 JSON 对象')
+
+    unknown_pipeline_names = sorted(set(payload) - set(PIPELINES))
+    if unknown_pipeline_names:
+        raise ProductWhitelistConfigError(f'产品白名单配置包含未知管线: {", ".join(unknown_pipeline_names)}')
+
+    return {
+        pipeline_name: _normalize_product_order(pipeline_name, raw_items)
+        for pipeline_name, raw_items in payload.items()
     }
 
 
@@ -131,3 +143,33 @@ def _require_known_pipeline(pipeline_name: str) -> str:
     if pipeline_name not in PIPELINES:
         raise ProductWhitelistConfigError(f'未知管线: {pipeline_name}')
     return pipeline_name
+
+
+def _to_json_payload(product_orders: dict[str, ProductOrder]) -> dict[str, list[dict[str, str]]]:
+    return {
+        pipeline_name: [
+            {'product_code': product_code, 'product_name': product_name}
+            for product_code, product_name in product_orders[pipeline_name]
+        ]
+        for pipeline_name in PIPELINES
+    }
+
+
+def _write_json_atomically(path: Path, payload: dict[str, list[dict[str, str]]]) -> None:
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            dir=path.parent,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            json.dump(payload, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write('\n')
+
+        temp_path.replace(path)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise

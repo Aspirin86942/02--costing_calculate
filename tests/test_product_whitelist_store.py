@@ -86,6 +86,18 @@ def test_loading_non_object_payload_raises_chinese_error(tmp_path: Path) -> None
         ProductWhitelistStore(config_path).load()
 
 
+def test_loading_invalid_json_reports_line_and_column(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    config_path.write_text('{"gb": [', encoding='utf-8')
+
+    with pytest.raises(ProductWhitelistConfigError) as exc_info:
+        ProductWhitelistStore(config_path).load()
+
+    message = str(exc_info.value)
+    assert '行' in message
+    assert '列' in message
+
+
 def test_save_normalizes_two_item_tuple_and_list_items(tmp_path: Path) -> None:
     config_path = tmp_path / 'product_whitelists.json'
     store = ProductWhitelistStore(config_path)
@@ -106,6 +118,61 @@ def test_save_normalizes_two_item_tuple_and_list_items(tmp_path: Path) -> None:
         'gb': [{'product_code': 'GB-001', 'product_name': '产品甲'}],
         'sk': [{'product_code': 'SK-001', 'product_name': '产品丙'}],
     }
+
+
+def test_partial_save_preserves_unmentioned_existing_pipeline(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    store = ProductWhitelistStore(config_path)
+    old_gb: ProductOrder = (('GB-OLD', '产品甲'),)
+    old_sk: ProductOrder = (('SK-OLD', '产品乙'),)
+    new_sk: ProductOrder = (('SK-NEW', '产品丙'),)
+    store.save({'gb': old_gb, 'sk': old_sk})
+
+    store.save({'sk': new_sk})
+    result = store.load()
+
+    assert result.product_orders['gb'] == old_gb
+    assert result.product_orders['sk'] == new_sk
+
+
+def test_partial_save_uses_defaults_for_missing_file_base(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    custom_sk: ProductOrder = (('SK-NEW', '产品丙'),)
+
+    ProductWhitelistStore(config_path).save({'sk': custom_sk})
+    result = ProductWhitelistStore(config_path).load()
+
+    assert result.product_orders['gb'] == GB_PIPELINE.product_order
+    assert result.product_orders['sk'] == custom_sk
+
+
+def test_save_replaces_atomically_and_keeps_original_when_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+    original_payload = {
+        'gb': [{'product_code': 'GB-OLD', 'product_name': '产品甲'}],
+        'sk': [{'product_code': 'SK-OLD', 'product_name': '产品乙'}],
+    }
+    config_path.write_text(json.dumps(original_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    replace_calls: list[tuple[Path, Path]] = []
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        replace_calls.append((self, target))
+        raise OSError('replace failed')
+
+    monkeypatch.setattr(type(config_path), 'replace', fail_replace)
+
+    with pytest.raises(OSError, match='replace failed'):
+        ProductWhitelistStore(config_path).save({'sk': (('SK-NEW', '产品丙'),)})
+
+    assert json.loads(config_path.read_text(encoding='utf-8')) == original_payload
+    assert len(replace_calls) == 1
+    temp_path, target_path = replace_calls[0]
+    assert target_path == config_path
+    assert temp_path.parent == config_path.parent
+    assert not temp_path.exists()
 
 
 def test_loading_duplicate_product_pairs_raises_chinese_error(tmp_path: Path) -> None:
@@ -161,9 +228,23 @@ def test_restore_default_replaces_only_requested_pipeline(tmp_path: Path) -> Non
     assert result.product_orders['sk'] == custom_sk
 
 
+def test_restore_default_rejects_unknown_pipeline(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+
+    with pytest.raises(ProductWhitelistConfigError, match='未知管线'):
+        ProductWhitelistStore(config_path).restore_default('unknown')
+
+
 def test_load_product_order_for_pipeline_reads_configured_pipeline(tmp_path: Path) -> None:
     config_path = tmp_path / 'product_whitelists.json'
     expected: ProductOrder = (('SK-001', '产品丙'),)
     ProductWhitelistStore(config_path).save({'sk': expected})
 
     assert load_product_order_for_pipeline('sk', config_path) == expected
+
+
+def test_load_product_order_for_pipeline_rejects_unknown_pipeline(tmp_path: Path) -> None:
+    config_path = tmp_path / 'product_whitelists.json'
+
+    with pytest.raises(ProductWhitelistConfigError, match='未知管线'):
+        load_product_order_for_pipeline('unknown', config_path)

@@ -5,14 +5,18 @@
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
 - 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
-- 输出审计日志 `error_log`（外部 `*_处理后_error_log.csv`，记录未映射项目、缺失值、勾稽异常）
-- 输出质量摘要 `*_处理后_summary.json`，汇总质量指标、`error_log` 计数、异常等级/异常来源计数与月份过滤摘要
+- 质量摘要、`error_log_count` 和阶段耗时在控制台或 GUI 状态区展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 字段名提取和标准化
 
 ## 安装
 ```bash
 pip install -e .
+```
+
+如需 GUI 和开发依赖：
+```bash
+pip install -e '.[dev,gui]'
 ```
 
 ## 使用
@@ -23,9 +27,12 @@ python main.py gb
 # SK 管线
 python main.py sk
 
-# 预检 + benchmark（不写 workbook/error_log/summary）
+# 预检 + benchmark（不写 workbook 或任何外部摘要文件）
 python main.py gb --check-only --benchmark
 python main.py sk --check-only --benchmark
+
+# GUI
+python -m src.gui.app
 ```
 
 ## 输出说明
@@ -35,11 +42,15 @@ python main.py sk --check-only --benchmark
 - `成本分析工单维度`
 - `成本分析产品维度`
 
-- 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
-- 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后_error_log.csv`
-- 每次处理会在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后_summary.json`
-- 质量指标摘要仅输出到控制台，不再生成 `*_处理后.log`
-- `--check-only` 只做预检与摘要，不写 workbook、`error_log.csv` 或 `summary.json`
+- 每次处理只在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
+- 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
+- 质量摘要、`error_log` 行数和阶段耗时仅输出到控制台或 GUI 状态区
+- `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
+
+## GUI 使用
+运行命令：`conda run -n test python -m src.gui.app`
+
+GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份范围、维护产品白名单池、预检和后台处理。产品白名单池按 `产品编码 + 产品名称` 精确匹配，只影响分析维度 Sheet，不过滤总表和数量聚合维度。
 
 ## 分析输出口径
 - `成本计算单总表` 保留成本计算单明细，`本期完工金额`为空时后续分析按 `0` 参与汇总，并继续写入 `error_log` 的 `MISSING_AMOUNT`
@@ -87,6 +98,8 @@ python main.py sk --check-only --benchmark
 - `main.py` - 仓库根目录统一入口
 - `src/excel/` - Excel 写出与样式模块
   - `styles.py` / `fast_writer.py` / `workbook_writer.py`
+- `src/gui/` - GUI 入口、窗口状态、校验与后台任务封装
+- `src/services/` - CLI / GUI 共用的处理服务与结果对象
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
   - `gb/` - GB 系列原始成本计算单
@@ -101,11 +114,17 @@ python main.py sk --check-only --benchmark
 
 ## 测试
 ```bash
+# GUI / 开发依赖
+conda run -n test python -m pip install -e '.[dev,gui]'
+
 # 先确认解释器来自 test 环境
 conda run -n test python -c "import sys; print(sys.executable)"
 
 # 运行测试
 conda run -n test python -m pytest -q
+
+# GUI 测试
+conda run -n test python -m pytest tests/test_gui_form_state.py tests/test_gui_main_window.py -q
 
 # 代码检查
 conda run -n test python -m ruff check src tests

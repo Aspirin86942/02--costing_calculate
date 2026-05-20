@@ -17,10 +17,12 @@
 
 ### Build / Test / Dev Commands
 - `python -m pip install -e .`: 可编辑模式安装
-- `python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook/error_log/summary 文件
-- `python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook/error_log/summary 文件
+- `python -m pip install -e '.[dev,gui]'`: 安装开发与 GUI 依赖
+- `python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
 - `python main.py gb`: 执行 GB 管线
 - `python main.py sk`: 执行 SK 管线
+- `python -m src.gui.app`: 启动本地 GUI
 - `python -m pytest tests -q`: 运行测试
 - `python -m ruff check src tests`: 代码检查
 - `python -m ruff format src tests`: 代码格式化
@@ -62,11 +64,10 @@
 
 ### 当前业务规则（GB / SK 分析输出）
 - 每个处理后的工作簿默认按顺序输出以下 4 张 Sheet：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`、`成本分析产品维度`。
-- 每次处理额外输出 `*_处理后_error_log.csv`，用于承载可审计异常明细。
-- 每次处理额外输出 `*_处理后_summary.json`，用于承载质量指标、`error_log` 计数、异常等级/异常来源计数与月份过滤摘要。
-- 质量校验结果默认输出到控制台摘要，不再生成同名 `.log` 文件；`--check-only` 只做预检与摘要，不写 workbook、`error_log.csv` 或 `summary.json`。
+- 每次处理只落盘 `*_处理后.xlsx`，不再额外生成 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`。
+- 质量校验结果默认输出到控制台或 GUI 状态区；`--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
-- 分析页仅展示白名单产品，匹配规则为`产品编码 + 产品名称`双字段精确匹配。
+- 产品白名单池按 `产品编码 + 产品名称` 双字段精确匹配，影响分析维度 Sheet，不过滤 `成本计算单总表` 和 `成本计算单数量聚合维度`。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
 - `成本计算单总表`sheet保留工单级成本记录；`本期完工金额`为空时，后续分析按`0`参与汇总，并继续写入`error_log`的`MISSING_AMOUNT`。
 - `成本计算单数量聚合维度`sheet保留现有行粒度，仅保留`本期完工数量 > 0`且`本期完工金额`非空的工单；输出三大类金额、制造费用细项金额、独立成本项金额、单位成本、勾稽状态与异常原因说明。

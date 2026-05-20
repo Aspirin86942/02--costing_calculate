@@ -44,7 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **期间格式**：`年期` 列统一格式化为 `YYYY 年 MM 期`
 
-**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了 8 个目标产品，仅这些产品进入异常分析与产品维度摘要
+**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了目标产品池，按 `产品编码 + 产品名称` 精确匹配；它只影响异常分析与产品维度摘要，不过滤总表和数量聚合维度
 
 **输出 Sheet**：默认按顺序输出 4 张表
 - `成本计算单总表`
@@ -52,7 +52,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `成本分析工单维度`
 - `成本分析产品维度`
 
-**工作簿外输出**：正常运行会额外生成 `*_处理后_error_log.csv` 和 `*_处理后_summary.json`；控制台会打印质量摘要，`--check-only` 只做预检，不写 workbook/error_log/summary 文件
+**工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、`error_log_count` 和阶段耗时输出到控制台或 GUI 状态区，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
 
 **工单异常解释字段**：`成本分析工单维度` 新增 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
 
@@ -67,12 +67,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 安装
 pip install -e .
 
+# 安装开发与 GUI 依赖
+pip install -e '.[dev,gui]'
+
 # 运行 ETL (自动读取 data/raw/gb/下的 GB-*成本计算单*.xlsx)
 python -m src.etl.costing_etl
 
-# 预检 + benchmark（只跑分析链路，不落 workbook/error_log/summary）
+# 预检 + benchmark（只跑分析链路，不落 workbook 或任何外部摘要文件）
 python main.py gb --check-only --benchmark
 python main.py sk --check-only --benchmark
+
+# 启动 GUI
+python -m src.gui.app
 
 # 测试 (需使用 conda test 环境)
 conda run -n test python -m pytest -q
@@ -96,5 +102,5 @@ conda run -n test ruff format .
 
 - `main.py` 已支持 `--check-only` 和 `--benchmark`。
 - `src/analytics/scoring.py` 已接管加权中位数、加权 MAD、有效 MAD 兜底和异常分级，`anomaly.py` 只负责异常页组装与兼容导出。
-- `src/analytics/summary.py` 负责生成 `*_处理后_summary.json`。
+- `src/analytics/summary.py` 保留质量摘要 payload / JSON 工具函数，但正常 CLI 输出不再落盘 sidecar。
 - `src/excel/sheet_writers.py` 已删除，写出路径统一走 `fast_writer.py`。

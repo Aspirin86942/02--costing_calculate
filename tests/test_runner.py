@@ -8,7 +8,12 @@ from src.config.product_whitelist_store import ProductWhitelistConfigError
 from src.etl import runner
 from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
-from src.services.costing_service import CostingRunRequest, CostingRunResult, ServiceStatus
+from src.services.costing_service import (
+    CostingRunRequest,
+    CostingRunResult,
+    ServiceStatus,
+    build_output_workbook_path,
+)
 
 
 class _FakeGlobDir:
@@ -46,12 +51,7 @@ def _config(
 
 
 def _planned_workbook_path(request: CostingRunRequest) -> Path:
-    suffix = ''
-    if request.month_start or request.month_end:
-        start = request.month_start or ''
-        end = request.month_end or ''
-        suffix = f'_{start}_{end}'
-    return request.output_dir / f'{request.input_path.stem}_处理后{suffix}.xlsx'
+    return build_output_workbook_path(request.output_dir, request.input_path, request.month_start, request.month_end)
 
 
 def _succeeded_result(
@@ -374,18 +374,15 @@ def test_run_pipeline_returns_one_when_product_whitelist_loader_fails(monkeypatc
     assert not config.processed_dir.exists()
 
 
-def test_build_benchmark_log_text_reports_stage_timings_and_zero_error_log_size(tmp_path) -> None:
+def test_build_benchmark_log_text_reports_stage_timings_without_sidecar_fields(tmp_path) -> None:
     input_file = tmp_path / 'input.xlsx'
     output_file = tmp_path / 'output.xlsx'
-    error_log_file = tmp_path / 'error_log.csv'
     input_file.write_bytes(b'abc')
     output_file.write_bytes(b'output')
-    error_log_file.write_bytes(b'csv')
 
     text = build_benchmark_log_text(
         input_path=input_file,
         output_path=output_file,
-        error_log_path=error_log_file,
         error_log_count=4,
         stage_timings={'ingest': 0.1, 'normalize': 0.2, 'export': 0.3},
         ingest_backend='calamine',
@@ -395,8 +392,8 @@ def test_build_benchmark_log_text_reports_stage_timings_and_zero_error_log_size(
     assert '[benchmark]' in text
     assert 'input_size_bytes=3' in text
     assert 'output_size_bytes=6' in text
-    assert 'error_log_size_bytes=0' in text
-    assert 'planned_error_log=' in text
+    assert 'error_log_size_bytes' not in text
+    assert 'planned_error_log' not in text
     assert 'ingest_backend=calamine' in text
     assert 'payload_total_seconds=0.300' in text
     assert 'export_seconds=0.300' in text
@@ -440,7 +437,9 @@ def test_run_pipeline_check_only_benchmark_prints_service_timings_without_writin
     assert 'ingest_backend=calamine' in stdout
     assert 'input_size_bytes=3' in stdout
     assert 'output_size_bytes=0' in stdout
-    assert 'error_log_size_bytes=0' in stdout
+    assert 'error_log_size_bytes' not in stdout
+    assert 'planned_error_log' not in stdout
+    assert 'error_log_count=0' in stdout
     assert 'payload_total_seconds=0.500' in stdout
     assert 'export_seconds=0.000' in stdout
     assert 'stage_export_seconds=0.750' in stdout
@@ -483,7 +482,9 @@ def test_run_pipeline_normal_benchmark_reports_export_timing_and_zero_error_log_
     assert '[benchmark]' in stdout
     assert 'output_written=true' in stdout
     assert 'output_size_bytes=4' in stdout
-    assert 'error_log_size_bytes=0' in stdout
+    assert 'error_log_size_bytes' not in stdout
+    assert 'planned_error_log' not in stdout
+    assert 'error_log_count=0' in stdout
     assert 'ingest_backend=openpyxl' in stdout
     assert 'payload_total_seconds=1.750' in stdout
     assert 'export_seconds=0.750' in stdout

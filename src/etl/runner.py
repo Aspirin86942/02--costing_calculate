@@ -71,7 +71,6 @@ def build_benchmark_log_text(
     *,
     input_path: Path,
     output_path: Path,
-    error_log_path: Path,
     error_log_count: int,
     stage_timings: dict[str, float],
     ingest_backend: str = 'unknown',
@@ -86,9 +85,7 @@ def build_benchmark_log_text(
         f'output_written={str(output_written).lower()}',
         f'input_size_bytes={_file_size_or_zero(input_path)}',
         f'output_size_bytes={_file_size_or_zero(output_path) if output_written else 0}',
-        'error_log_size_bytes=0',
         f'planned_output={output_path}',
-        f'planned_error_log={error_log_path}',
         f'error_log_count={error_log_count}',
         f'ingest_backend={ingest_backend}',
         f'payload_total_seconds={payload_total:.3f}',
@@ -110,10 +107,6 @@ def _build_output_workbook_path(
 ) -> Path:
     suffix = '' if month_range is None or not month_range.output_suffix() else f'_{month_range.output_suffix()}'
     return processed_dir / f'{input_file.stem}_处理后{suffix}.xlsx'
-
-
-def _planned_error_log_path(workbook_path: Path) -> Path:
-    return workbook_path.with_name(f'{workbook_path.stem}_error_log.csv')
 
 
 def _build_request(
@@ -176,7 +169,6 @@ def _print_benchmark_summary(
         build_benchmark_log_text(
             input_path=input_file,
             output_path=output_file,
-            error_log_path=_planned_error_log_path(output_file),
             error_log_count=result.error_log_count,
             stage_timings=result.stage_timings or {},
             ingest_backend=result.ingest_backend,

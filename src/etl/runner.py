@@ -160,6 +160,7 @@ def _print_quality_summary(
             output_path=output_file,
             error_log_count=result.error_log_count,
             quality_metrics=result.quality_metrics,
+            month_filter_summary=result.month_filter_summary,
         )
     )
 

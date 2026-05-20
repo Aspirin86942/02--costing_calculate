@@ -6,7 +6,7 @@ from src.analytics.contracts import QualityMetric
 from src.config.pipelines import GB_PIPELINE, SK_PIPELINE, PipelineConfig, ProductOrder
 from src.config.product_whitelist_store import ProductWhitelistConfigError
 from src.etl import runner
-from src.etl.month_filter import MonthRange
+from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.etl.runner import build_benchmark_log_text, find_input_files, run_pipeline
 from src.services.costing_service import CostingRunRequest, CostingRunResult, ServiceStatus
 
@@ -62,6 +62,7 @@ def _succeeded_result(
     stage_timings: dict[str, float] | None = None,
     ingest_backend: str = 'unknown',
     output_size_bytes: int = 0,
+    month_filter_summary: MonthFilterSummary | None = None,
 ) -> CostingRunResult:
     return CostingRunResult(
         status=ServiceStatus.SUCCEEDED,
@@ -72,6 +73,7 @@ def _succeeded_result(
         stage_timings=stage_timings or {},
         ingest_backend=ingest_backend,
         output_size_bytes=output_size_bytes,
+        month_filter_summary=month_filter_summary,
     )
 
 
@@ -81,6 +83,16 @@ def _failed_result(workbook_path: Path, message: str = '处理失败') -> Costin
         message=message,
         workbook_path=workbook_path,
         error_code='ETL_FAILED',
+    )
+
+
+def _month_filter_summary(month_range: MonthRange) -> MonthFilterSummary:
+    return MonthFilterSummary(
+        month_range=month_range,
+        input_rows=3,
+        output_rows=2,
+        input_months=('2025-01', '2025-02', '2025-03'),
+        output_months=('2025-02', '2025-03'),
     )
 
 
@@ -254,7 +266,12 @@ def test_run_pipeline_passes_month_range_to_service_and_does_not_write_csv(monke
         workbook_path = _planned_workbook_path(request)
         workbook_path.parent.mkdir(parents=True, exist_ok=True)
         workbook_path.write_bytes(b'xlsx')
-        return _succeeded_result(workbook_path, quality_metrics=(_metric('2'),), output_size_bytes=4)
+        return _succeeded_result(
+            workbook_path,
+            quality_metrics=(_metric('2'),),
+            output_size_bytes=4,
+            month_filter_summary=_month_filter_summary(month_range),
+        )
 
     monkeypatch.setattr(
         runner,
@@ -275,6 +292,41 @@ def test_run_pipeline_passes_month_range_to_service_and_does_not_write_csv(monke
     assert not (config.processed_dir / 'GB-成本计算单_处理后_2025-01_2025-03_error_log.csv').exists()
     assert not (config.processed_dir / 'GB-成本计算单_处理后_2025-01_2025-03_summary.json').exists()
     assert f'output={workbook_path}' in stdout
+    assert 'month_range=[2025-01, 2025-03]' in stdout
+    assert 'month_filter_rows=3->2' in stdout
+    assert 'months_before=2025-01,2025-02,2025-03' in stdout
+    assert 'months_after=2025-02,2025-03' in stdout
+
+
+def test_run_pipeline_check_only_prints_month_filter_summary(monkeypatch, capsys, tmp_path) -> None:
+    input_file = tmp_path / 'SK-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    config = _config(tmp_path, name='sk')
+    month_range = MonthRange(start='2025-01', end='2025-03')
+
+    def _fake_precheck_costing_run(request: CostingRunRequest) -> CostingRunResult:
+        return _succeeded_result(
+            _planned_workbook_path(request),
+            quality_metrics=(_metric('2'),),
+            month_filter_summary=_month_filter_summary(month_range),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        'load_product_order_for_pipeline',
+        lambda pipeline_name: (('SK_SERVICE', '服务白名单'),),
+        raising=False,
+    )
+    monkeypatch.setattr(runner, 'precheck_costing_run', _fake_precheck_costing_run, raising=False)
+
+    exit_code = run_pipeline(config, month_range=month_range, check_only=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert 'mode=check-only' in stdout
+    assert 'month_range=[2025-01, 2025-03]' in stdout
+    assert 'month_filter_rows=3->2' in stdout
+    assert not config.processed_dir.exists()
 
 
 def test_run_pipeline_returns_one_when_service_fails(monkeypatch, tmp_path) -> None:

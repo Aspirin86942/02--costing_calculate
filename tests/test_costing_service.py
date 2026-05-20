@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import GB_PIPELINE, SK_PIPELINE
+from src.etl.month_filter import MonthFilterSummary, MonthRange
 from src.services.costing_service import (
     CostingRunRequest,
     ServiceStatus,
@@ -257,6 +258,13 @@ def test_precheck_calls_prepare_payload_not_process_file(monkeypatch, tmp_path: 
 def test_run_costing_request_writes_only_workbook_and_returns_runtime_summary(monkeypatch, tmp_path: Path) -> None:
     request = _request(tmp_path)
     captured: dict[str, object] = {}
+    month_filter_summary = MonthFilterSummary(
+        month_range=MonthRange(start='2025-01', end='2025-03'),
+        input_rows=3,
+        output_rows=2,
+        input_months=('2025-01', '2025-02', '2025-03'),
+        output_months=('2025-02', '2025-03'),
+    )
 
     class _DummyETL:
         def __init__(
@@ -285,7 +293,7 @@ def test_run_costing_request_writes_only_workbook_and_returns_runtime_summary(mo
                     {'异常等级': '关注', '异常主要来源': '材料异常'},
                 ]
             )
-            self.last_month_filter_summary = None
+            self.last_month_filter_summary = month_filter_summary
             self.last_stage_timings = {'ingest': 0.1, 'export': 0.2}
             self.last_ingest_backend = 'calamine'
 
@@ -316,6 +324,7 @@ def test_run_costing_request_writes_only_workbook_and_returns_runtime_summary(mo
         'anomaly_source_counts': {'材料异常': 2, '人工异常': 1},
     }
     assert result.stage_timings == {'ingest': 0.1, 'export': 0.2}
+    assert result.month_filter_summary == month_filter_summary
     assert result.ingest_backend == 'calamine'
     assert result.input_size_bytes == 3
     assert result.output_size_bytes == 4

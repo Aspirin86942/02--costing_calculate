@@ -10,7 +10,7 @@ import pandas as pd
 from src.analytics.contracts import QualityMetric
 from src.config.pipelines import PIPELINES, ProductOrder
 from src.etl.costing_etl import CostingWorkbookETL
-from src.etl.month_filter import MonthRange, build_month_range
+from src.etl.month_filter import MonthFilterSummary, MonthRange, build_month_range
 
 
 class ServiceStatus(StrEnum):
@@ -39,6 +39,7 @@ class CostingRunResult:
     candidate_products: ProductOrder = ()
     quality_metrics: tuple[QualityMetric, ...] = ()
     error_log_count: int = 0
+    month_filter_summary: MonthFilterSummary | None = None
     anomaly_summary: dict[str, dict[str, int]] | None = None
     stage_timings: dict[str, float] | None = None
     input_size_bytes: int = 0
@@ -273,6 +274,7 @@ def _result_from_etl(
         candidate_products=tuple(getattr(etl, 'last_candidate_products', ())),
         quality_metrics=tuple(getattr(etl, 'last_quality_metrics', ())),
         error_log_count=int(getattr(etl, 'last_error_log_count', 0) or 0),
+        month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
         anomaly_summary=_build_anomaly_summary(getattr(etl, 'last_work_order_sheet_frame', pd.DataFrame())),
         stage_timings=dict(getattr(etl, 'last_stage_timings', {})),
         input_size_bytes=_file_size_or_zero(input_path),

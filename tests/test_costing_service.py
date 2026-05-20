@@ -64,6 +64,65 @@ def test_precheck_rejects_non_xlsx(tmp_path: Path) -> None:
     assert 'xlsx' in result.message
 
 
+def test_invalid_pipeline_is_rejected(tmp_path: Path) -> None:
+    request = _request(tmp_path, pipeline='unknown')
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'INVALID_INPUT'
+
+
+def test_missing_input_is_rejected(tmp_path: Path) -> None:
+    request = CostingRunRequest(
+        pipeline='gb',
+        input_path=tmp_path / 'missing.xlsx',
+        output_dir=tmp_path / 'processed',
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        overwrite_confirmed=True,
+    )
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'FILE_NOT_FOUND'
+
+
+def test_existing_input_path_that_is_not_file_is_invalid(tmp_path: Path) -> None:
+    input_dir = tmp_path / 'input-folder'
+    input_dir.mkdir()
+    request = CostingRunRequest(
+        pipeline='gb',
+        input_path=input_dir,
+        output_dir=tmp_path / 'processed',
+        product_order=(('GB_C.D.B0040AA', 'BMS-750W驱动器'),),
+        overwrite_confirmed=True,
+    )
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'INVALID_INPUT'
+
+
+def test_unreadable_xlsx_is_rejected(monkeypatch, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    original_open = Path.open
+
+    def _raise_for_input(path: Path, *args, **kwargs):
+        if path == request.input_path:
+            raise OSError('permission denied')
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', _raise_for_input)
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'FILE_NOT_READABLE'
+    assert result.technical_detail == 'permission denied'
+
+
 def test_precheck_reports_existing_output_when_not_confirmed(tmp_path: Path) -> None:
     request = _request(tmp_path, overwrite_confirmed=False)
     request.output_dir.mkdir()

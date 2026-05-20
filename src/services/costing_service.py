@@ -147,10 +147,10 @@ def _prepare_request(request: CostingRunRequest) -> tuple[_PreparedRequest | Non
         return None, _failed(message=f'未知管线: {request.pipeline}', error_code='INVALID_INPUT')
     if not request.input_path.exists():
         return None, _failed(message=f'输入文件不存在: {request.input_path}', error_code='FILE_NOT_FOUND')
-    if request.input_path.suffix.lower() != '.xlsx':
-        return None, _failed(message='输入文件必须是 .xlsx 格式', error_code='UNSUPPORTED_FILE_TYPE')
     if not request.input_path.is_file():
         return None, _failed(message=f'输入路径不是文件: {request.input_path}', error_code='INVALID_INPUT')
+    if request.input_path.suffix.lower() != '.xlsx':
+        return None, _failed(message='输入文件必须是 .xlsx 格式', error_code='UNSUPPORTED_FILE_TYPE')
     try:
         with request.input_path.open('rb'):
             pass

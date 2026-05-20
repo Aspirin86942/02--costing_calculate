@@ -176,6 +176,7 @@ def test_existing_output_confirmation_no_does_not_retry(
         'question',
         lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
     )
+    main_window.status_label.setText('正在处理')
     result = CostingRunResult(
         status=ServiceStatus.FAILED,
         message='输出 workbook 已存在',
@@ -187,6 +188,7 @@ def test_existing_output_confirmation_no_does_not_retry(
 
     assert calls == []
     assert '用户取消覆盖' in main_window.log_edit.toPlainText()
+    assert main_window.status_label.text() == result.message
 
 
 def test_empty_candidate_result_clears_stale_candidate_table(main_window: MainWindow) -> None:
@@ -198,6 +200,28 @@ def test_empty_candidate_result_clears_stale_candidate_table(main_window: MainWi
     )
 
     main_window._on_worker_finished(result, task_kind='precheck')
+
+    assert main_window.candidate_table.rowCount() == 0
+
+
+def test_failed_result_clears_stale_candidate_table(main_window: MainWindow) -> None:
+    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
+    result = CostingRunResult(
+        status=ServiceStatus.FAILED,
+        message='处理失败',
+        candidate_products=(('P002', '产品B'),),
+        error_code='ETL_FAILED',
+    )
+
+    main_window._on_worker_finished(result, task_kind='run')
+
+    assert main_window.candidate_table.rowCount() == 0
+
+
+def test_worker_exception_clears_stale_candidate_table(main_window: MainWindow) -> None:
+    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
+
+    main_window._on_worker_failed('后台异常')
 
     assert main_window.candidate_table.rowCount() == 0
 

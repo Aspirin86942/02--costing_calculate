@@ -402,19 +402,18 @@ class MainWindow(QMainWindow):
         if result.workbook_path is not None:
             self.last_output_dir = result.workbook_path.parent
 
-        if result.error_code == 'OUTPUT_EXISTS':
-            self.precheck_passed = False
-            self._refresh_buttons()
-            self._confirm_overwrite_and_retry(result, task_kind)
-            return
-
         if result.status == ServiceStatus.SUCCEEDED:
             self._set_table_pairs(self.candidate_table, result.candidate_products)
             self.precheck_passed = task_kind in {'precheck', 'run'}
             self._set_status(result.message, 'success')
         else:
+            self._set_table_pairs(self.candidate_table, ())
             self.precheck_passed = False
             self._set_status(result.message, 'failed')
+            self._refresh_buttons()
+            if result.error_code == 'OUTPUT_EXISTS':
+                self._confirm_overwrite_and_retry(result, task_kind)
+            return
 
         self._refresh_buttons()
 
@@ -422,6 +421,7 @@ class MainWindow(QMainWindow):
         self.current_worker = None
         self._set_busy(False)
         self.precheck_passed = False
+        self._set_table_pairs(self.candidate_table, ())
         self._set_status('处理失败', 'failed')
         self.stage_label.setText('-')
         self.summary_label.setText('任务异常终止')

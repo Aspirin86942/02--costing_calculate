@@ -292,8 +292,7 @@ def test_workbook_ingestor_openpyxl_fallback_preserves_sheet_name_and_headers(tm
     assert result.frame.columns == ['column_0', 'column_1']
     assert result.frame.row(0) == ('2025年1期', 'P001')
     assert any(
-        'falling back to openpyxl' in record.message and record.levelno >= logging.WARNING
-        for record in caplog.records
+        'falling back to openpyxl' in record.message and record.levelno >= logging.WARNING for record in caplog.records
     )
 
 

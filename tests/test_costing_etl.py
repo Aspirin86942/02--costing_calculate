@@ -476,9 +476,7 @@ def test_prepare_payload_builds_pipeline_payload_without_writing_workbook(tmp_pa
         assert etl.prepare_payload(tmp_path / 'input.xlsx') is True
 
     payload_mock.assert_called_once()
-    assert payload_mock.call_args.kwargs['presentation_product_order'] == (
-        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
-    )
+    assert payload_mock.call_args.kwargs['presentation_product_order'] == (('GB_C.D.B0040AA', 'BMS-750W驱动器'),)
     writer_mock.assert_not_called()
     assert etl.last_quality_metrics == payload.quality_metrics
     assert etl.last_error_log_count == 1

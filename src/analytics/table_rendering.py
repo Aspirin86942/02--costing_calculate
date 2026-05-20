@@ -1,11 +1,10 @@
-"""价量分析与兼容摘要页渲染准备。"""
+"""兼容产品异常摘要页渲染准备。"""
 
 from __future__ import annotations
 
 import pandas as pd
-import polars as pl
 
-from src.analytics.contracts import ProductAnomalySection, SectionBlock
+from src.analytics.contracts import ProductAnomalySection
 from src.analytics.fact_builder import (
     COST_BUCKETS,
     ZERO,
@@ -13,9 +12,7 @@ from src.analytics.fact_builder import (
     first_decimal,
     period_to_display,
     safe_divide,
-    sum_decimal,
     sum_decimal_series,
-    to_decimal,
 )
 from src.config.pipelines import normalize_product_anomaly_scope_mode
 
@@ -33,41 +30,6 @@ PRODUCT_ANALYSIS_FIELDS = [
     ('moh_unit_cost', '单位制造费用成本', 'price', False),
     ('moh_contrib', '制造费用贡献率', 'pct', False),
 ]
-PRODUCT_SUMMARY_SHEET_RENAME_MAP: dict[str, str] = {
-    'product_code': '产品编码',
-    'product_name': '产品名称',
-    'period_display': '月份',
-    'total_cost': '总成本',
-    'completed_qty': '完工数量',
-    'unit_cost': '单位成本',
-    'dm_cost': '直接材料成本',
-    'dm_unit_cost': '单位直接材料成本',
-    'dm_contrib': '直接材料贡献率',
-    'dl_cost': '直接人工成本',
-    'dl_unit_cost': '单位直接人工成本',
-    'dl_contrib': '直接人工贡献率',
-    'moh_cost': '制造费用成本',
-    'moh_unit_cost': '单位制造费用成本',
-    'moh_contrib': '制造费用贡献率',
-}
-PRODUCT_SUMMARY_SHEET_COLUMNS: tuple[str, ...] = tuple(PRODUCT_SUMMARY_SHEET_RENAME_MAP.values())
-PRODUCT_SUMMARY_SHEET_COLUMN_TYPES: dict[str, str] = {
-    '产品编码': 'text',
-    '产品名称': 'text',
-    '月份': 'text',
-    '总成本': 'amount',
-    '完工数量': 'qty',
-    '单位成本': 'price',
-    '直接材料成本': 'amount',
-    '单位直接材料成本': 'price',
-    '直接材料贡献率': 'pct',
-    '直接人工成本': 'amount',
-    '单位直接人工成本': 'price',
-    '直接人工贡献率': 'pct',
-    '制造费用成本': 'amount',
-    '单位制造费用成本': 'price',
-    '制造费用贡献率': 'pct',
-}
 LEGACY_SINGLE_SCOPE_MODE = 'legacy_single_scope'
 DOC_TYPE_SPLIT_SCOPE_MODE = 'doc_type_split'
 DOC_TYPE_SPLIT_SCOPE_LABELS: tuple[str, ...] = ('全部', '正常生产', '返工生产')
@@ -109,77 +71,6 @@ DOC_TYPE_SPLIT_WORK_ORDER_REQUIRED_COLUMNS: set[str] = {
     'dl_amount',
     'moh_amount',
 }
-
-
-def build_product_summary_sheet_frame(summary_frame: pd.DataFrame | pl.DataFrame) -> pd.DataFrame:
-    """把产品汇总事实转换为展示层列名。"""
-    if isinstance(summary_frame, pl.DataFrame):
-        if summary_frame.is_empty():
-            frame = pd.DataFrame(columns=summary_frame.columns)
-        else:
-            frame = pd.DataFrame(summary_frame.to_dicts())
-    else:
-        frame = summary_frame.copy()
-
-    if frame.empty:
-        return pd.DataFrame(columns=PRODUCT_SUMMARY_SHEET_COLUMNS)
-
-    renamed = frame.rename(columns=PRODUCT_SUMMARY_SHEET_RENAME_MAP)
-    output_columns = [column for column in PRODUCT_SUMMARY_SHEET_COLUMNS if column in renamed.columns]
-    return renamed.reindex(columns=output_columns)
-
-
-def build_pivot(bucket_df: pd.DataFrame, value_col: str, period_columns: list[str]) -> pd.DataFrame:
-    pivot = bucket_df.pivot_table(
-        index=['product_code', 'product_name'],
-        columns='period_display',
-        values=value_col,
-        aggfunc='first',
-        sort=False,
-    )
-    return pivot.reindex(columns=period_columns).reset_index()
-
-
-def append_total_row(df: pd.DataFrame, value_columns: list[str], summary_col: str) -> pd.DataFrame:
-    total_row: dict[str, object] = {'产品编码': '总计', '产品名称': ''}
-    for column in value_columns + [summary_col]:
-        total_row[column] = sum_decimal_series(df[column])
-    return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
-
-
-def build_section_blocks(bucket_df: pd.DataFrame, title_prefix: str) -> list[SectionBlock]:
-    period_keys = sorted(bucket_df['period'].dropna().unique().tolist())
-    period_columns = [period_to_display(period) for period in period_keys]
-
-    amount_pivot = build_pivot(bucket_df, 'amount', period_columns).rename(
-        columns={'product_code': '产品编码', 'product_name': '产品名称'}
-    )
-    qty_pivot = build_pivot(bucket_df, 'qty', period_columns).rename(
-        columns={'product_code': '产品编码', 'product_name': '产品名称'}
-    )
-
-    for column in period_columns:
-        amount_pivot[column] = (
-            amount_pivot[column].map(to_decimal).map(lambda value: value if value is not None else ZERO)
-        )
-        qty_pivot[column] = qty_pivot[column].map(to_decimal)
-
-    amount_pivot['总计'] = amount_pivot[period_columns].apply(lambda row: sum_decimal(row.tolist()), axis=1)
-    qty_pivot['总计'] = qty_pivot[period_columns].apply(lambda row: sum_decimal(row.tolist()), axis=1)
-
-    price_pivot = amount_pivot[['产品编码', '产品名称']].copy()
-    for column in period_columns:
-        price_pivot[column] = amount_pivot[column].combine(qty_pivot[column], safe_divide)
-    price_pivot['均值'] = amount_pivot['总计'].combine(qty_pivot['总计'], safe_divide)
-
-    amount_with_total = append_total_row(amount_pivot, period_columns, '总计')
-    qty_with_total = append_total_row(qty_pivot, period_columns, '总计')
-
-    return [
-        SectionBlock(f'{title_prefix}完工金额', amount_with_total, 'amount', True),
-        SectionBlock(f'{title_prefix}完工数量', qty_with_total, 'qty', True),
-        SectionBlock(f'{title_prefix}完工单价', price_pivot, 'price', False),
-    ]
 
 
 def _finalize_product_summary_metrics(summary_df: pd.DataFrame) -> pd.DataFrame:
@@ -413,34 +304,3 @@ def map_doc_type_to_scope_label(doc_type: object) -> str:
     if not normalized_doc_type:
         return DOC_TYPE_UNKNOWN_LABEL
     return DOC_TYPE_TO_SECTION_LABEL.get(normalized_doc_type, DOC_TYPE_UNKNOWN_LABEL)
-
-
-def render_tables(fact_df: pd.DataFrame) -> dict[str, list[SectionBlock]]:
-    """按成本类别输出三段价量分析。"""
-    if fact_df.empty:
-        empty = pd.DataFrame(columns=['产品编码', '产品名称'])
-        return {
-            '直接材料_价量比': [
-                SectionBlock('直接材料完工金额', empty.copy(), 'amount', True),
-                SectionBlock('直接材料完工数量', empty.copy(), 'qty', True),
-                SectionBlock('直接材料完工单价', empty.copy(), 'price', False),
-            ],
-            '直接人工_价量比': [
-                SectionBlock('直接人工完工金额', empty.copy(), 'amount', True),
-                SectionBlock('直接人工完工数量', empty.copy(), 'qty', True),
-                SectionBlock('直接人工完工单价', empty.copy(), 'price', False),
-            ],
-            '制造费用_价量比': [
-                SectionBlock('制造费用完工金额', empty.copy(), 'amount', True),
-                SectionBlock('制造费用完工数量', empty.copy(), 'qty', True),
-                SectionBlock('制造费用完工单价', empty.copy(), 'price', False),
-            ],
-        }
-
-    source = fact_df.copy()
-    source['period_display'] = source['period'].map(period_to_display)
-    return {
-        '直接材料_价量比': build_section_blocks(source[source['cost_bucket'] == 'direct_material'], '直接材料'),
-        '直接人工_价量比': build_section_blocks(source[source['cost_bucket'] == 'direct_labor'], '直接人工'),
-        '制造费用_价量比': build_section_blocks(source[source['cost_bucket'] == 'moh'], '制造费用'),
-    }

@@ -1,4 +1,4 @@
-"""测试价量分析宽表与兼容摘要页。"""
+"""测试兼容产品异常摘要页。"""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from src.analytics.contracts import ProductAnomalySection, SectionBlock
+import src.analytics.table_rendering as table_rendering
+from src.analytics.contracts import ProductAnomalySection
 from src.analytics.table_rendering import (
     DOC_TYPE_NORMAL_LABEL,
     DOC_TYPE_REWORK_LABEL,
     DOC_TYPE_UNKNOWN_LABEL,
     build_product_anomaly_sections,
     map_doc_type_to_scope_label,
-    render_tables,
 )
 
 
@@ -175,44 +175,8 @@ def _build_doc_type_split_summary_df() -> pd.DataFrame:
     )
 
 
-def test_render_tables_returns_three_sections_per_sheet() -> None:
-    tables = render_tables(_sample_fact_df())
-
-    assert set(tables.keys()) == {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}
-    for sections in tables.values():
-        assert len(sections) == 3
-        assert all(isinstance(section, SectionBlock) for section in sections)
-        assert [section.metric_type for section in sections] == ['amount', 'qty', 'price']
-
-
-def test_render_tables_amount_qty_total_and_weighted_price() -> None:
-    tables = render_tables(_sample_fact_df())
-    dm_sections = tables['直接材料_价量比']
-
-    amount_df = dm_sections[0].data
-    qty_df = dm_sections[1].data
-    price_df = dm_sections[2].data
-
-    amount_product = amount_df[amount_df['产品编码'] == 'P001'].iloc[0]
-    qty_product = qty_df[qty_df['产品编码'] == 'P001'].iloc[0]
-    price_product = price_df[price_df['产品编码'] == 'P001'].iloc[0]
-
-    assert amount_product['2025年01期'] == Decimal('100')
-    assert amount_product['2025年02期'] == Decimal('150')
-    assert amount_product['总计'] == Decimal('250')
-
-    assert qty_product['2025年01期'] == Decimal('10')
-    assert qty_product['2025年02期'] == Decimal('12')
-    assert qty_product['总计'] == Decimal('22')
-
-    assert price_product['2025年01期'] == Decimal('10')
-    assert price_product['2025年02期'] == Decimal('12.5')
-    assert price_product['均值'].quantize(Decimal('0.01')) == Decimal('11.36')
-
-    amount_total = amount_df[amount_df['产品编码'] == '总计'].iloc[0]
-    qty_total = qty_df[qty_df['产品编码'] == '总计'].iloc[0]
-    assert amount_total['总计'] == Decimal('250')
-    assert qty_total['总计'] == Decimal('22')
+def test_table_rendering_does_not_expose_legacy_price_volume_renderer() -> None:
+    assert not hasattr(table_rendering, 'render_tables')
 
 
 def test_build_product_anomaly_sections_accepts_fact_df_and_disables_outlier_detection() -> None:
@@ -226,37 +190,6 @@ def test_build_product_anomaly_sections_accepts_fact_df_and_disables_outlier_det
     assert '直接材料成本' in section.amount_columns
     assert section.section_label is None
     assert section.outlier_cells == set()
-
-
-def test_render_tables_keeps_input_product_order() -> None:
-    fact_df = pd.DataFrame(
-        [
-            {
-                'period': '2025-01',
-                'product_code': 'GB_C.D.B0041AA',
-                'product_name': 'BMS-1100W驱动器',
-                'cost_bucket': 'direct_material',
-                'amount': Decimal('220'),
-                'qty': Decimal('20'),
-                'price': Decimal('11'),
-            },
-            {
-                'period': '2025-01',
-                'product_code': 'GB_C.D.B0040AA',
-                'product_name': 'BMS-750W驱动器',
-                'cost_bucket': 'direct_material',
-                'amount': Decimal('100'),
-                'qty': Decimal('10'),
-                'price': Decimal('10'),
-            },
-        ]
-    )
-
-    tables = render_tables(fact_df)
-    amount_df = tables['直接材料_价量比'][0].data
-    product_codes = amount_df[amount_df['产品编码'] != '总计']['产品编码'].tolist()
-
-    assert product_codes == ['GB_C.D.B0041AA', 'GB_C.D.B0040AA']
 
 
 def test_build_product_anomaly_sections_keeps_input_product_order() -> None:

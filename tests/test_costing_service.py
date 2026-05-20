@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -136,6 +137,28 @@ def test_precheck_reports_existing_output_when_not_confirmed(tmp_path: Path) -> 
     assert result.workbook_path == planned
 
 
+def test_precheck_rejects_output_dir_that_is_existing_file(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    output_file = tmp_path / 'processed'
+    output_file.write_text('not a directory', encoding='utf-8')
+
+    result = precheck_costing_run(replace(request, output_dir=output_file))
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'OUTPUT_DIR_INVALID'
+
+
+def test_precheck_rejects_output_dir_when_existing_parent_is_file(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    parent_file = tmp_path / 'blocked-parent'
+    parent_file.write_text('not a directory', encoding='utf-8')
+
+    result = precheck_costing_run(replace(request, output_dir=parent_file / 'processed'))
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'OUTPUT_DIR_INVALID'
+
+
 def test_duplicate_product_order_is_rejected(tmp_path: Path) -> None:
     request = _request(
         tmp_path,
@@ -144,6 +167,24 @@ def test_duplicate_product_order_is_rejected(tmp_path: Path) -> None:
             ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
         ),
     )
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'WHITELIST_INVALID'
+
+
+def test_string_product_order_item_is_rejected(tmp_path: Path) -> None:
+    request = _request(tmp_path, product_order=('AB',))
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.FAILED
+    assert result.error_code == 'WHITELIST_INVALID'
+
+
+def test_single_field_product_order_item_is_rejected(tmp_path: Path) -> None:
+    request = _request(tmp_path, product_order=(('ONLY_CODE',),))
 
     result = precheck_costing_run(request)
 

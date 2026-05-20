@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -165,6 +166,10 @@ def _prepare_request(request: CostingRunRequest) -> tuple[_PreparedRequest | Non
     if whitelist_error is not None:
         return None, whitelist_error
 
+    output_dir_error = _validate_output_dir(request.output_dir)
+    if output_dir_error is not None:
+        return None, output_dir_error
+
     try:
         month_range = build_month_range(request.month_start, request.month_end)
     except ValueError as exc:
@@ -182,10 +187,9 @@ def _prepare_request(request: CostingRunRequest) -> tuple[_PreparedRequest | Non
 def _validate_product_order(product_order: ProductOrder) -> CostingRunResult | None:
     seen: set[tuple[str, str]] = set()
     for pair in product_order:
-        try:
-            code, name = pair
-        except ValueError:
+        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
             return _failed(message='产品白名单必须由产品编码和产品名称组成', error_code='WHITELIST_INVALID')
+        code, name = pair
         normalized_pair = (str(code).strip(), str(name).strip())
         if not normalized_pair[0] or not normalized_pair[1]:
             return _failed(message='产品白名单编码和名称不能为空', error_code='WHITELIST_INVALID')
@@ -193,6 +197,35 @@ def _validate_product_order(product_order: ProductOrder) -> CostingRunResult | N
             return _failed(message='产品白名单存在重复项', error_code='WHITELIST_INVALID')
         seen.add(normalized_pair)
     return None
+
+
+def _validate_output_dir(output_dir: Path) -> CostingRunResult | None:
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            return _failed(message=f'输出路径不是目录: {output_dir}', error_code='OUTPUT_DIR_INVALID')
+        if not _can_write_directory(output_dir):
+            return _failed(message=f'输出目录不可写: {output_dir}', error_code='OUTPUT_DIR_INVALID')
+        return None
+
+    existing_parent = _nearest_existing_parent(output_dir)
+    if existing_parent is None or not existing_parent.is_dir():
+        return _failed(message=f'输出目录父路径不可用: {output_dir.parent}', error_code='OUTPUT_DIR_INVALID')
+    if not _can_write_directory(existing_parent):
+        return _failed(message=f'输出目录父路径不可写: {existing_parent}', error_code='OUTPUT_DIR_INVALID')
+    return None
+
+
+def _nearest_existing_parent(path: Path) -> Path | None:
+    current = path.parent
+    while not current.exists():
+        if current == current.parent:
+            return None
+        current = current.parent
+    return current
+
+
+def _can_write_directory(path: Path) -> bool:
+    return os.access(path, os.W_OK | os.X_OK)
 
 
 def _build_etl(request: CostingRunRequest, month_range: MonthRange | None) -> CostingWorkbookETL:

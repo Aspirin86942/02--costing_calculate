@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
 
         self.thread_pool = QThreadPool.globalInstance()
         self.whitelist_store = ProductWhitelistStore()
+        self.form_revision = 0
         self.precheck_passed = False
         self.busy = False
         self.last_output_dir: Path | None = None
@@ -352,10 +353,19 @@ class MainWindow(QMainWindow):
             return
 
         self._set_busy(True)
+        request_revision = self.form_revision
         worker = ServiceWorker(label, request, function)
         worker.signals.started.connect(self._on_worker_started)
-        worker.signals.finished.connect(lambda result: self._on_worker_finished(result, task_kind=task_kind))
-        worker.signals.failed.connect(self._on_worker_failed)
+        worker.signals.finished.connect(
+            lambda result: self._on_worker_finished(
+                result,
+                task_kind=task_kind,
+                request_revision=request_revision,
+            )
+        )
+        worker.signals.failed.connect(
+            lambda message: self._on_worker_failed(message, request_revision=request_revision)
+        )
         self.current_worker = worker
         self.thread_pool.start(worker)
 
@@ -393,9 +403,19 @@ class MainWindow(QMainWindow):
         self.stage_label.setText('-')
         self._append_log(label)
 
-    def _on_worker_finished(self, result: CostingRunResult, *, task_kind: TaskKind) -> None:
+    def _on_worker_finished(
+        self,
+        result: CostingRunResult,
+        *,
+        task_kind: TaskKind,
+        request_revision: int | None = None,
+    ) -> None:
         self.current_worker = None
         self._set_busy(False)
+        if self._is_stale_request(request_revision):
+            self._ignore_stale_worker_result()
+            return
+
         self._update_result_widgets(result)
         self._append_result_log(result, task_kind=task_kind)
 
@@ -417,9 +437,13 @@ class MainWindow(QMainWindow):
 
         self._refresh_buttons()
 
-    def _on_worker_failed(self, message: str) -> None:
+    def _on_worker_failed(self, message: str, request_revision: int | None = None) -> None:
         self.current_worker = None
         self._set_busy(False)
+        if self._is_stale_request(request_revision):
+            self._ignore_stale_worker_result()
+            return
+
         self.precheck_passed = False
         self._set_table_pairs(self.candidate_table, ())
         self._set_status('处理失败', 'failed')
@@ -481,6 +505,16 @@ class MainWindow(QMainWindow):
             return ''
         return ', '.join(f'{stage}={seconds:.3f}s' for stage, seconds in stage_timings.items())
 
+    def _is_stale_request(self, request_revision: int | None) -> bool:
+        return request_revision is not None and request_revision != self.form_revision
+
+    def _ignore_stale_worker_result(self) -> None:
+        self.precheck_passed = False
+        self.last_output_dir = None
+        self._set_table_pairs(self.candidate_table, ())
+        self._append_log('表单配置已变更，已忽略过期任务结果')
+        self._refresh_buttons()
+
     def _set_busy(self, busy: bool) -> None:
         self.busy = busy
         self._refresh_buttons()
@@ -498,6 +532,7 @@ class MainWindow(QMainWindow):
             button.setEnabled(not self.busy)
 
     def _invalidate_precheck(self, *_args: object) -> None:
+        self.form_revision += 1
         self.precheck_passed = False
         self.last_output_dir = None
         self.candidate_table.setRowCount(0)

@@ -327,3 +327,53 @@ def test_output_context_change_drops_stale_last_output_dir(
     assert main_window.last_output_dir is None
     main_window._open_output_dir()
     assert opened_args == [['/usr/bin/xdg-open', str(new_dir)]]
+
+
+def test_stale_worker_result_is_ignored_after_form_change(
+    main_window: MainWindow,
+    tmp_path: Path,
+) -> None:
+    old_revision = getattr(main_window, 'form_revision', 0)
+    old_output_dir = tmp_path / 'old-output'
+    old_output_dir.mkdir()
+    main_window.busy = True
+    main_window.current_worker = object()
+    main_window.input_edit.setText(str(tmp_path / 'changed-input.xlsx'))
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        workbook_path=old_output_dir / 'old.xlsx',
+        candidate_products=(('P001', '产品A'),),
+    )
+
+    main_window._on_worker_finished(result, task_kind='precheck', request_revision=old_revision)
+
+    assert main_window.precheck_passed is False
+    assert main_window.run_button.isEnabled() is False
+    assert main_window.candidate_table.rowCount() == 0
+    assert main_window.last_output_dir is None
+    assert main_window.current_worker is None
+    assert '忽略过期任务结果' in main_window.log_edit.toPlainText()
+
+
+def test_stale_worker_exception_is_ignored_after_form_change(
+    main_window: MainWindow,
+    tmp_path: Path,
+) -> None:
+    old_revision = getattr(main_window, 'form_revision', 0)
+    main_window.busy = True
+    main_window.current_worker = object()
+    main_window.status_label.setText('等待配置')
+    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
+    main_window.last_output_dir = tmp_path / 'old-output'
+    main_window.input_edit.setText(str(tmp_path / 'changed-input.xlsx'))
+
+    main_window._on_worker_failed('old error', request_revision=old_revision)
+
+    assert main_window.precheck_passed is False
+    assert main_window.run_button.isEnabled() is False
+    assert main_window.candidate_table.rowCount() == 0
+    assert main_window.last_output_dir is None
+    assert main_window.current_worker is None
+    assert main_window.status_label.text() != '处理失败'
+    assert '忽略过期任务结果' in main_window.log_edit.toPlainText()

@@ -5,7 +5,7 @@
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
 - 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
-- 质量摘要、`error_log_count` 和阶段耗时在控制台或 GUI 状态区展示
+- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台或 GUI 状态区展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 字段名提取和标准化
 
@@ -22,17 +22,17 @@ pip install -e '.[dev,gui]'
 ## 使用
 ```bash
 # GB 管线
-python main.py gb
+conda run -n test python main.py gb
 
 # SK 管线
-python main.py sk
+conda run -n test python main.py sk
 
 # 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-python main.py gb --check-only --benchmark
-python main.py sk --check-only --benchmark
+conda run -n test python main.py gb --check-only --benchmark
+conda run -n test python main.py sk --check-only --benchmark
 
 # GUI
-python -m src.gui.app
+conda run -n test python -m src.gui.app
 ```
 
 ## 输出说明
@@ -44,7 +44,7 @@ python -m src.gui.app
 
 - 每次处理只在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
 - 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
-- 质量摘要、`error_log` 行数和阶段耗时仅输出到控制台或 GUI 状态区
+- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台或 GUI 状态区
 - `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
 
 ## GUI 使用

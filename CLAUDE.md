@@ -52,7 +52,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `成本分析工单维度`
 - `成本分析产品维度`
 
-**工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、`error_log_count` 和阶段耗时输出到控制台或 GUI 状态区，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
+**工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时输出到控制台或 GUI 状态区，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
 
 **工单异常解释字段**：`成本分析工单维度` 新增 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
 
@@ -68,17 +68,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -e .
 
 # 安装开发与 GUI 依赖
-pip install -e '.[dev,gui]'
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 
 # 运行 ETL (自动读取 data/raw/gb/下的 GB-*成本计算单*.xlsx)
-python -m src.etl.costing_etl
+/home/george/miniconda3/bin/conda run -n test python -m src.etl.costing_etl
 
 # 预检 + benchmark（只跑分析链路，不落 workbook 或任何外部摘要文件）
-python main.py gb --check-only --benchmark
-python main.py sk --check-only --benchmark
+/home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark
+/home/george/miniconda3/bin/conda run -n test python main.py sk --check-only --benchmark
 
 # 启动 GUI
-python -m src.gui.app
+/home/george/miniconda3/bin/conda run -n test python -m src.gui.app
+
+# 涉及 GUI 测试前先安装 .[dev,gui]
+/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
 
 # 测试 (需使用 conda test 环境)
 conda run -n test python -m pytest -q

@@ -1,0 +1,133 @@
+"""Shared product whitelist JSON store."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from src.config.pipelines import PIPELINES, ProductOrder
+from src.config.settings import PROJECT_ROOT
+
+DEFAULT_PRODUCT_WHITELIST_PATH = PROJECT_ROOT / 'config' / 'product_whitelists.json'
+
+
+class ProductWhitelistConfigError(ValueError):
+    """产品白名单配置错误。"""
+
+
+@dataclass(frozen=True)
+class ProductWhitelistStoreResult:
+    exists: bool
+    product_orders: dict[str, ProductOrder]
+
+
+class ProductWhitelistStore:
+    def __init__(self, path: Path = DEFAULT_PRODUCT_WHITELIST_PATH):
+        self.path = Path(path)
+
+    def load(self) -> ProductWhitelistStoreResult:
+        if not self.path.exists():
+            return ProductWhitelistStoreResult(exists=False, product_orders=_default_product_orders())
+
+        payload = _read_json_object(self.path)
+        product_orders = _normalize_payload(payload)
+        return ProductWhitelistStoreResult(exists=True, product_orders=product_orders)
+
+    def save(self, product_orders: dict[str, ProductOrder]) -> None:
+        normalized_product_orders = _normalize_payload(product_orders)
+        payload = {
+            pipeline_name: [
+                {'product_code': product_code, 'product_name': product_name}
+                for product_code, product_name in normalized_product_orders[pipeline_name]
+            ]
+            for pipeline_name in PIPELINES
+        }
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+    def restore_default(self, pipeline_name: str) -> None:
+        normalized_pipeline_name = _require_known_pipeline(pipeline_name)
+        product_orders = self.load().product_orders
+        product_orders[normalized_pipeline_name] = PIPELINES[normalized_pipeline_name].product_order
+        self.save(product_orders)
+
+
+def load_product_order_for_pipeline(
+    pipeline_name: str,
+    path: Path = DEFAULT_PRODUCT_WHITELIST_PATH,
+) -> ProductOrder:
+    normalized_pipeline_name = _require_known_pipeline(pipeline_name)
+    return ProductWhitelistStore(path).load().product_orders[normalized_pipeline_name]
+
+
+def _default_product_orders() -> dict[str, ProductOrder]:
+    return {pipeline_name: pipeline.product_order for pipeline_name, pipeline in PIPELINES.items()}
+
+
+def _read_json_object(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as error:
+        raise ProductWhitelistConfigError(f'产品白名单配置不是有效 JSON: {error.msg}') from error
+
+    if not isinstance(payload, dict):
+        raise ProductWhitelistConfigError('产品白名单配置必须是 JSON 对象')
+    return payload
+
+
+def _normalize_payload(payload: dict[str, Any]) -> dict[str, ProductOrder]:
+    if not isinstance(payload, dict):
+        raise ProductWhitelistConfigError('产品白名单配置必须是 JSON 对象')
+
+    unknown_pipeline_names = sorted(set(payload) - set(PIPELINES))
+    if unknown_pipeline_names:
+        raise ProductWhitelistConfigError(f'产品白名单配置包含未知管线: {", ".join(unknown_pipeline_names)}')
+
+    return {
+        pipeline_name: _normalize_product_order(pipeline_name, payload.get(pipeline_name, ()))
+        for pipeline_name in PIPELINES
+    }
+
+
+def _normalize_product_order(pipeline_name: str, raw_items: Any) -> ProductOrder:
+    if not isinstance(raw_items, list | tuple):
+        raise ProductWhitelistConfigError(f'{pipeline_name} 产品白名单必须是列表')
+
+    normalized_items: list[tuple[str, str]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    for item_index, raw_item in enumerate(raw_items, start=1):
+        product_code, product_name = _normalize_product_item(pipeline_name, item_index, raw_item)
+        pair = (product_code, product_name)
+        if pair in seen_pairs:
+            message = f'{pipeline_name} 产品白名单存在重复产品: {product_code} / {product_name}'
+            raise ProductWhitelistConfigError(message)
+        seen_pairs.add(pair)
+        normalized_items.append(pair)
+
+    return tuple(normalized_items)
+
+
+def _normalize_product_item(pipeline_name: str, item_index: int, raw_item: Any) -> tuple[str, str]:
+    if isinstance(raw_item, dict):
+        product_code = raw_item.get('product_code')
+        product_name = raw_item.get('product_name')
+    elif isinstance(raw_item, list | tuple) and len(raw_item) == 2:
+        product_code, product_name = raw_item
+    else:
+        raise ProductWhitelistConfigError(f'{pipeline_name} 产品白名单第 {item_index} 项格式错误')
+
+    normalized_product_code = str(product_code if product_code is not None else '').strip()
+    normalized_product_name = str(product_name if product_name is not None else '').strip()
+    if not normalized_product_code or not normalized_product_name:
+        raise ProductWhitelistConfigError(f'{pipeline_name} 产品白名单第 {item_index} 项产品编码和产品名称不能为空')
+
+    return normalized_product_code, normalized_product_name
+
+
+def _require_known_pipeline(pipeline_name: str) -> str:
+    if pipeline_name not in PIPELINES:
+        raise ProductWhitelistConfigError(f'未知管线: {pipeline_name}')
+    return pipeline_name

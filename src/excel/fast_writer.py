@@ -33,6 +33,7 @@ _resolve_fixed_width = resolve_fixed_width
 _resolve_highlight_style = resolve_highlight_style
 _write_cell = write_cell
 _coerce_row_value_for_excel = coerce_row_value_for_excel
+_PRODUCT_ANOMALY_SHEET_NAMES = frozenset({'成本分析产品维度', '按产品异常值分析'})
 
 
 class FastSheetWriter:
@@ -111,7 +112,7 @@ class FastSheetWriter:
 
     def write_sheet_model(self, writer: pd.ExcelWriter, model: SheetModel) -> Any:
         """按 SheetModel 契约写出单个 sheet。"""
-        if model.sheet_name == '按产品异常值分析':
+        if model.sheet_name in _PRODUCT_ANOMALY_SHEET_NAMES:
             sections = build_product_anomaly_sections_from_model(model)
             self.write_product_anomaly_sheet(writer, model.sheet_name, sections)
             return writer.sheets[model.sheet_name]
@@ -220,7 +221,7 @@ class FastSheetWriter:
             raise ValueError(
                 f'lightweight fast-path does not support conditional_formats: sheet_name={model.sheet_name}'
             )
-        if model.sheet_name == '按产品异常值分析':
+        if model.sheet_name in _PRODUCT_ANOMALY_SHEET_NAMES:
             raise ValueError(
                 f'lightweight fast-path does not support special layout sheet: sheet_name={model.sheet_name}'
             )

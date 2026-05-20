@@ -346,18 +346,20 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
     with (
         patch.object(workbook_writer.sheet_writer, 'write_dataframe_fast') as fast_writer_mock,
         patch.object(workbook_writer.sheet_writer, 'write_dataframe_sheet') as dataframe_writer_mock,
+        patch.object(workbook_writer.sheet_writer, 'write_analysis_sheet') as analysis_writer_mock,
     ):
         workbook_writer.write_workbook(
             output_path,
             detail_df=detail_df,
             qty_sheet_df=qty_sheet_df,
-            analysis_tables={},
+            analysis_tables={'直接材料_价量比': []},
             work_order_sheet=work_order_sheet,
             product_anomaly_sections=[],
         )
 
     assert [call.args[1] for call in fast_writer_mock.call_args_list] == ['成本计算单总表', '成本计算单数量聚合维度']
     dataframe_writer_mock.assert_not_called()
+    analysis_writer_mock.assert_not_called()
 
 
 def test_process_file_uses_workbook_payload_and_logs_all_new_stage_timings(caplog, tmp_path: Path) -> None:
@@ -1021,6 +1023,31 @@ def test_sheet_model_fast_tabular_writer_skips_non_blank_numeric_rewrite(tmp_pat
     write_cell_mock.assert_not_called()
 
 
+def test_fast_sheet_writer_routes_new_product_anomaly_sheet_name_to_special_layout(tmp_path: Path) -> None:
+    output_path = tmp_path / 'fast_writer_product_anomaly_special_layout.xlsx'
+    sheet_writer = FastSheetWriter()
+    model = SheetModel(
+        sheet_name='成本分析产品维度',
+        columns=('产品编码', '产品名称', '月份', '总成本'),
+        rows_factory=lambda: iter([('P001', '产品A', '2025年01期', 100.0)]),
+        column_types={'产品编码': 'text', '产品名称': 'text', '月份': 'text', '总成本': 'amount'},
+        number_formats={'总成本': '#,##0.00'},
+    )
+
+    with pd.ExcelWriter(
+        output_path,
+        engine='xlsxwriter',
+        engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+    ) as writer:
+        sheet_writer.write_sheet_model(writer, model)
+
+    workbook = load_workbook(output_path)
+    worksheet = workbook['成本分析产品维度']
+    assert worksheet['A1'].value == '四、按单个产品异常值分析'
+    assert worksheet['A3'].value == '产品编码'
+    assert worksheet['A4'].value == 'P001'
+
+
 def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: Path) -> None:
     output_path = tmp_path / 'sheet_model_fast_reject_conditional.xlsx'
     writer = CostingWorkbookWriter()
@@ -1046,6 +1073,33 @@ def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: P
 
     with pytest.raises(ValueError, match='conditional_formats.*成本计算单总表'):
         writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+
+def test_fast_sheet_writer_rejects_new_product_anomaly_sheet_name_on_fast_path(tmp_path: Path) -> None:
+    output_path = tmp_path / 'fast_writer_reject_product_anomaly.xlsx'
+    sheet_writer = FastSheetWriter()
+    model = SheetModel(
+        sheet_name='成本分析产品维度',
+        columns=('产品编码', '产品名称', '月份', '总成本'),
+        rows_factory=lambda: iter([('P001', '产品A', '2025年01期', 100.0)]),
+        column_types={'产品编码': 'text', '产品名称': 'text', '月份': 'text', '总成本': 'amount'},
+        number_formats={'总成本': '#,##0.00'},
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=pl.DataFrame(
+            {'产品编码': ['P001'], '产品名称': ['产品A'], '月份': ['2025年01期'], '总成本': [100.0]}
+        ),
+    )
+
+    with (
+        pd.ExcelWriter(
+            output_path,
+            engine='xlsxwriter',
+            engine_kwargs={'options': {'constant_memory': True, 'strings_to_urls': False}},
+        ) as writer,
+        pytest.raises(ValueError, match='成本分析产品维度'),
+    ):
+        sheet_writer.write_sheet_model_as_lightweight_table(writer, model)
 
 
 def test_sheet_model_fast_tabular_writer_rejects_product_anomaly_special_layout(tmp_path: Path) -> None:

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 核心功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
-- 将成本计算单拆分为"成本明细"和"产品数量统计"两个工作表
+- 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
 - 字段名提取和标准化
 - 提供 `--check-only` 预检模式与 `--benchmark` 性能入口，支持先跑分析链路再决定是否落盘
 
@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
           -> 规则填充 (forward_fill_with_rules)
           -> 拆分为 detail/qty (split_detail_and_qty_sheets)
           -> 构建分析 fact 表 (build_report_artifacts)
-          -> 渲染价量表 (render_tables)
+          -> 构建 workbook payload (build_workbook_payload)
           -> 写出 Excel (CostingWorkbookWriter)
 ```
 
@@ -44,16 +44,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **期间格式**：`年期` 列统一格式化为 `YYYY 年 MM 期`
 
-**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了 8 个目标产品，仅这些产品进入价量/异常分析
+**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了 8 个目标产品，仅这些产品进入异常分析与产品维度摘要
 
-**输出 Sheet**：7 张表
-- `成本明细`、`产品数量统计`
-- `直接材料_价量比`、`直接人工_价量比`、`制造费用_价量比`
-- `按工单按产品异常值分析`、`按产品异常值分析`
+**输出 Sheet**：默认按顺序输出 4 张表
+- `成本计算单总表`
+- `成本计算单数量聚合维度`
+- `成本分析工单维度`
+- `成本分析产品维度`
 
 **工作簿外输出**：正常运行会额外生成 `*_处理后_error_log.csv` 和 `*_处理后_summary.json`；控制台会打印质量摘要，`--check-only` 只做预检，不写 workbook/error_log/summary 文件
 
-**工单异常解释字段**：`按工单按产品异常值分析` 新增 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
+**工单异常解释字段**：`成本分析工单维度` 新增 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
 
 ## 依赖 (Dependencies)
 

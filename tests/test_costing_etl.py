@@ -524,7 +524,6 @@ def test_build_sheet_models_outputs_four_business_named_sheets() -> None:
         '成本分析工单维度',
         '成本分析产品维度',
     ]
-    assert not any(model.sheet_name.endswith('_价量比') for model in models)
 
 
 def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> None:
@@ -1368,14 +1367,13 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    expected_sheets = {
+    expected_sheets = [
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
         '成本分析产品维度',
-    }
-    assert set(xls.sheet_names) == expected_sheets
-    assert len(xls.sheet_names) == 4
+    ]
+    assert xls.sheet_names == expected_sheets
 
     wb = load_workbook(output_path)
     ws_detail = wb['成本计算单总表']
@@ -1535,13 +1533,12 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         assert etl.process_file(input_path, output_path) is True
 
     xls = pd.ExcelFile(output_path, engine='openpyxl')
-    assert len(xls.sheet_names) == 4
-    assert set(xls.sheet_names) == {
+    assert xls.sheet_names == [
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
         '成本分析产品维度',
-    }
+    ]
 
     wb = load_workbook(output_path)
     ws_detail = wb['成本计算单总表']

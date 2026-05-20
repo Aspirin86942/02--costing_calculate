@@ -1,16 +1,13 @@
 {
   "default_workbook": {
     "sheet_order": [
-      "成本明细",
-      "产品数量统计",
-      "直接材料_价量比",
-      "直接人工_价量比",
-      "制造费用_价量比",
-      "按工单按产品异常值分析",
-      "按产品异常值分析"
+      "成本计算单总表",
+      "成本计算单数量聚合维度",
+      "成本分析工单维度",
+      "成本分析产品维度"
     ],
     "sheets": {
-      "成本明细": {
+      "成本计算单总表": {
         "kind": "flat",
         "freeze_panes": "A2",
         "auto_filter": "A1:K5",
@@ -36,7 +33,7 @@
           "J": 15.0
         }
       },
-      "产品数量统计": {
+      "成本计算单数量聚合维度": {
         "kind": "flat",
         "freeze_panes": "A2",
         "auto_filter": "A1:AG2",
@@ -102,40 +99,7 @@
           "AD": 15.0
         }
       },
-      "直接材料_价量比": {
-        "kind": "analysis",
-        "freeze_panes": "C3",
-        "auto_filter": "A1:G2",
-        "sections": [],
-        "column_widths": {
-          "A": 15.0,
-          "D": 15.0,
-          "G": 15.0
-        }
-      },
-      "直接人工_价量比": {
-        "kind": "analysis",
-        "freeze_panes": "C3",
-        "auto_filter": "A1:G2",
-        "sections": [],
-        "column_widths": {
-          "A": 15.0,
-          "D": 15.0,
-          "G": 15.0
-        }
-      },
-      "制造费用_价量比": {
-        "kind": "analysis",
-        "freeze_panes": "C3",
-        "auto_filter": "A1:G2",
-        "sections": [],
-        "column_widths": {
-          "A": 15.0,
-          "D": 15.0,
-          "G": 15.0
-        }
-      },
-      "按工单按产品异常值分析": {
+      "成本分析工单维度": {
         "kind": "flat",
         "freeze_panes": "A2",
         "auto_filter": "A1:BN2",
@@ -264,7 +228,7 @@
           "BN": 15.0
         }
       },
-      "按产品异常值分析": {
+      "成本分析产品维度": {
         "kind": "product_anomaly",
         "layout": "scoped",
         "freeze_panes": "A7",
@@ -380,7 +344,7 @@
     }
   },
   "highlight_workbook": {
-    "sheet": "按工单按产品异常值分析",
+    "sheet": "成本分析工单维度",
     "rules": [
       {
         "sqref": "J2:J1048576",

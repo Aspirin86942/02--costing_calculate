@@ -23,15 +23,11 @@ DEFAULT_WORKBOOK_BASENAME = 'workbook_contract_default.xlsx'
 HIGHLIGHT_WORKBOOK_BASENAME = 'workbook_contract_highlight.xlsx'
 
 DEFAULT_SHEETS = (
-    '成本明细',
-    '产品数量统计',
-    '直接材料_价量比',
-    '直接人工_价量比',
-    '制造费用_价量比',
-    '按工单按产品异常值分析',
-    '按产品异常值分析',
+    '成本计算单总表',
+    '成本计算单数量聚合维度',
+    '成本分析工单维度',
+    '成本分析产品维度',
 )
-ANALYSIS_SHEETS = {'直接材料_价量比', '直接人工_价量比', '制造费用_价量比'}
 
 
 def load_contract_baseline(filename: str) -> dict[str, object]:
@@ -232,9 +228,7 @@ def extract_workbook_semantics(workbook_path: Path) -> dict[str, object]:
 
     for sheet_name in workbook.sheetnames:
         worksheet = workbook[sheet_name]
-        if sheet_name in ANALYSIS_SHEETS:
-            semantics['sheets'][sheet_name] = _extract_analysis_sheet(worksheet)
-        elif sheet_name == '按产品异常值分析':
+        if sheet_name == '成本分析产品维度':
             semantics['sheets'][sheet_name] = _extract_product_anomaly_sheet(worksheet)
         else:
             semantics['sheets'][sheet_name] = _extract_flat_sheet(worksheet)
@@ -245,7 +239,7 @@ def extract_workbook_semantics(workbook_path: Path) -> dict[str, object]:
 def extract_highlight_semantics(workbook_path: Path) -> dict[str, object]:
     """提取按工单异常页的条件格式规则语义。"""
     workbook = load_workbook(workbook_path)
-    worksheet = workbook['按工单按产品异常值分析']
+    worksheet = workbook['成本分析工单维度']
     rules: list[dict[str, object]] = []
 
     for conditional_range, rule_list in worksheet.conditional_formatting._cf_rules.items():
@@ -382,45 +376,6 @@ def _extract_flat_sheet(worksheet) -> dict[str, object]:
         'auto_filter': worksheet.auto_filter.ref,
         'columns': headers,
         'number_formats': first_data_formats,
-        'column_widths': _extract_column_widths(worksheet),
-    }
-
-
-def _extract_analysis_sheet(worksheet) -> dict[str, object]:
-    sections: list[dict[str, object]] = []
-    row_idx = 1
-
-    while row_idx <= worksheet.max_row:
-        title = worksheet.cell(row_idx, 1).value
-        next_row_has_headers = row_idx + 1 <= worksheet.max_row and worksheet.cell(row_idx + 1, 1).value is not None
-        rest_empty = all(
-            worksheet.cell(row_idx, col_idx).value is None for col_idx in range(2, worksheet.max_column + 1)
-        )
-        if title is None or not next_row_has_headers or not rest_empty:
-            row_idx += 1
-            continue
-
-        header_row = row_idx + 1
-        headers = []
-        col_idx = 1
-        while col_idx <= worksheet.max_column and worksheet.cell(header_row, col_idx).value is not None:
-            headers.append(worksheet.cell(header_row, col_idx).value)
-            col_idx += 1
-
-        data_row = header_row + 1
-        number_formats = {
-            header: worksheet.cell(data_row, header_col).number_format
-            for header_col, header in enumerate(headers, start=1)
-            if data_row <= worksheet.max_row and worksheet.cell(data_row, header_col).number_format != 'General'
-        }
-        sections.append({'title': title, 'columns': headers, 'number_formats': number_formats})
-        row_idx = header_row + 1
-
-    return {
-        'kind': 'analysis',
-        'freeze_panes': worksheet.freeze_panes,
-        'auto_filter': worksheet.auto_filter.ref,
-        'sections': sections,
         'column_widths': _extract_column_widths(worksheet),
     }
 

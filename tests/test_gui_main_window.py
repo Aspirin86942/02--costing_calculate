@@ -68,11 +68,7 @@ def test_run_first_checks_existing_output_then_confirmed_retry(
     assert calls[0]['task_kind'] == 'run'
 
     calls.clear()
-    monkeypatch.setattr(
-        QMessageBox,
-        'question',
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(main_window, '_ask_confirmation', lambda *_args, **_kwargs: True)
     result = CostingRunResult(
         status=ServiceStatus.FAILED,
         message='输出 workbook 已存在',
@@ -174,11 +170,7 @@ def test_existing_output_confirmation_no_does_not_retry(
         )
 
     monkeypatch.setattr(main_window, '_start_worker', capture_start_worker)
-    monkeypatch.setattr(
-        QMessageBox,
-        'question',
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.No,
-    )
+    monkeypatch.setattr(main_window, '_ask_confirmation', lambda *_args, **_kwargs: False)
     main_window.status_label.setText('正在处理')
     result = CostingRunResult(
         status=ServiceStatus.FAILED,
@@ -260,11 +252,7 @@ def test_restore_default_whitelist_logs_oserror_without_raising(
     def fail_restore_default(_pipeline: str) -> None:
         raise OSError('配置目录不可写')
 
-    monkeypatch.setattr(
-        QMessageBox,
-        'question',
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(main_window, '_ask_confirmation', lambda *_args, **_kwargs: True)
     monkeypatch.setattr(main_window.whitelist_store, 'restore_default', fail_restore_default)
 
     main_window._restore_default_whitelist()
@@ -281,11 +269,7 @@ def test_restore_default_whitelist_overwrites_invalid_json(
     config_path.write_text('{"gb": [', encoding='utf-8')
     main_window.whitelist_store = ProductWhitelistStore(config_path)
     main_window._set_table_pairs(main_window.whitelist_table, (('GB-CUSTOM', '产品甲'),))
-    monkeypatch.setattr(
-        QMessageBox,
-        'question',
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
+    monkeypatch.setattr(main_window, '_ask_confirmation', lambda *_args, **_kwargs: True)
 
     main_window._restore_default_whitelist()
 
@@ -312,6 +296,22 @@ def test_save_whitelist_overwrites_invalid_json(
         {'product_code': 'GB-SAVED', 'product_name': '产品甲'}
     ]
     assert '产品白名单已保存' in main_window.log_edit.toPlainText()
+
+
+def test_confirmation_dialog_uses_light_theme_and_chinese_buttons(main_window: MainWindow) -> None:
+    message_box = main_window._build_confirmation_box(
+        title='覆盖确认',
+        message='输出 workbook 已存在，是否覆盖？',
+        yes_text='覆盖',
+        no_text='取消',
+        icon=QMessageBox.Icon.Warning,
+    )
+
+    assert 'QMessageBox' in message_box.styleSheet()
+    assert 'background: #f8fafc;' in message_box.styleSheet()
+    assert 'color: #111827;' in message_box.styleSheet()
+    assert message_box.button(QMessageBox.StandardButton.Yes).text() == '覆盖'
+    assert message_box.button(QMessageBox.StandardButton.No).text() == '取消'
 
 
 def test_open_output_dir_logs_when_xdg_open_is_missing(

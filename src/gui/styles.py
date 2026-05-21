@@ -115,3 +115,29 @@ QTextEdit {
     font-family: monospace;
 }
 """
+
+MESSAGE_BOX_STYLESHEET = """
+QMessageBox {
+    background: #f8fafc;
+    color: #111827;
+}
+QMessageBox QLabel {
+    color: #111827;
+    font-size: 13px;
+}
+QMessageBox QPushButton {
+    min-width: 72px;
+    min-height: 30px;
+    padding: 4px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #111827;
+}
+QMessageBox QPushButton:hover {
+    background: #f1f5f9;
+}
+QMessageBox QPushButton:default {
+    border-color: #2563eb;
+}
+"""

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -34,7 +34,7 @@ from src.config.product_whitelist_store import ProductWhitelistConfigError, Prod
 from src.config.settings import PROJECT_ROOT
 from src.etl.runner import find_input_files
 from src.gui.form_state import GuiFormState
-from src.gui.styles import APP_STYLESHEET, STATUS_COLORS
+from src.gui.styles import APP_STYLESHEET, MESSAGE_BOX_STYLESHEET, STATUS_COLORS
 from src.gui.task_worker import ServiceWorker
 from src.gui.validators import validate_month_range, validate_month_text
 from src.services.costing_service import (
@@ -453,14 +453,14 @@ class MainWindow(QMainWindow):
         self._refresh_buttons()
 
     def _confirm_overwrite_and_retry(self, result: CostingRunResult, task_kind: TaskKind) -> None:
-        reply = QMessageBox.question(
-            self,
-            '覆盖确认',
-            f'{result.message}\n\n是否允许覆盖后继续？',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        confirmed = self._ask_confirmation(
+            title='覆盖确认',
+            message=f'{result.message}\n\n是否覆盖已有 workbook 并继续处理？',
+            yes_text='覆盖',
+            no_text='取消',
+            icon=QMessageBox.Icon.Warning,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             self._append_log('用户取消覆盖。')
             return
 
@@ -469,6 +469,53 @@ class MainWindow(QMainWindow):
             return
 
         self._start_worker('正在预检', precheck_costing_run, overwrite_confirmed=True, task_kind='precheck')
+
+    def _ask_confirmation(
+        self,
+        *,
+        title: str,
+        message: str,
+        yes_text: str,
+        no_text: str,
+        icon: QMessageBox.Icon,
+    ) -> bool:
+        message_box = self._build_confirmation_box(
+            title=title,
+            message=message,
+            yes_text=yes_text,
+            no_text=no_text,
+            icon=icon,
+        )
+        return message_box.exec() == QMessageBox.StandardButton.Yes
+
+    def _build_confirmation_box(
+        self,
+        *,
+        title: str,
+        message: str,
+        yes_text: str,
+        no_text: str,
+        icon: QMessageBox.Icon,
+    ) -> QMessageBox:
+        message_box = QMessageBox(self)
+        message_box.setWindowTitle(title)
+        message_box.setIcon(icon)
+        message_box.setText(message)
+        message_box.setTextFormat(Qt.TextFormat.PlainText)
+        message_box.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        message_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        message_box.setDefaultButton(QMessageBox.StandardButton.No)
+        message_box.setEscapeButton(QMessageBox.StandardButton.No)
+        message_box.setMinimumWidth(560)
+        message_box.setStyleSheet(f'{APP_STYLESHEET}\n{MESSAGE_BOX_STYLESHEET}')
+
+        yes_button = message_box.button(QMessageBox.StandardButton.Yes)
+        no_button = message_box.button(QMessageBox.StandardButton.No)
+        if yes_button is not None:
+            yes_button.setText(yes_text)
+        if no_button is not None:
+            no_button.setText(no_text)
+        return message_box
 
     def _update_result_widgets(self, result: CostingRunResult) -> None:
         timings_text = self._format_stage_timings(result.stage_timings)
@@ -638,14 +685,14 @@ class MainWindow(QMainWindow):
 
     def _restore_default_whitelist(self) -> None:
         pipeline = self.pipeline_combo.currentText()
-        reply = QMessageBox.question(
-            self,
-            '恢复默认',
-            f'确认恢复 {pipeline.upper()} 默认白名单？',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        confirmed = self._ask_confirmation(
+            title='恢复默认',
+            message=f'确认恢复 {pipeline.upper()} 默认白名单？',
+            yes_text='恢复默认',
+            no_text='取消',
+            icon=QMessageBox.Icon.Question,
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        if not confirmed:
             return
 
         try:

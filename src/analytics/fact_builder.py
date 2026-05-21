@@ -387,9 +387,7 @@ def _normalized_period_expr(column_name: str) -> pl.Expr:
     month_expr = captured.struct.field('2').cast(pl.Int32, strict=False)
     return (
         pl.when(
-            pl.col(column_name).is_not_null()
-            & year_expr.is_not_null()
-            & month_expr.is_between(1, 12, closed='both')
+            pl.col(column_name).is_not_null() & year_expr.is_not_null() & month_expr.is_between(1, 12, closed='both')
         )
         .then(year_expr.cast(pl.String).str.zfill(4) + pl.lit('-') + month_expr.cast(pl.String).str.zfill(2))
         .otherwise(None)

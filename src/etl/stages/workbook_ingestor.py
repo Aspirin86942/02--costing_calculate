@@ -43,8 +43,7 @@ class WorkbookIngestor:
         width = max(len(header_top), len(header_bottom))
         columns = [f'column_{idx}' for idx in range(width)]
         padded_rows = [
-            [_normalize_calamine_cell(value) for value in list(row) + [None] * (width - len(row))]
-            for row in data_rows
+            [_normalize_calamine_cell(value) for value in list(row) + [None] * (width - len(row))] for row in data_rows
         ]
         # 允许扫描整列后再推断 schema，避免前段全是数值、后段才出现空字符串时误退回 fallback。
         frame = pl.DataFrame(padded_rows, schema=columns, orient='row', infer_schema_length=None)
@@ -66,8 +65,7 @@ class WorkbookIngestor:
         columns = [f'column_{idx}' for idx in range(len(data_df.columns))]
         data_df.columns = columns
         frame_dict = {
-            column: [None if pd.isna(value) else value for value in data_df[column].tolist()]
-            for column in columns
+            column: [None if pd.isna(value) else value for value in data_df[column].tolist()] for column in columns
         }
         return RawWorkbookFrame(
             sheet_name=sheet_name,

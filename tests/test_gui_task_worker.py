@@ -36,7 +36,5 @@ def test_service_worker_emits_progress_signal(tmp_path: Path) -> None:
 
     worker.run()
 
-    assert [(event.percent, event.stage, event.message) for event in events] == [
-        (45, 'fact', '已拆分事实表')
-    ]
+    assert [(event.percent, event.stage, event.message) for event in events] == [(45, 'fact', '已拆分事实表')]
     assert results[0].message == 'ok'

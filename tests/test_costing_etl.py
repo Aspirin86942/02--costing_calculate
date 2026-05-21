@@ -2165,11 +2165,14 @@ def test_process_file_reports_export_progress(tmp_path: Path) -> None:
         patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload),
         patch.object(etl.workbook_writer, 'write_workbook_from_models') as writer_mock,
     ):
-        assert etl.process_file(
-            tmp_path / 'input.xlsx',
-            tmp_path / 'output.xlsx',
-            progress_callback=events.append,
-        ) is True
+        assert (
+            etl.process_file(
+                tmp_path / 'input.xlsx',
+                tmp_path / 'output.xlsx',
+                progress_callback=events.append,
+            )
+            is True
+        )
 
     writer_mock.assert_called_once()
     assert 'export' in [event.stage for event in events]

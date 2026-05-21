@@ -103,10 +103,13 @@ def build_normalized_cost_frame(
             normalized = normalized.select(ordered_columns)
 
     if cost_item_column in normalized.columns:
-        cost_item_seed = pl.when(
-            pl.col(cost_item_column).is_null()
-            | pl.col(cost_item_column).cast(pl.String).str.strip_chars().eq('')
-        ).then(pl.lit(None)).otherwise(pl.col(cost_item_column))
+        cost_item_seed = (
+            pl.when(
+                pl.col(cost_item_column).is_null() | pl.col(cost_item_column).cast(pl.String).str.strip_chars().eq('')
+            )
+            .then(pl.lit(None))
+            .otherwise(pl.col(cost_item_column))
+        )
         normalized = normalized.with_columns(cost_item_seed.fill_null(strategy='forward').alias('Filled_成本项目'))
     else:
         normalized = normalized.with_columns(pl.lit(None).alias('Filled_成本项目'))

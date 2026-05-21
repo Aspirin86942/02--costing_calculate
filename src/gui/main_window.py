@@ -236,6 +236,11 @@ class MainWindow(QMainWindow):
         self.progress_label.setText('等待任务')
         self._last_progress_stage = None
 
+    def _reset_kpi_labels(self) -> None:
+        self.error_count_label.setText('-')
+        self.candidate_count_label.setText('-')
+        self.workbook_path_label.setText('-')
+
     def _path_row(
         self,
         edit: QLineEdit,
@@ -529,6 +534,7 @@ class MainWindow(QMainWindow):
         self.stage_label.setText('-')
         self.summary_label.setText('任务异常终止')
         self.progress_label.setText('任务异常终止')
+        self._reset_kpi_labels()
         self._append_log(message)
         self._refresh_buttons()
 
@@ -799,6 +805,7 @@ class MainWindow(QMainWindow):
         self.stage_label.setText('-')
         self.summary_label.setText('尚未运行')
         self._reset_progress()
+        self._reset_kpi_labels()
         self._set_status('等待配置', 'idle')
         self._append_log('已清空输入与月份条件')
         self._refresh_buttons()

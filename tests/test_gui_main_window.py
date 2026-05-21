@@ -488,6 +488,39 @@ def test_result_widgets_update_kpi_labels(main_window: MainWindow, tmp_path: Pat
     assert 'ingest=0.100s' in main_window.stage_label.text()
 
 
+def _set_sample_kpi_labels(main_window: MainWindow, tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'GB-成本计算单_处理后.xlsx'
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='处理成功',
+        workbook_path=workbook_path,
+        candidate_products=(('P001', '产品A'), ('P002', '产品B')),
+        error_log_count=7,
+    )
+
+    main_window._update_result_widgets(result)
+
+
+def test_clear_conditions_resets_kpi_labels(main_window: MainWindow, tmp_path: Path) -> None:
+    _set_sample_kpi_labels(main_window, tmp_path)
+
+    main_window._clear_conditions()
+
+    assert main_window.error_count_label.text() == '-'
+    assert main_window.candidate_count_label.text() == '-'
+    assert main_window.workbook_path_label.text() == '-'
+
+
+def test_worker_exception_resets_kpi_labels(main_window: MainWindow, tmp_path: Path) -> None:
+    _set_sample_kpi_labels(main_window, tmp_path)
+
+    main_window._on_worker_failed('后台异常')
+
+    assert main_window.error_count_label.text() == '-'
+    assert main_window.candidate_count_label.text() == '-'
+    assert main_window.workbook_path_label.text() == '-'
+
+
 def test_failed_task_does_not_force_progress_to_complete(main_window: MainWindow) -> None:
     main_window.progress_bar.setValue(45)
     result = CostingRunResult(

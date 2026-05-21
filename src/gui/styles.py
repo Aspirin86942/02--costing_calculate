@@ -107,12 +107,77 @@ QHeaderView::section {
     color: #111827;
     font-weight: 600;
 }
+QScrollBar:vertical {
+    width: 14px;
+    margin: 0;
+    border: 1px solid #d9e2ec;
+    border-radius: 4px;
+    background: #f1f5f9;
+}
+QScrollBar::handle:vertical {
+    min-height: 24px;
+    margin: 2px;
+    border-radius: 5px;
+    background: #94a3b8;
+}
+QScrollBar::handle:vertical:hover {
+    background: #64748b;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+    border: 0;
+    background: transparent;
+}
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+QScrollBar:horizontal {
+    height: 14px;
+    margin: 0;
+    border: 1px solid #d9e2ec;
+    border-radius: 4px;
+    background: #f1f5f9;
+}
+QScrollBar::handle:horizontal {
+    min-width: 24px;
+    margin: 2px;
+    border-radius: 5px;
+    background: #94a3b8;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #64748b;
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 0;
+    border: 0;
+    background: transparent;
+}
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: transparent;
+}
 QTextEdit {
     background: #111827;
     color: #e5e7eb;
     border: 1px solid #1f2937;
     border-radius: 4px;
     font-family: monospace;
+}
+QTextEdit QScrollBar:vertical,
+QTextEdit QScrollBar:horizontal {
+    border: 1px solid #374151;
+    background: #1f2937;
+}
+QTextEdit QScrollBar::handle:vertical,
+QTextEdit QScrollBar::handle:horizontal {
+    background: #64748b;
+}
+QTextEdit QScrollBar::handle:vertical:hover,
+QTextEdit QScrollBar::handle:horizontal:hover {
+    background: #94a3b8;
 }
 """
 

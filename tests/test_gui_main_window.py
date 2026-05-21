@@ -422,3 +422,81 @@ def test_stale_worker_exception_is_ignored_after_form_change(
     assert main_window.current_worker is None
     assert main_window.status_label.text() != '处理失败'
     assert '忽略过期任务结果' in main_window.log_edit.toPlainText()
+
+
+def test_progress_widgets_initialize_and_clear(main_window: MainWindow) -> None:
+    assert main_window.progress_bar.value() == 0
+    assert main_window.progress_label.text() == '等待任务'
+
+    main_window.progress_bar.setValue(70)
+    main_window.progress_label.setText('已完成分析与质量校验')
+    main_window._clear_conditions()
+
+    assert main_window.progress_bar.value() == 0
+    assert main_window.progress_label.text() == '等待任务'
+
+
+def test_worker_progress_updates_progress_widgets(main_window: MainWindow) -> None:
+    event = main_window_module.ProgressEvent(percent=45, stage='fact', message='已拆分事实表')
+
+    main_window._on_worker_progress(event, request_revision=main_window.form_revision)
+
+    assert main_window.progress_bar.value() == 45
+    assert main_window.progress_label.text() == '已拆分事实表'
+    assert '[progress] fact: 已拆分事实表' in main_window.log_edit.toPlainText()
+
+
+def test_repeated_progress_stage_logs_once(main_window: MainWindow) -> None:
+    first = main_window_module.ProgressEvent(percent=45, stage='fact', message='已拆分事实表')
+    second = main_window_module.ProgressEvent(percent=46, stage='fact', message='仍在拆分事实表')
+
+    main_window._on_worker_progress(first, request_revision=main_window.form_revision)
+    main_window._on_worker_progress(second, request_revision=main_window.form_revision)
+
+    assert main_window.progress_bar.value() == 46
+    assert main_window.log_edit.toPlainText().count('[progress] fact:') == 1
+
+
+def test_stale_worker_progress_is_ignored_after_form_change(main_window: MainWindow, tmp_path: Path) -> None:
+    old_revision = main_window.form_revision
+    main_window.input_edit.setText(str(tmp_path / 'changed.xlsx'))
+    event = main_window_module.ProgressEvent(percent=70, stage='analysis', message='旧任务进度')
+
+    main_window._on_worker_progress(event, request_revision=old_revision)
+
+    assert main_window.progress_bar.value() == 0
+    assert main_window.progress_label.text() == '等待任务'
+    assert '旧任务进度' not in main_window.log_edit.toPlainText()
+
+
+def test_result_widgets_update_kpi_labels(main_window: MainWindow, tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'GB-成本计算单_处理后.xlsx'
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='处理成功',
+        workbook_path=workbook_path,
+        candidate_products=(('P001', '产品A'), ('P002', '产品B')),
+        error_log_count=7,
+        stage_timings={'ingest': 0.1, 'analysis': 0.2},
+    )
+
+    main_window._update_result_widgets(result)
+
+    assert main_window.error_count_label.text() == '7'
+    assert main_window.candidate_count_label.text() == '2'
+    assert main_window.workbook_path_label.text() == str(workbook_path)
+    assert 'ingest=0.100s' in main_window.stage_label.text()
+
+
+def test_failed_task_does_not_force_progress_to_complete(main_window: MainWindow) -> None:
+    main_window.progress_bar.setValue(45)
+    result = CostingRunResult(
+        status=ServiceStatus.FAILED,
+        message='处理失败',
+        error_code='ETL_FAILED',
+    )
+
+    main_window._on_worker_finished(result, task_kind='run')
+
+    assert main_window.progress_bar.value() == 45
+    assert main_window.progress_label.text() == '处理失败'

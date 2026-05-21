@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtWidgets import (
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -44,8 +45,19 @@ from src.services.costing_service import (
     precheck_costing_run,
     run_costing_request,
 )
+from src.services.progress import ProgressCallback, ProgressEvent
 
-CostingServiceFunction = Callable[[CostingRunRequest], CostingRunResult]
+
+class CostingServiceFunction(Protocol):
+    def __call__(
+        self,
+        request: CostingRunRequest,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> CostingRunResult:
+        raise NotImplementedError
+
+
 TaskKind = Literal['scan', 'precheck', 'run']
 
 
@@ -78,9 +90,18 @@ class MainWindow(QMainWindow):
         self.stage_label = QLabel('-')
         self.summary_label = QLabel('尚未运行')
         self.summary_label.setWordWrap(True)
+        self.error_count_label = QLabel('-')
+        self.error_count_label.setObjectName('KpiValue')
+        self.candidate_count_label = QLabel('-')
+        self.candidate_count_label.setObjectName('KpiValue')
+        self.workbook_path_label = QLabel('-')
+        self.workbook_path_label.setObjectName('KpiPathValue')
+        self.workbook_path_label.setWordWrap(True)
 
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setObjectName('LogTerminal')
+        self.log_edit.document().setMaximumBlockCount(1000)
 
         self.whitelist_table = QTableWidget(0, 2)
         self.candidate_table = QTableWidget(0, 2)
@@ -93,6 +114,14 @@ class MainWindow(QMainWindow):
         self.clear_button = QPushButton('清空条件')
         self.exit_button = QPushButton('退出')
         self.add_candidate_button = QPushButton('加入白名单')
+        self.progress_label = QLabel('等待任务')
+        self.progress_label.setObjectName('ProgressLabel')
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName('TaskProgressBar')
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self._last_progress_stage: str | None = None
 
         self._build_ui()
         self._connect_signals()
@@ -147,8 +176,17 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox('任务状态')
         status_layout = QFormLayout(status_group)
         status_layout.addRow('当前状态', self.status_label)
+        status_layout.addRow('任务进度', self.progress_bar)
+        status_layout.addRow('', self.progress_label)
         status_layout.addRow('当前阶段', self.stage_label)
         status_layout.addRow('结果摘要', self.summary_label)
+        kpi_row = QWidget()
+        kpi_layout = QHBoxLayout(kpi_row)
+        kpi_layout.setContentsMargins(0, 0, 0, 0)
+        kpi_layout.addWidget(self._kpi_card('error_log 行数', self.error_count_label))
+        kpi_layout.addWidget(self._kpi_card('候选产品', self.candidate_count_label))
+        kpi_layout.addWidget(self._kpi_card('workbook', self.workbook_path_label), stretch=1)
+        status_layout.addRow(kpi_row)
 
         log_group = QGroupBox('日志')
         log_layout = QVBoxLayout(log_group)
@@ -179,6 +217,24 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setLayout(root_layout)
         self.setCentralWidget(root)
+
+    def _kpi_card(self, title: str, value_label: QLabel) -> QWidget:
+        card = QWidget()
+        card.setObjectName('KpiCard')
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
+
+        title_label = QLabel(title)
+        title_label.setObjectName('KpiTitle')
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return card
+
+    def _reset_progress(self) -> None:
+        self.progress_bar.setValue(0)
+        self.progress_label.setText('等待任务')
+        self._last_progress_stage = None
 
     def _path_row(
         self,
@@ -356,6 +412,9 @@ class MainWindow(QMainWindow):
         request_revision = self.form_revision
         worker = ServiceWorker(label, request, function)
         worker.signals.started.connect(self._on_worker_started)
+        worker.signals.progress.connect(
+            lambda event: self._on_worker_progress(event, request_revision=request_revision)
+        )
         worker.signals.finished.connect(
             lambda result: self._on_worker_finished(
                 result,
@@ -401,7 +460,22 @@ class MainWindow(QMainWindow):
     def _on_worker_started(self, label: str) -> None:
         self._set_status(label, 'busy')
         self.stage_label.setText('-')
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(label)
+        self._last_progress_stage = None
         self._append_log(label)
+
+    def _on_worker_progress(self, event: ProgressEvent, *, request_revision: int | None = None) -> None:
+        if self._is_stale_request(request_revision):
+            return
+
+        percent = max(0, min(100, int(event.percent)))
+        self.progress_bar.setValue(percent)
+        self.progress_label.setText(event.message)
+
+        if event.stage != self._last_progress_stage:
+            self._append_log(f'[progress] {event.stage}: {event.message}')
+            self._last_progress_stage = event.stage
 
     def _on_worker_finished(
         self,
@@ -418,6 +492,11 @@ class MainWindow(QMainWindow):
 
         self._update_result_widgets(result)
         self._append_result_log(result, task_kind=task_kind)
+        if result.status == ServiceStatus.SUCCEEDED:
+            self.progress_bar.setValue(100)
+            self.progress_label.setText(result.message)
+        else:
+            self.progress_label.setText(result.message)
 
         if result.workbook_path is not None:
             self.last_output_dir = result.workbook_path.parent
@@ -449,6 +528,7 @@ class MainWindow(QMainWindow):
         self._set_status('处理失败', 'failed')
         self.stage_label.setText('-')
         self.summary_label.setText('任务异常终止')
+        self.progress_label.setText('任务异常终止')
         self._append_log(message)
         self._refresh_buttons()
 
@@ -521,6 +601,9 @@ class MainWindow(QMainWindow):
         timings_text = self._format_stage_timings(result.stage_timings)
         self.stage_label.setText(timings_text or '-')
         self.summary_label.setText(self._format_summary(result))
+        self.error_count_label.setText(str(result.error_log_count))
+        self.candidate_count_label.setText(str(len(result.candidate_products)))
+        self.workbook_path_label.setText(str(result.workbook_path) if result.workbook_path is not None else '-')
 
     def _format_summary(self, result: CostingRunResult) -> str:
         workbook = str(result.workbook_path) if result.workbook_path is not None else '-'
@@ -559,6 +642,7 @@ class MainWindow(QMainWindow):
         self.precheck_passed = False
         self.last_output_dir = None
         self._set_table_pairs(self.candidate_table, ())
+        self._reset_progress()
         self._append_log('表单配置已变更，已忽略过期任务结果')
         self._refresh_buttons()
 
@@ -714,6 +798,7 @@ class MainWindow(QMainWindow):
         self.last_output_dir = None
         self.stage_label.setText('-')
         self.summary_label.setText('尚未运行')
+        self._reset_progress()
         self._set_status('等待配置', 'idle')
         self._append_log('已清空输入与月份条件')
         self._refresh_buttons()

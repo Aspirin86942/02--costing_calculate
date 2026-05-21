@@ -488,6 +488,42 @@ def test_result_widgets_update_kpi_labels(main_window: MainWindow, tmp_path: Pat
     assert 'ingest=0.100s' in main_window.stage_label.text()
 
 
+def test_form_change_resets_task_result_widgets(main_window: MainWindow, tmp_path: Path) -> None:
+    workbook_path = tmp_path / 'GB-成本计算单_处理后.xlsx'
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='处理成功',
+        workbook_path=workbook_path,
+        candidate_products=(('P001', '产品A'),),
+        error_log_count=7,
+        stage_timings={'ingest': 0.1},
+    )
+    main_window._update_result_widgets(result)
+    main_window._set_status(result.message, 'success')
+    main_window.progress_bar.setValue(100)
+    main_window.progress_label.setText(result.message)
+
+    main_window.input_edit.setText(str(tmp_path / 'changed-input.xlsx'))
+
+    assert {
+        'status': main_window.status_label.text(),
+        'stage': main_window.stage_label.text(),
+        'error_log_count': main_window.error_count_label.text(),
+        'candidate_count': main_window.candidate_count_label.text(),
+        'workbook_path': main_window.workbook_path_label.text(),
+        'progress_value': main_window.progress_bar.value(),
+        'progress_label': main_window.progress_label.text(),
+    } == {
+        'status': '等待配置',
+        'stage': '-',
+        'error_log_count': '-',
+        'candidate_count': '-',
+        'workbook_path': '-',
+        'progress_value': 0,
+        'progress_label': '等待任务',
+    }
+
+
 def _set_sample_kpi_labels(main_window: MainWindow, tmp_path: Path) -> None:
     workbook_path = tmp_path / 'GB-成本计算单_处理后.xlsx'
     result = CostingRunResult(

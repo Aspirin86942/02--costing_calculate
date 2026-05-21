@@ -714,6 +714,11 @@ class MainWindow(QMainWindow):
         self.precheck_passed = False
         self.last_output_dir = None
         self.candidate_table.setRowCount(0)
+        self.stage_label.setText('-')
+        self.summary_label.setText('尚未运行')
+        self._reset_progress()
+        self._reset_kpi_labels()
+        self._set_status('等待配置', 'idle')
         self._refresh_buttons()
 
     def _set_status(self, text: str, status: str) -> None:

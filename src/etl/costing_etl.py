@@ -26,6 +26,7 @@ try:
     from src.etl.month_filter import MonthFilterSummary, MonthRange
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
+    from src.services.progress import ProgressCallback, report_progress
 except ModuleNotFoundError:
     # 直接执行 src/etl/costing_etl.py 时，解释器搜索路径不含项目根目录，补齐后重试导入。
     project_root = Path(__file__).resolve().parents[2]
@@ -45,6 +46,7 @@ except ModuleNotFoundError:
     from src.etl.month_filter import MonthFilterSummary, MonthRange
     from src.etl.pipeline import CostingEtlPipeline
     from src.excel.workbook_writer import CostingWorkbookWriter
+    from src.services.progress import ProgressCallback, report_progress
 
 # 当前模块创建一个 logger, 后面所有日志都走这个 logger
 logger = logging.getLogger(__name__)
@@ -278,7 +280,7 @@ class CostingWorkbookETL:
         self.last_work_order_sheet_frame = payload.work_order_sheet_export.copy()
         self.last_candidate_products = tuple(getattr(self.pipeline, 'last_candidate_products', ()))
 
-    def prepare_payload(self, input_path: Path) -> bool:
+    def prepare_payload(self, input_path: Path, *, progress_callback: ProgressCallback | None = None) -> bool:
         """构建 workbook payload 但不写出文件，用于 check-only 预检。"""
         try:
             self._reset_last_run_state()
@@ -290,6 +292,7 @@ class CostingWorkbookETL:
                 month_range=self.month_range,
                 presentation_product_order=self.product_order,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
+                progress_callback=progress_callback,
             )
             self._apply_payload_state(payload)
             self._log_quality_metrics(self.last_quality_metrics)
@@ -437,7 +440,13 @@ class CostingWorkbookETL:
             fact_bundle=self._filter_fact_bundle_for_whitelist(artifacts.fact_bundle),
         )
 
-    def process_file(self, input_path: Path, output_path: Path) -> bool:
+    def process_file(
+        self,
+        input_path: Path,
+        output_path: Path,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> bool:
         """Read one workbook and write split output workbook."""
         try:
             total_start = perf_counter()
@@ -451,6 +460,7 @@ class CostingWorkbookETL:
                 month_range=self.month_range,
                 presentation_product_order=self.product_order,
                 artifacts_transform=self._filter_analysis_artifacts_by_whitelist,
+                progress_callback=progress_callback,
             )
             self._apply_payload_state(payload)
             self._log_quality_metrics(self.last_quality_metrics)
@@ -459,6 +469,7 @@ class CostingWorkbookETL:
                 logger.info('Timing | stage=%s | seconds=%.3f', stage_name, seconds)
 
             export_start = perf_counter()
+            report_progress(progress_callback, 95, 'export', '正在写出 workbook')
             self.workbook_writer.write_workbook_from_models(
                 output_path,
                 sheet_models=payload.sheet_models,

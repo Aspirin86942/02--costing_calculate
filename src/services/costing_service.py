@@ -11,6 +11,8 @@ from src.analytics.contracts import QualityMetric
 from src.config.pipelines import PIPELINES, ProductOrder
 from src.etl.costing_etl import CostingWorkbookETL
 from src.etl.month_filter import MonthFilterSummary, MonthRange, build_month_range
+from src.services.progress import ProgressCallback, report_progress
+from src.services.progress import ProgressEvent as ProgressEvent
 
 
 class ServiceStatus(StrEnum):
@@ -67,27 +69,40 @@ def build_output_workbook_path(
     return output_dir / f'{input_path.stem}_处理后{suffix}.xlsx'
 
 
-def precheck_costing_run(request: CostingRunRequest, *, validate_output_dir: bool = True) -> CostingRunResult:
+def precheck_costing_run(
+    request: CostingRunRequest,
+    *,
+    validate_output_dir: bool = True,
+    progress_callback: ProgressCallback | None = None,
+) -> CostingRunResult:
+    report_progress(progress_callback, 0, 'prepare', '正在校验输入配置')
     prepared, validation_error = _prepare_request(request, validate_output_dir=validate_output_dir)
     if validation_error is not None:
+        report_progress(progress_callback, 0, 'failed', validation_error.message)
         return validation_error
     assert prepared is not None
 
+    report_progress(progress_callback, 5, 'prepare', '已完成路径与参数校验')
     if prepared.workbook_path.exists() and not request.overwrite_confirmed:
-        return _failed(
+        result = _failed(
             message=f'输出 workbook 已存在: {prepared.workbook_path}',
             error_code='OUTPUT_EXISTS',
             workbook_path=prepared.workbook_path,
         )
+        report_progress(progress_callback, 0, 'failed', result.message)
+        return result
 
     try:
         etl = _build_etl(request, prepared.month_range)
-        if not etl.prepare_payload(request.input_path):
-            return _failed(
+        if not etl.prepare_payload(request.input_path, progress_callback=progress_callback):
+            result = _failed(
                 message='预检失败，请查看日志详情',
                 error_code='ETL_FAILED',
                 workbook_path=prepared.workbook_path,
             )
+            report_progress(progress_callback, 0, 'failed', result.message)
+            return result
+        report_progress(progress_callback, 100, 'done', '预检完成')
         return _result_from_etl(
             etl,
             status=ServiceStatus.SUCCEEDED,
@@ -97,36 +112,50 @@ def precheck_costing_run(request: CostingRunRequest, *, validate_output_dir: boo
             output_written=False,
         )
     except Exception as exc:  # noqa: BLE001
-        return _failed(
+        result = _failed(
             message='预检失败，请查看日志详情',
             error_code='ETL_FAILED',
             workbook_path=prepared.workbook_path,
             technical_detail=str(exc),
         )
+        report_progress(progress_callback, 0, 'failed', result.message)
+        return result
 
 
-def run_costing_request(request: CostingRunRequest) -> CostingRunResult:
+def run_costing_request(
+    request: CostingRunRequest,
+    *,
+    progress_callback: ProgressCallback | None = None,
+) -> CostingRunResult:
+    report_progress(progress_callback, 0, 'prepare', '正在校验输入配置')
     prepared, validation_error = _prepare_request(request)
     if validation_error is not None:
+        report_progress(progress_callback, 0, 'failed', validation_error.message)
         return validation_error
     assert prepared is not None
 
+    report_progress(progress_callback, 5, 'prepare', '已完成路径与参数校验')
     if prepared.workbook_path.exists() and not request.overwrite_confirmed:
-        return _failed(
+        result = _failed(
             message=f'输出 workbook 已存在: {prepared.workbook_path}',
             error_code='OUTPUT_EXISTS',
             workbook_path=prepared.workbook_path,
         )
+        report_progress(progress_callback, 0, 'failed', result.message)
+        return result
 
     try:
         request.output_dir.mkdir(parents=True, exist_ok=True)
         etl = _build_etl(request, prepared.month_range)
-        if not etl.process_file(request.input_path, prepared.workbook_path):
-            return _failed(
+        if not etl.process_file(request.input_path, prepared.workbook_path, progress_callback=progress_callback):
+            result = _failed(
                 message='处理失败，请查看日志详情',
                 error_code='ETL_FAILED',
                 workbook_path=prepared.workbook_path,
             )
+            report_progress(progress_callback, 0, 'failed', result.message)
+            return result
+        report_progress(progress_callback, 100, 'done', '处理完成')
         return _result_from_etl(
             etl,
             status=ServiceStatus.SUCCEEDED,
@@ -136,12 +165,14 @@ def run_costing_request(request: CostingRunRequest) -> CostingRunResult:
             output_written=True,
         )
     except Exception as exc:  # noqa: BLE001
-        return _failed(
+        result = _failed(
             message='处理失败，请查看日志详情',
             error_code='ETL_FAILED',
             workbook_path=prepared.workbook_path,
             technical_detail=str(exc),
         )
+        report_progress(progress_callback, 0, 'failed', result.message)
+        return result
 
 
 def _prepare_request(

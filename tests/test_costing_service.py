@@ -183,12 +183,18 @@ def test_precheck_can_skip_output_dir_validation_for_cli_check_only(monkeypatch,
             self.last_stage_timings = {'ingest': 0.1}
             self.last_ingest_backend = 'calamine'
 
-        def prepare_payload(self, input_path: Path) -> bool:
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
             captured['prepared'] = True
             captured['input_path'] = input_path
             return True
 
-        def process_file(self, input_path: Path, output_path: Path) -> bool:
+        def process_file(
+            self,
+            input_path: Path,
+            output_path: Path,
+            *,
+            progress_callback: object | None = None,
+        ) -> bool:
             raise AssertionError('precheck must not write workbook')
 
     monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
@@ -285,12 +291,18 @@ def test_precheck_calls_prepare_payload_not_process_file(monkeypatch, tmp_path: 
             self.last_stage_timings = {'ingest': 0.1}
             self.last_ingest_backend = 'calamine'
 
-        def prepare_payload(self, input_path: Path) -> bool:
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
             captured['prepared'] = True
             captured['input_path'] = input_path
             return True
 
-        def process_file(self, input_path: Path, output_path: Path) -> bool:
+        def process_file(
+            self,
+            input_path: Path,
+            output_path: Path,
+            *,
+            progress_callback: object | None = None,
+        ) -> bool:
             raise AssertionError('precheck must not write workbook')
 
     monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
@@ -344,7 +356,7 @@ def test_precheck_returns_candidate_products_from_normalized_payload(monkeypatch
         def _apply_payload_state(self, payload) -> None:
             self.last_candidate_products = self.pipeline.last_candidate_products
 
-        def prepare_payload(self, input_path: Path) -> bool:
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
             payload = self.pipeline.build_workbook_payload(input_path)
             self._apply_payload_state(payload)
             return True
@@ -455,10 +467,16 @@ def test_run_costing_request_writes_only_workbook_and_returns_runtime_summary(mo
             self.last_stage_timings = {'ingest': 0.1, 'export': 0.2}
             self.last_ingest_backend = 'calamine'
 
-        def prepare_payload(self, input_path: Path) -> bool:
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
             raise AssertionError('run must process workbook')
 
-        def process_file(self, input_path: Path, output_path: Path) -> bool:
+        def process_file(
+            self,
+            input_path: Path,
+            output_path: Path,
+            *,
+            progress_callback: object | None = None,
+        ) -> bool:
             captured['input_path'] = input_path
             captured['output_path'] = output_path
             output_path.write_text('xlsx', encoding='utf-8')
@@ -523,7 +541,7 @@ def test_etl_constructor_receives_pipeline_standalone_items_and_scope_mode(monke
             self.last_stage_timings = {}
             self.last_ingest_backend = 'openpyxl'
 
-        def prepare_payload(self, input_path: Path) -> bool:
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
             return True
 
     monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
@@ -534,3 +552,114 @@ def test_etl_constructor_receives_pipeline_standalone_items_and_scope_mode(monke
     assert captured['standalone_cost_items'] == SK_PIPELINE.standalone_cost_items
     assert captured['product_anomaly_scope_mode'] == SK_PIPELINE.product_anomaly_scope_mode
     assert captured['product_order'] == request.product_order
+
+
+def test_progress_event_is_constructible() -> None:
+    from src.services.costing_service import ProgressEvent
+
+    event = ProgressEvent(percent=45, stage='fact', message='已拆分事实表')
+
+    assert event.percent == 45
+    assert event.stage == 'fact'
+    assert event.message == '已拆分事实表'
+
+
+def test_run_costing_request_reports_prepare_export_and_done_progress(monkeypatch, tmp_path: Path) -> None:
+    from src.services.costing_service import ProgressEvent
+
+    request = _request(tmp_path)
+    events: list[ProgressEvent] = []
+
+    class _ProgressETL:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'export': 0.1}
+            self.last_ingest_backend = 'dummy'
+            self.last_work_order_sheet_frame = pd.DataFrame()
+            self.last_candidate_products = ()
+
+        def process_file(
+            self,
+            input_path: Path,
+            output_path: Path,
+            *,
+            progress_callback: object | None = None,
+        ) -> bool:
+            assert input_path == request.input_path
+            assert output_path.name.endswith('_处理后.xlsx')
+            if progress_callback is not None:
+                progress_callback(ProgressEvent(percent=95, stage='export', message='正在写出 workbook'))
+            return True
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _ProgressETL)
+
+    result = run_costing_request(request, progress_callback=events.append)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert [(event.percent, event.stage) for event in events] == [
+        (0, 'prepare'),
+        (5, 'prepare'),
+        (95, 'export'),
+        (100, 'done'),
+    ]
+
+
+def test_precheck_progress_does_not_report_export(monkeypatch, tmp_path: Path) -> None:
+    from src.services.costing_service import ProgressEvent
+
+    request = _request(tmp_path)
+    events: list[ProgressEvent] = []
+
+    class _ProgressETL:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {'presentation': 0.1}
+            self.last_ingest_backend = 'dummy'
+            self.last_work_order_sheet_frame = pd.DataFrame()
+            self.last_candidate_products = ()
+
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
+            assert input_path == request.input_path
+            if progress_callback is not None:
+                progress_callback(ProgressEvent(percent=85, stage='presentation', message='已构建输出 Sheet'))
+            return True
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _ProgressETL)
+
+    result = precheck_costing_run(request, progress_callback=events.append)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert 'export' not in [event.stage for event in events]
+    assert events[-1].stage == 'done'
+
+
+def test_progress_callback_failure_does_not_fail_service(monkeypatch, caplog, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+
+    class _ProgressETL:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 0
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+            self.last_ingest_backend = 'dummy'
+            self.last_work_order_sheet_frame = pd.DataFrame()
+            self.last_candidate_products = ()
+
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
+            assert input_path == request.input_path
+            return True
+
+    def _raise_on_progress(_event: object) -> None:
+        raise RuntimeError('progress sink failed')
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _ProgressETL)
+
+    result = precheck_costing_run(request, progress_callback=_raise_on_progress)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert 'Progress callback failed' in caplog.text

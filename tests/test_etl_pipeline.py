@@ -574,3 +574,72 @@ def test_build_workbook_payload_filters_normalized_frame_before_split(monkeypatc
     assert etl.pipeline.last_month_filter_summary is not None
     assert etl.pipeline.last_month_filter_summary.output_rows == 2
     assert payload.sheet_models[0].sheet_name == '成本计算单总表'
+
+
+def test_build_workbook_payload_reports_real_stage_progress(monkeypatch, tmp_path: Path) -> None:
+    from src.services.progress import ProgressEvent
+
+    etl = CostingWorkbookETL(skip_rows=2)
+    events: list[ProgressEvent] = []
+    raw = RawWorkbookFrame(
+        sheet_name='成本计算单',
+        header_rows=(('年期', '产品编码'), ('', '')),
+        frame=pl.DataFrame({'column_0': ['2025年01期'], 'column_1': ['P001']}),
+        ingest_backend='test',
+    )
+    normalized = NormalizedCostFrame(
+        frame=pl.DataFrame(
+            {
+                '月份': ['2025-01'],
+                '产品编码': ['P001'],
+                '产品名称': ['产品A'],
+            }
+        ),
+        key_columns=('产品编码', '产品名称'),
+    )
+    split_result = SplitResult(
+        detail_df=pl.DataFrame({'产品编码': ['P001'], '产品名称': ['产品A']}),
+        qty_df=pl.DataFrame({'产品编码': ['P001'], '产品名称': ['产品A']}),
+    )
+    artifacts = AnalysisArtifacts(
+        fact_df=pd.DataFrame({'产品编码': ['P001'], '产品名称': ['产品A']}),
+        qty_sheet_df=pd.DataFrame({'产品编码': ['P001'], '产品名称': ['产品A']}),
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame({'产品编码': ['P001'], '产品名称': ['产品A']}),
+            column_types={'产品编码': 'text', '产品名称': 'text'},
+        ),
+        product_anomaly_sections=[],
+        quality_metrics=(),
+        error_log=pd.DataFrame(),
+    )
+    model = SheetModel(
+        sheet_name='成本计算单总表',
+        columns=('产品编码',),
+        rows_factory=lambda: iter([('P001',)]),
+        column_types={'产品编码': 'text'},
+        number_formats={},
+    )
+
+    monkeypatch.setattr(etl.pipeline, 'load_raw_workbook_frame', lambda _path: raw)
+    monkeypatch.setattr(etl.pipeline, 'build_normalized_cost_frame', lambda _raw: normalized)
+    monkeypatch.setattr(etl.pipeline, 'split_normalized_frames', lambda _normalized: split_result)
+    monkeypatch.setattr('src.etl.pipeline.build_report_artifacts', lambda *_args, **_kwargs: artifacts)
+    monkeypatch.setattr('src.etl.pipeline.build_sheet_models', lambda **_kwargs: (model,))
+
+    payload = etl.pipeline.build_workbook_payload(
+        tmp_path / 'input.xlsx',
+        standalone_cost_items=(),
+        product_anomaly_scope_mode='legacy_single_scope',
+        month_range=None,
+        presentation_product_order=(),
+        progress_callback=events.append,
+    )
+
+    assert payload.sheet_models == (model,)
+    assert [(event.percent, event.stage) for event in events] == [
+        (10, 'ingest'),
+        (30, 'normalize'),
+        (45, 'fact'),
+        (70, 'analysis'),
+        (85, 'presentation'),
+    ]

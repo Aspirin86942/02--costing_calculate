@@ -27,6 +27,7 @@ from src.etl.stages.column_resolution import infer_rename_map, resolve_columns
 from src.etl.stages.normalizer import build_normalized_cost_frame
 from src.etl.stages.reader import load_raw_workbook
 from src.etl.stages.splitter import split_detail_and_qty_sheets, split_normalized_frames
+from src.services.progress import ProgressCallback, report_progress
 
 
 def _normalize_error_log_value(value: object) -> object:
@@ -240,6 +241,7 @@ class CostingEtlPipeline:
         month_range: MonthRange | None = None,
         presentation_product_order: tuple[tuple[str, str], ...] = (),
         artifacts_transform: Callable[[AnalysisArtifacts], AnalysisArtifacts] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> WorkbookPayload:
         """按全链路 Polars 路径构建 workbook payload。"""
         stage_timings: dict[str, float] = {}
@@ -250,6 +252,7 @@ class CostingEtlPipeline:
         raw_workbook = self.load_raw_workbook_frame(input_path)
         self.last_ingest_backend = raw_workbook.ingest_backend
         stage_timings['ingest'] = perf_counter() - ingest_start
+        report_progress(progress_callback, 10, 'ingest', '已读取 workbook')
 
         normalize_start = perf_counter()
         normalized_frame = self.build_normalized_cost_frame(raw_workbook)
@@ -257,10 +260,12 @@ class CostingEtlPipeline:
         self.last_month_filter_summary = month_filter_summary
         self.last_candidate_products = _extract_candidate_products_from_normalized(normalized_frame.frame)
         stage_timings['normalize'] = perf_counter() - normalize_start
+        report_progress(progress_callback, 30, 'normalize', '已完成标准化和月份过滤')
 
         fact_start = perf_counter()
         split_result = self.split_normalized_frames(normalized_frame)
         stage_timings['fact'] = perf_counter() - fact_start
+        report_progress(progress_callback, 45, 'fact', '已拆分事实表')
 
         analysis_start = perf_counter()
         artifacts = build_report_artifacts(
@@ -274,6 +279,7 @@ class CostingEtlPipeline:
         if artifacts_transform is not None:
             artifacts = artifacts_transform(artifacts)
         stage_timings['analysis'] = perf_counter() - analysis_start
+        report_progress(progress_callback, 70, 'analysis', '已完成分析与质量校验')
 
         presentation_start = perf_counter()
         sheet_models = build_sheet_models(
@@ -284,6 +290,7 @@ class CostingEtlPipeline:
             product_anomaly_sections=artifacts.product_anomaly_sections,
         )
         stage_timings['presentation'] = perf_counter() - presentation_start
+        report_progress(progress_callback, 85, 'presentation', '已构建输出 Sheet')
 
         return WorkbookPayload(
             sheet_models=sheet_models,

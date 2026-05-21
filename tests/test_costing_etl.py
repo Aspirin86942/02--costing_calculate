@@ -2122,3 +2122,55 @@ def test_process_file_sk_workbook_renders_software_fee_columns_without_polluting
     gb_work_order_headers = _build_header_map(gb_work_order_ws)
     assert '软件费用合计完工金额' not in gb_work_order_headers
     assert '软件费用单位完工成本' not in gb_work_order_headers
+
+
+def test_prepare_payload_passes_progress_callback_without_export(tmp_path: Path) -> None:
+    from src.services.progress import ProgressEvent
+
+    etl = CostingWorkbookETL(skip_rows=2, product_order=())
+    events: list[ProgressEvent] = []
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={'presentation': 0.1},
+        error_log_export=pd.DataFrame(),
+    )
+
+    def _fake_build_payload(*_args: object, **kwargs: object) -> WorkbookPayload:
+        callback = kwargs['progress_callback']
+        callback(ProgressEvent(percent=85, stage='presentation', message='已构建输出 Sheet'))
+        return payload
+
+    with patch.object(etl.pipeline, 'build_workbook_payload', side_effect=_fake_build_payload):
+        assert etl.prepare_payload(tmp_path / 'input.xlsx', progress_callback=events.append) is True
+
+    assert [event.stage for event in events] == ['presentation']
+
+
+def test_process_file_reports_export_progress(tmp_path: Path) -> None:
+    from src.services.progress import ProgressEvent
+
+    etl = CostingWorkbookETL(skip_rows=2, product_order=())
+    events: list[ProgressEvent] = []
+    payload = WorkbookPayload(
+        sheet_models=(),
+        quality_metrics=(),
+        error_log_count=0,
+        stage_timings={'presentation': 0.1},
+        error_log_export=pd.DataFrame(),
+    )
+
+    with (
+        patch.object(etl.pipeline, 'build_workbook_payload', return_value=payload),
+        patch.object(etl.workbook_writer, 'write_workbook_from_models') as writer_mock,
+    ):
+        assert etl.process_file(
+            tmp_path / 'input.xlsx',
+            tmp_path / 'output.xlsx',
+            progress_callback=events.append,
+        ) is True
+
+    writer_mock.assert_called_once()
+    assert 'export' in [event.stage for event in events]
+    assert any(event.percent == 95 and event.stage == 'export' for event in events)

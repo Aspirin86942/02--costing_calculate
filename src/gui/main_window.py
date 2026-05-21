@@ -148,10 +148,9 @@ class MainWindow(QMainWindow):
             ),
         )
         config_layout.addRow('输出目录', self._path_row(self.output_edit, '选择目录', self._choose_output_dir))
-        config_layout.addRow('开始月份', self.month_start_edit)
-        config_layout.addRow('结束月份', self.month_end_edit)
-        self.month_start_edit.setPlaceholderText('YYYY-MM，可留空')
-        self.month_end_edit.setPlaceholderText('YYYY-MM，可留空')
+        config_layout.addRow('月份范围', self._month_range_row())
+        self.month_start_edit.setPlaceholderText('开始 YYYY-MM，可留空')
+        self.month_end_edit.setPlaceholderText('结束 YYYY-MM，可留空')
 
         whitelist_group = QGroupBox('产品白名单池')
         whitelist_layout = QVBoxLayout(whitelist_group)
@@ -164,9 +163,12 @@ class MainWindow(QMainWindow):
         self._setup_table(self.candidate_table, editable=False)
         candidate_layout.addWidget(self.candidate_table)
         self.add_candidate_button.clicked.connect(self._add_selected_candidates)
-        candidate_layout.addWidget(self.add_candidate_button)
+        candidate_layout.addWidget(self.add_candidate_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        left = QVBoxLayout()
+        left_panel = self._panel('LeftPanel')
+        left = QVBoxLayout(left_panel)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(10)
         left.addWidget(title)
         left.addWidget(subtitle)
         left.addWidget(config_group)
@@ -174,25 +176,53 @@ class MainWindow(QMainWindow):
         left.addWidget(candidate_group, stretch=1)
 
         status_group = QGroupBox('任务状态')
+        status_group.setObjectName('StatusDashboard')
         status_layout = QFormLayout(status_group)
         status_layout.addRow('当前状态', self.status_label)
-        status_layout.addRow('任务进度', self.progress_bar)
-        status_layout.addRow('', self.progress_label)
-        status_layout.addRow('当前阶段', self.stage_label)
-        status_layout.addRow('结果摘要', self.summary_label)
-        kpi_row = QWidget()
-        kpi_layout = QHBoxLayout(kpi_row)
-        kpi_layout.setContentsMargins(0, 0, 0, 0)
-        kpi_layout.addWidget(self._kpi_card('error_log 行数', self.error_count_label))
-        kpi_layout.addWidget(self._kpi_card('候选产品', self.candidate_count_label))
-        kpi_layout.addWidget(self._kpi_card('workbook', self.workbook_path_label), stretch=1)
-        status_layout.addRow(kpi_row)
+        status_layout.addRow('阶段耗时', self.stage_label)
+
+        kpi_group = QGroupBox('结果概要')
+        kpi_group.setObjectName('KpiDashboard')
+        kpi_layout = QGridLayout(kpi_group)
+        kpi_layout.addWidget(self._kpi_card('error_log 行数', self.error_count_label), 0, 0)
+        kpi_layout.addWidget(self._kpi_card('候选产品', self.candidate_count_label), 0, 1)
+        kpi_layout.addWidget(self._kpi_card('输出路径', self.workbook_path_label), 1, 0, 1, 2)
+        self.summary_label.setVisible(False)
 
         log_group = QGroupBox('日志')
+        log_group.setObjectName('LogGroup')
         log_layout = QVBoxLayout(log_group)
         log_layout.addWidget(self.log_edit)
 
-        button_layout = QHBoxLayout()
+        right_panel = self._panel('RightPanel')
+        right = QVBoxLayout(right_panel)
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(10)
+        right.addWidget(status_group)
+        right.addWidget(kpi_group)
+        right.addWidget(log_group, stretch=1)
+
+        main_content = self._panel('MainContentContainer')
+        main_content_layout = QGridLayout(main_content)
+        main_content_layout.setContentsMargins(0, 0, 0, 0)
+        main_content_layout.setHorizontalSpacing(14)
+        main_content_layout.addWidget(left_panel, 0, 0)
+        main_content_layout.addWidget(right_panel, 0, 1)
+        main_content_layout.setColumnStretch(0, 2)
+        main_content_layout.setColumnStretch(1, 3)
+
+        progress_area = self._panel('ProgressArea')
+        progress_layout = QVBoxLayout(progress_area)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(6)
+        progress_layout.addWidget(self.progress_label)
+        progress_layout.addWidget(self.progress_bar)
+
+        bottom_bar = self._panel('BottomActionBar')
+        button_layout = QHBoxLayout(bottom_bar)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(10)
+        button_layout.addStretch(1)
         for button in (
             self.scan_button,
             self.precheck_button,
@@ -203,20 +233,30 @@ class MainWindow(QMainWindow):
         ):
             button_layout.addWidget(button)
 
-        right = QVBoxLayout()
-        right.addWidget(status_group)
-        right.addWidget(log_group, stretch=1)
-        right.addLayout(button_layout)
-
-        root_layout = QGridLayout()
-        root_layout.addLayout(left, 0, 0)
-        root_layout.addLayout(right, 0, 1)
-        root_layout.setColumnStretch(0, 2)
-        root_layout.setColumnStretch(1, 3)
+        root_layout = QVBoxLayout()
+        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setSpacing(12)
+        root_layout.addWidget(main_content, stretch=1)
+        root_layout.addWidget(progress_area)
+        root_layout.addWidget(bottom_bar)
 
         root = QWidget()
         root.setLayout(root_layout)
         self.setCentralWidget(root)
+
+    def _panel(self, object_name: str) -> QWidget:
+        widget = QWidget()
+        widget.setObjectName(object_name)
+        return widget
+
+    def _month_range_row(self) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(self.month_start_edit)
+        layout.addWidget(self.month_end_edit)
+        return widget
 
     def _kpi_card(self, title: str, value_label: QLabel) -> QWidget:
         card = QWidget()
@@ -273,6 +313,7 @@ class MainWindow(QMainWindow):
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        table.setAlternatingRowColors(True)
         if editable:
             table.setEditTriggers(
                 QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed

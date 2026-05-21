@@ -11,7 +11,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 pytest.importorskip('PySide6')
 
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QWidget  # noqa: E402
 
 import src.gui.main_window as main_window_module  # noqa: E402
 from src.config.pipelines import GB_PIPELINE  # noqa: E402
@@ -533,3 +533,29 @@ def test_failed_task_does_not_force_progress_to_complete(main_window: MainWindow
 
     assert main_window.progress_bar.value() == 45
     assert main_window.progress_label.text() == '处理失败'
+
+
+def test_main_window_exposes_named_layout_regions(main_window: MainWindow) -> None:
+    assert main_window.findChild(QWidget, 'MainContentContainer') is not None
+    assert main_window.findChild(QWidget, 'LeftPanel') is not None
+    assert main_window.findChild(QWidget, 'RightPanel') is not None
+    assert main_window.findChild(QWidget, 'ProgressArea') is not None
+    assert main_window.findChild(QWidget, 'BottomActionBar') is not None
+
+
+def test_bottom_action_bar_owns_global_action_buttons(main_window: MainWindow) -> None:
+    bottom_bar = main_window.findChild(QWidget, 'BottomActionBar')
+    assert bottom_bar is not None
+    buttons = bottom_bar.findChildren(QPushButton)
+
+    assert main_window.scan_button in buttons
+    assert main_window.precheck_button in buttons
+    assert main_window.run_button in buttons
+    assert main_window.open_output_button in buttons
+    assert main_window.clear_button in buttons
+    assert main_window.exit_button in buttons
+
+
+def test_tables_use_alternating_row_colors(main_window: MainWindow) -> None:
+    assert main_window.whitelist_table.alternatingRowColors() is True
+    assert main_window.candidate_table.alternatingRowColors() is True

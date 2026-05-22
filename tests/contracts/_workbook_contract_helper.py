@@ -381,29 +381,29 @@ def _extract_flat_sheet(worksheet) -> dict[str, object]:
 
 
 def _extract_product_anomaly_sheet(worksheet) -> dict[str, object]:
-    if worksheet['A5'].value == '分析口径':
+    if worksheet['A3'].value == '分析口径':
         return _extract_scoped_product_anomaly_sheet(worksheet)
     return _extract_legacy_product_anomaly_sheet(worksheet)
 
 
 def _extract_legacy_product_anomaly_sheet(worksheet) -> dict[str, object]:
-    headers = [worksheet.cell(5, col_idx).value for col_idx in range(1, worksheet.max_column + 1)]
+    headers = [worksheet.cell(3, col_idx).value for col_idx in range(1, worksheet.max_column + 1)]
     while headers and headers[-1] is None:
         headers.pop()
 
     first_data_formats = {
-        header: worksheet.cell(6, col_idx).number_format
+        header: worksheet.cell(4, col_idx).number_format
         for col_idx, header in enumerate(headers, start=1)
-        if worksheet.max_row >= 6 and worksheet.cell(6, col_idx).number_format != 'General'
+        if worksheet.max_row >= 4 and worksheet.cell(4, col_idx).number_format != 'General'
     }
     return {
         'kind': 'product_anomaly',
         'layout': 'legacy',
         'freeze_panes': worksheet.freeze_panes,
         'auto_filter': worksheet.auto_filter.ref,
-        'title': worksheet['A1'].value,
-        'meta_labels': [worksheet['A3'].value, worksheet['B3'].value],
-        'meta_values': [worksheet['A4'].value, worksheet['B4'].value],
+        'title': None,
+        'meta_labels': [worksheet['A1'].value, worksheet['B1'].value],
+        'meta_values': [worksheet['A2'].value, worksheet['B2'].value],
         'columns': headers,
         'number_formats': first_data_formats,
         'column_widths': _extract_column_widths(worksheet),
@@ -412,7 +412,7 @@ def _extract_legacy_product_anomaly_sheet(worksheet) -> dict[str, object]:
 
 def _extract_scoped_product_anomaly_sheet(worksheet) -> dict[str, object]:
     sections: list[dict[str, object]] = []
-    row_idx = 3
+    row_idx = 1
     while row_idx <= worksheet.max_row:
         meta_label_code = worksheet.cell(row_idx, 1).value
         meta_label_name = worksheet.cell(row_idx, 2).value
@@ -455,7 +455,7 @@ def _extract_scoped_product_anomaly_sheet(worksheet) -> dict[str, object]:
         'layout': 'scoped',
         'freeze_panes': worksheet.freeze_panes,
         'auto_filter': worksheet.auto_filter.ref,
-        'title': worksheet['A1'].value,
+        'title': None,
         'scope_labels': [section['scope_label'] for section in sections],
         'columns': first_section['columns'],
         'number_formats': first_section['number_formats'],

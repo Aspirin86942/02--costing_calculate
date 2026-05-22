@@ -201,7 +201,8 @@ def test_empty_candidate_result_clears_stale_candidate_table(main_window: MainWi
 
 
 def test_failed_result_clears_stale_candidate_table(main_window: MainWindow) -> None:
-    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
+    main_window._set_candidate_products((('P001', '产品A'),))
+    main_window.candidate_search_edit.setText('P001')
     result = CostingRunResult(
         status=ServiceStatus.FAILED,
         message='处理失败',
@@ -212,14 +213,19 @@ def test_failed_result_clears_stale_candidate_table(main_window: MainWindow) -> 
     main_window._on_worker_finished(result, task_kind='run')
 
     assert main_window.candidate_table.rowCount() == 0
+    assert main_window.candidate_search_edit.text() == ''
+    assert main_window.candidate_products_all == ()
 
 
 def test_worker_exception_clears_stale_candidate_table(main_window: MainWindow) -> None:
-    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
+    main_window._set_candidate_products((('P001', '产品A'),))
+    main_window.candidate_search_edit.setText('P001')
 
     main_window._on_worker_failed('后台异常')
 
     assert main_window.candidate_table.rowCount() == 0
+    assert main_window.candidate_search_edit.text() == ''
+    assert main_window.candidate_products_all == ()
 
 
 def test_form_changes_clear_stale_candidates(main_window: MainWindow) -> None:
@@ -489,6 +495,8 @@ def test_stale_worker_result_is_ignored_after_form_change(
     main_window.busy = True
     main_window.current_worker = object()
     main_window.input_edit.setText(str(tmp_path / 'changed-input.xlsx'))
+    main_window._set_candidate_products((('P001', '产品A'),))
+    main_window.candidate_search_edit.setText('P001')
     result = CostingRunResult(
         status=ServiceStatus.SUCCEEDED,
         message='预检通过',
@@ -501,6 +509,8 @@ def test_stale_worker_result_is_ignored_after_form_change(
     assert main_window.precheck_passed is False
     assert main_window.run_button.isEnabled() is False
     assert main_window.candidate_table.rowCount() == 0
+    assert main_window.candidate_search_edit.text() == ''
+    assert main_window.candidate_products_all == ()
     assert main_window.last_output_dir is None
     assert main_window.current_worker is None
     assert '忽略过期任务结果' in main_window.log_edit.toPlainText()
@@ -514,15 +524,18 @@ def test_stale_worker_exception_is_ignored_after_form_change(
     main_window.busy = True
     main_window.current_worker = object()
     main_window.status_label.setText('等待配置')
-    main_window._set_table_pairs(main_window.candidate_table, (('P001', '产品A'),))
     main_window.last_output_dir = tmp_path / 'old-output'
     main_window.input_edit.setText(str(tmp_path / 'changed-input.xlsx'))
+    main_window._set_candidate_products((('P001', '产品A'),))
+    main_window.candidate_search_edit.setText('P001')
 
     main_window._on_worker_failed('old error', request_revision=old_revision)
 
     assert main_window.precheck_passed is False
     assert main_window.run_button.isEnabled() is False
     assert main_window.candidate_table.rowCount() == 0
+    assert main_window.candidate_search_edit.text() == ''
+    assert main_window.candidate_products_all == ()
     assert main_window.last_output_dir is None
     assert main_window.current_worker is None
     assert main_window.status_label.text() != '处理失败'

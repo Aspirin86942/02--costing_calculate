@@ -875,10 +875,21 @@ def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_
     assert worksheet['B3'].value == '全部'
     assert worksheet['A4'].value == '月份'
     assert worksheet['A5'].value == '2025年01期'
-    assert any(
-        worksheet.cell(row=row_idx, column=2).value == '正常生产'
-        for row_idx in range(1, worksheet.max_row + 1)
-    )
+    second_section_start_row = 7
+    assert worksheet.cell(row=second_section_start_row, column=1).value == '产品编码'
+    assert worksheet.cell(row=second_section_start_row, column=2).value == '产品名称'
+    assert worksheet.cell(row=second_section_start_row + 1, column=1).value == 'P001'
+    assert worksheet.cell(row=second_section_start_row + 1, column=2).value == '产品A'
+    assert worksheet.cell(row=second_section_start_row + 2, column=1).value == '分析口径'
+    assert worksheet.cell(row=second_section_start_row + 2, column=2).value == '正常生产'
+    assert worksheet.cell(row=second_section_start_row + 3, column=1).value == '月份'
+    assert worksheet.cell(row=second_section_start_row + 3, column=2).value == '总成本'
+    assert worksheet.cell(row=second_section_start_row + 3, column=3).value == '完工数量'
+    assert worksheet.cell(row=second_section_start_row + 3, column=4).value == '单位成本'
+    assert worksheet.cell(row=second_section_start_row + 4, column=1).value == '2025年01期'
+    assert worksheet.cell(row=second_section_start_row + 4, column=2).value == 80
+    assert worksheet.cell(row=second_section_start_row + 4, column=3).value == 8
+    assert worksheet.cell(row=second_section_start_row + 4, column=4).value == 10
     assert worksheet.freeze_panes == 'A5'
 
 

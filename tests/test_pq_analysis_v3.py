@@ -7,6 +7,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from src.analytics import anomaly as anomaly_module
 from src.analytics.contracts import FlatSheet
 from src.analytics.fact_builder import (
     QTY_CHECK_STATUS,
@@ -1231,8 +1232,17 @@ def test_build_report_artifacts_keeps_pandas_polars_compatibility_on_precision_f
         assert qty_row_pd[column] == qty_row_pl[column]
 
 
-def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
+def test_build_report_artifacts_uses_product_level_modified_zscore(monkeypatch: pytest.MonkeyPatch) -> None:
     """测试 Modified Z-score 按产品总体计算，而不是按月份拆池。"""
+    explanation_calls: list[object] = []
+    original_build_explanation = anomaly_module._build_metric_anomaly_explanation
+
+    def capture_explanation_call(**kwargs: object) -> str:
+        explanation_calls.append(kwargs['level'])
+        return original_build_explanation(**kwargs)
+
+    monkeypatch.setattr(anomaly_module, '_build_metric_anomaly_explanation', capture_explanation_call)
+
     df_detail = pd.DataFrame(
         [
             {
@@ -1344,6 +1354,26 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
     assert '有效工单数=3' in explanation
     assert f'原始MAD={math.log(11) - math.log(10):.4f}' in explanation
     assert f'有效MAD={math.log(11) - math.log(10):.4f}' in explanation
+    total_block = explanation.split('; ', maxsplit=1)[0]
+    expected_total_tokens = (
+        '高度可疑',
+        '当前值=',
+        '当前log=',
+        '基准值=',
+        '基准log=',
+        'log偏离=',
+        '相对偏离=',
+        'score=',
+        '有效工单数=',
+        '原始MAD=',
+        '有效MAD=',
+    )
+    previous_index = -1
+    for token in expected_total_tokens:
+        token_index = total_block.index(token)
+        assert token_index > previous_index
+        previous_index = token_index
+    assert len(explanation_calls) == len(anomaly_module.ANOMALY_METRICS)
 
 
 def test_work_order_anomaly_detail_explanation_lists_multiple_flags_in_metric_order() -> None:

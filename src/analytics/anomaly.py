@@ -63,6 +63,7 @@ ANOMALY_FLAG_FORMAT_KEYS: dict[str, str] = {
     '关注': 'attention',
     '高度可疑': 'suspicious',
 }
+ANOMALY_EXPLANATION_LEVELS = {'关注', '高度可疑'}
 ANALYZABLE_PRODUCTION_SCOPE_LABELS = {DOC_TYPE_NORMAL_LABEL, DOC_TYPE_REWORK_LABEL}
 
 
@@ -273,7 +274,7 @@ def _build_metric_anomaly_explanation(
     raw_mad: object,
     effective_mad: object,
 ) -> str:
-    if level not in {'关注', '高度可疑'}:
+    if level not in ANOMALY_EXPLANATION_LEVELS:
         return ''
     required_values = (current_value, current_log, center_log, score)
     if any(not _is_present_number(value) for value in required_values):
@@ -298,6 +299,39 @@ def _build_metric_anomaly_explanation(
         f'原始MAD={_format_fixed(raw_mad, 4)}, '
         f'有效MAD={_format_fixed(effective_mad, 4)}'
     )
+
+
+def _anomaly_detail_rows_mask(anomaly_df: pd.DataFrame) -> pd.Series:
+    flag_columns = [flag_column for _metric_key, _display_name, flag_column, _source_label in ANOMALY_METRICS]
+    return anomaly_df[flag_columns].isin(ANOMALY_EXPLANATION_LEVELS).any(axis=1)
+
+
+def _build_anomaly_detail_explanations(anomaly_df: pd.DataFrame) -> list[str]:
+    detail_explanations = pd.Series('', index=anomaly_df.index, dtype='object')
+    detail_rows_mask = _anomaly_detail_rows_mask(anomaly_df)
+    if not detail_rows_mask.any():
+        return detail_explanations.tolist()
+
+    # 先用异常标记列筛掉正常行，避免大表中为每个正常工单重复扫描 9 个指标。
+    for row_index, row in anomaly_df.loc[detail_rows_mask].iterrows():
+        parts: list[str] = []
+        for metric_key, _display_name, flag_column, _source_label in ANOMALY_METRICS:
+            explanation = _build_metric_anomaly_explanation(
+                label=ANOMALY_EXPLANATION_LABELS[metric_key],
+                level=row[flag_column],
+                current_value=row[metric_key],
+                current_log=row[f'log_{metric_key}'],
+                center_log=row[f'audit_pool_center_log_{metric_key}'],
+                score=row[f'modified_z_{metric_key}'],
+                effective_count=row[f'audit_pool_sample_size_{metric_key}'],
+                raw_mad=row[f'audit_pool_raw_mad_{metric_key}'],
+                effective_mad=row[f'audit_pool_effective_mad_{metric_key}'],
+            )
+            if explanation:
+                parts.append(explanation)
+        detail_explanations.loc[row_index] = '; '.join(parts)
+
+    return detail_explanations.tolist()
 
 
 def build_anomaly_sheet(
@@ -442,25 +476,7 @@ def build_anomaly_sheet(
     anomaly_df['异常等级'] = overall_level
     anomaly_df['异常主要来源'] = highest_source
 
-    detail_explanations: list[str] = []
-    for _, row in anomaly_df.iterrows():
-        parts: list[str] = []
-        for metric_key, _display_name, flag_column, _source_label in ANOMALY_METRICS:
-            explanation = _build_metric_anomaly_explanation(
-                label=ANOMALY_EXPLANATION_LABELS[metric_key],
-                level=row[flag_column],
-                current_value=row[metric_key],
-                current_log=row[f'log_{metric_key}'],
-                center_log=row[f'audit_pool_center_log_{metric_key}'],
-                score=row[f'modified_z_{metric_key}'],
-                effective_count=row[f'audit_pool_sample_size_{metric_key}'],
-                raw_mad=row[f'audit_pool_raw_mad_{metric_key}'],
-                effective_mad=row[f'audit_pool_effective_mad_{metric_key}'],
-            )
-            if explanation:
-                parts.append(explanation)
-        detail_explanations.append('; '.join(parts))
-    anomaly_df['异常明细解释'] = detail_explanations
+    anomaly_df['异常明细解释'] = _build_anomaly_detail_explanations(anomaly_df)
 
     rename_map = {
         'period_display': '月份',

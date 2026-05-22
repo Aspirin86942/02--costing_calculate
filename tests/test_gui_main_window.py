@@ -11,6 +11,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 pytest.importorskip('PySide6')
 
+from PySide6.QtCore import QItemSelectionModel  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QWidget  # noqa: E402
 
 import src.gui.main_window as main_window_module  # noqa: E402
@@ -291,6 +292,32 @@ def test_add_selected_candidates_uses_current_filtered_candidate_rows(main_windo
     main_window._add_selected_candidates()
 
     assert main_window._table_pairs(main_window.whitelist_table) == (('GB_C.D.B0040AA', 'BMS-750W驱动器'),)
+
+
+def test_add_selected_candidates_uses_all_current_filtered_selected_rows(main_window: MainWindow) -> None:
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        candidate_products=(
+            ('DP.C.P0197AA', '动力线'),
+            ('DP.C.P0201AA', '动力线'),
+            ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ),
+    )
+    main_window._on_worker_finished(result, task_kind='scan')
+    main_window._set_table_pairs(main_window.whitelist_table, ())
+    main_window.candidate_search_edit.setText('动力')
+    selection_model = main_window.candidate_table.selectionModel()
+    for row in (0, 1):
+        index = main_window.candidate_table.model().index(row, 0)
+        selection_model.select(index, QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows)
+
+    main_window._add_selected_candidates()
+
+    assert main_window._table_pairs(main_window.whitelist_table) == (
+        ('DP.C.P0197AA', '动力线'),
+        ('DP.C.P0201AA', '动力线'),
+    )
 
 
 def test_candidate_search_state_clears_when_form_changes(main_window: MainWindow) -> None:

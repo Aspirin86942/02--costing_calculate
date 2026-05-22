@@ -815,7 +815,7 @@ class MainWindow(QMainWindow):
 
     def _add_selected_candidates(self) -> None:
         existing = set(self._table_pairs(self.whitelist_table))
-        added = 0
+        selected_pairs: list[tuple[str, str]] = []
         selected_rows = sorted({index.row() for index in self.candidate_table.selectedIndexes()})
         for row in selected_rows:
             code_item = self.candidate_table.item(row, 0)
@@ -825,19 +825,28 @@ class MainWindow(QMainWindow):
 
             code = code_item.text().strip()
             name = name_item.text().strip()
-            if not code or not name or (code, name) in existing:
+            pair = (code, name)
+            if not code or not name or pair in existing:
                 continue
 
-            target = self.whitelist_table.rowCount()
-            self.whitelist_table.insertRow(target)
-            self.whitelist_table.setItem(target, 0, QTableWidgetItem(code))
-            self.whitelist_table.setItem(target, 1, QTableWidgetItem(name))
-            existing.add((code, name))
-            added += 1
+            existing.add(pair)
+            selected_pairs.append(pair)
 
-        if added:
-            self._append_log(f'已加入白名单: {added} 个产品')
-            self._invalidate_precheck()
+        if not selected_pairs:
+            return
+
+        previous_block_state = self.whitelist_table.blockSignals(True)
+        try:
+            for code, name in selected_pairs:
+                target = self.whitelist_table.rowCount()
+                self.whitelist_table.insertRow(target)
+                self.whitelist_table.setItem(target, 0, QTableWidgetItem(code))
+                self.whitelist_table.setItem(target, 1, QTableWidgetItem(name))
+        finally:
+            self.whitelist_table.blockSignals(previous_block_state)
+
+        self._append_log(f'已加入白名单: {len(selected_pairs)} 个产品')
+        self._invalidate_precheck()
 
     def _save_whitelist(self) -> None:
         pipeline = self.pipeline_combo.currentText()

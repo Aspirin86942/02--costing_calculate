@@ -81,7 +81,7 @@ def _write_legacy_product_anomaly_sheet(
         sheet_name,
         sections,
         scoped=False,
-        freeze_panes='A6',
+        freeze_panes='A4',
         scope_label_row_offset=None,
     )
 
@@ -97,7 +97,7 @@ def _write_scoped_product_anomaly_sheet(
         sheet_name,
         sections,
         scoped=True,
-        freeze_panes='A7',
+        freeze_panes='A5',
         scope_label_row_offset=2,
     )
 
@@ -115,9 +115,6 @@ def _write_product_anomaly_sections(
     worksheet = workbook.add_worksheet(sheet_name)
     writer.sheets[sheet_name] = worksheet
 
-    section_title_format = workbook.add_format(
-        {'bold': True, 'bg_color': '#FFD966', 'align': 'left', 'valign': 'vcenter'}
-    )
     meta_header_format = workbook.add_format(
         {'bold': True, 'bg_color': '#D9E1F2', 'align': 'center', 'valign': 'vcenter', 'border': 1}
     )
@@ -131,9 +128,7 @@ def _write_product_anomaly_sections(
     right_text_format = workbook.add_format({'align': 'right', 'valign': 'vcenter', 'border': 1})
     metric_format_cache: dict[str, Any] = {}
 
-    worksheet.write(0, 0, '四、按单个产品异常值分析', section_title_format)
-
-    current_row = 2
+    current_row = 0
     max_col_overall = 1
     filter_set = False
 

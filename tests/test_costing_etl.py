@@ -590,7 +590,7 @@ def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> Non
 
     assert len(models) == 4
     product_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
-    assert product_model.freeze_panes == 'A6'
+    assert product_model.freeze_panes == 'A4'
     assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
 
 
@@ -783,12 +783,13 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
 
     workbook = load_workbook(output_path)
     worksheet = workbook['成本分析产品维度']
-    assert worksheet['A1'].value == '四、按单个产品异常值分析'
-    assert worksheet['A3'].value == '产品编码'
-    assert worksheet['A4'].value == 'P001'
-    assert worksheet['B3'].value == '产品名称'
-    assert worksheet['B4'].value == '产品A'
-    assert worksheet.freeze_panes == 'A6'
+    assert worksheet['A1'].value == '产品编码'
+    assert worksheet['A2'].value == 'P001'
+    assert worksheet['B1'].value == '产品名称'
+    assert worksheet['B2'].value == '产品A'
+    assert worksheet['A3'].value == '月份'
+    assert worksheet['A4'].value == '2025年01期'
+    assert worksheet.freeze_panes == 'A4'
 
 
 def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() -> None:
@@ -827,7 +828,7 @@ def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() ->
     assert product_model.columns[:4] == ('产品编码', '产品名称', '分析口径', '月份')
     assert rows[0][:4] == ('P001', '产品A', '全部', '2025年01期')
     assert rows[1][:4] == ('P001', '产品A', '正常生产', '2025年01期')
-    assert product_model.freeze_panes == 'A7'
+    assert product_model.freeze_panes == 'A5'
 
 
 def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
@@ -866,21 +867,19 @@ def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_
 
     workbook = load_workbook(output_path)
     worksheet = workbook['成本分析产品维度']
-    assert worksheet['A1'].value == '四、按单个产品异常值分析'
-    assert worksheet['A3'].value == '产品编码'
-    assert worksheet['A4'].value == 'P001'
-    assert worksheet['B3'].value == '产品名称'
-    assert worksheet['B4'].value == '产品A'
-    assert worksheet['A5'].value == '分析口径'
-    assert worksheet['B5'].value == '全部'
-    assert worksheet['A6'].value == '月份'
-    assert worksheet['A7'].value == '2025年01期'
+    assert worksheet['A1'].value == '产品编码'
+    assert worksheet['A2'].value == 'P001'
+    assert worksheet['B1'].value == '产品名称'
+    assert worksheet['B2'].value == '产品A'
+    assert worksheet['A3'].value == '分析口径'
+    assert worksheet['B3'].value == '全部'
+    assert worksheet['A4'].value == '月份'
+    assert worksheet['A5'].value == '2025年01期'
     assert any(
         worksheet.cell(row=row_idx, column=2).value == '正常生产'
         for row_idx in range(1, worksheet.max_row + 1)
-        if worksheet.cell(row=row_idx, column=1).value == '分析口径'
     )
-    assert worksheet.freeze_panes == 'A7'
+    assert worksheet.freeze_panes == 'A5'
 
 
 def test_sheet_model_writer_preserves_detail_and_qty_number_formats(tmp_path: Path) -> None:
@@ -1080,9 +1079,9 @@ def test_fast_sheet_writer_routes_new_product_anomaly_sheet_name_to_special_layo
 
     workbook = load_workbook(output_path)
     worksheet = workbook['成本分析产品维度']
-    assert worksheet['A1'].value == '四、按单个产品异常值分析'
-    assert worksheet['A3'].value == '产品编码'
-    assert worksheet['A4'].value == 'P001'
+    assert worksheet['A1'].value == '产品编码'
+    assert worksheet['A2'].value == 'P001'
+    assert worksheet['A3'].value == '月份'
 
 
 def test_sheet_model_fast_tabular_writer_rejects_conditional_formats(tmp_path: Path) -> None:
@@ -1457,10 +1456,10 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_work_order.auto_filter.ref is not None
 
     ws_product = wb['成本分析产品维度']
-    assert ws_product['A1'].value == '四、按单个产品异常值分析'
-    assert ws_product['A3'].value == '产品编码'
-    assert ws_product['A4'].value == 'GB_C.D.B0040AA'
-    assert ws_product.freeze_panes == 'A6'
+    assert ws_product['A1'].value == '产品编码'
+    assert ws_product['A2'].value == 'GB_C.D.B0040AA'
+    assert ws_product['A3'].value == '月份'
+    assert ws_product.freeze_panes == 'A4'
     assert 'error_log' not in wb.sheetnames
 
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}

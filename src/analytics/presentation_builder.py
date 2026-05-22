@@ -173,7 +173,7 @@ def build_sheet_models(
         frame=product_anomaly_frame,
         column_types=product_anomaly_column_types,
         number_formats=product_anomaly_number_formats,
-        freeze_panes='A7' if has_scoped_product_anomaly_section else 'A6',
+        freeze_panes='A5' if has_scoped_product_anomaly_section else 'A4',
         fixed_width=15.0,
     )
     return (

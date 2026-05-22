@@ -38,6 +38,17 @@ ANOMALY_METRICS = [
     ('moh_depreciation_unit_cost', '制造费用_折旧单位完工成本', '制造费用_折旧异常标记', '折旧异常'),
     ('moh_utilities_unit_cost', '制造费用_水电费单位完工成本', '制造费用_水电费异常标记', '水电费异常'),
 ]
+ANOMALY_EXPLANATION_LABELS: dict[str, str] = {
+    'total_unit_cost': '总成本',
+    'dm_unit_cost': '直接材料',
+    'dl_unit_cost': '直接人工',
+    'moh_unit_cost': '制造费用',
+    'moh_other_unit_cost': '制造费用_其他',
+    'moh_labor_unit_cost': '制造费用_人工',
+    'moh_consumables_unit_cost': '制造费用_机物料及低耗',
+    'moh_depreciation_unit_cost': '制造费用_折旧',
+    'moh_utilities_unit_cost': '制造费用_水电费',
+}
 WORK_ORDER_HIGHLIGHT_COLUMNS: tuple[tuple[str, str], ...] = (
     ('直接材料单位完工成本', '直接材料异常标记'),
     ('直接人工单位完工成本', '直接人工异常标记'),
@@ -114,11 +125,7 @@ WORK_ORDER_OUTPUT_COLUMNS = [
     '制造费用_水电费异常标记',
     '异常等级',
     '异常主要来源',
-    '异常池样本数',
-    '异常池中心log值',
-    '异常池原始MAD',
-    '异常池有效MAD',
-    '相对中位偏离',
+    '异常明细解释',
     '复核原因',
 ]
 
@@ -181,11 +188,7 @@ WORK_ORDER_COLUMN_TYPES = {
     '制造费用_水电费异常标记': 'text',
     '异常等级': 'text',
     '异常主要来源': 'text',
-    '异常池样本数': 'qty',
-    '异常池中心log值': 'score',
-    '异常池原始MAD': 'score',
-    '异常池有效MAD': 'score',
-    '相对中位偏离': 'pct',
+    '异常明细解释': 'text',
     '复核原因': 'text',
 }
 
@@ -229,6 +232,72 @@ def build_work_order_conditional_formats(columns: list[str]) -> tuple[Conditiona
                     )
                 )
     return tuple(rules)
+
+
+def _is_present_number(value: object) -> bool:
+    if value is None:
+        return False
+    try:
+        return not bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return True
+
+
+def _format_fixed(value: object, digits: int) -> str:
+    if not _is_present_number(value):
+        return ''
+    return f'{float(value):.{digits}f}'
+
+
+def _format_percent(value: object) -> str:
+    if not _is_present_number(value):
+        return ''
+    return f'{float(value):.2%}'
+
+
+def _format_int(value: object) -> str:
+    if not _is_present_number(value):
+        return ''
+    return str(int(value))
+
+
+def _build_metric_anomaly_explanation(
+    *,
+    label: str,
+    level: object,
+    current_value: object,
+    current_log: object,
+    center_log: object,
+    score: object,
+    effective_count: object,
+    raw_mad: object,
+    effective_mad: object,
+) -> str:
+    if level not in {'关注', '高度可疑'}:
+        return ''
+    required_values = (current_value, current_log, center_log, score)
+    if any(not _is_present_number(value) for value in required_values):
+        return ''
+
+    current_log_float = float(current_log)
+    center_log_float = float(center_log)
+    log_delta = current_log_float - center_log_float
+    baseline_value = math.exp(center_log_float)
+    relative_delta = math.expm1(log_delta)
+
+    return (
+        f'{label}: {level}, '
+        f'当前值={_format_fixed(current_value, 2)}, '
+        f'当前log={_format_fixed(current_log_float, 4)}, '
+        f'基准值={_format_fixed(baseline_value, 2)}, '
+        f'基准log={_format_fixed(center_log_float, 4)}, '
+        f'log偏离={_format_fixed(log_delta, 4)}, '
+        f'相对偏离={_format_percent(relative_delta)}, '
+        f'score={_format_fixed(score, 2)}, '
+        f'有效工单数={_format_int(effective_count)}, '
+        f'原始MAD={_format_fixed(raw_mad, 4)}, '
+        f'有效MAD={_format_fixed(effective_mad, 4)}'
+    )
 
 
 def build_anomaly_sheet(
@@ -372,29 +441,26 @@ def build_anomaly_sheet(
     highest_source.loc[unknown_scope_mask] = ''
     anomaly_df['异常等级'] = overall_level
     anomaly_df['异常主要来源'] = highest_source
-    anomaly_df['异常池样本数'] = None
-    anomaly_df['异常池中心log值'] = None
-    anomaly_df['异常池原始MAD'] = None
-    anomaly_df['异常池有效MAD'] = None
-    anomaly_df['相对中位偏离'] = None
 
-    for metric_key, _display_name, _flag_column, source_label in ANOMALY_METRICS:
-        source_mask = highest_source == source_label
-        if not source_mask.any():
-            continue
-        anomaly_df.loc[source_mask, '异常池样本数'] = anomaly_df.loc[
-            source_mask, f'audit_pool_sample_size_{metric_key}'
-        ]
-        anomaly_df.loc[source_mask, '异常池中心log值'] = anomaly_df.loc[
-            source_mask, f'audit_pool_center_log_{metric_key}'
-        ]
-        anomaly_df.loc[source_mask, '异常池原始MAD'] = anomaly_df.loc[source_mask, f'audit_pool_raw_mad_{metric_key}']
-        anomaly_df.loc[source_mask, '异常池有效MAD'] = anomaly_df.loc[
-            source_mask, f'audit_pool_effective_mad_{metric_key}'
-        ]
-        anomaly_df.loc[source_mask, '相对中位偏离'] = anomaly_df.loc[
-            source_mask, f'audit_relative_deviation_{metric_key}'
-        ]
+    detail_explanations: list[str] = []
+    for _, row in anomaly_df.iterrows():
+        parts: list[str] = []
+        for metric_key, _display_name, flag_column, _source_label in ANOMALY_METRICS:
+            explanation = _build_metric_anomaly_explanation(
+                label=ANOMALY_EXPLANATION_LABELS[metric_key],
+                level=row[flag_column],
+                current_value=row[metric_key],
+                current_log=row[f'log_{metric_key}'],
+                center_log=row[f'audit_pool_center_log_{metric_key}'],
+                score=row[f'modified_z_{metric_key}'],
+                effective_count=row[f'audit_pool_sample_size_{metric_key}'],
+                raw_mad=row[f'audit_pool_raw_mad_{metric_key}'],
+                effective_mad=row[f'audit_pool_effective_mad_{metric_key}'],
+            )
+            if explanation:
+                parts.append(explanation)
+        detail_explanations.append('; '.join(parts))
+    anomaly_df['异常明细解释'] = detail_explanations
 
     rename_map = {
         'period_display': '月份',

@@ -685,11 +685,12 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
     assert row['Modified Z-score_总单位完工成本'] is None
-    assert row['异常池样本数'] is None
-    assert row['异常池中心log值'] is None
-    assert row['异常池原始MAD'] is None
-    assert row['异常池有效MAD'] is None
-    assert row['相对中位偏离'] is None
+    assert '异常池样本数' not in anomaly_df.columns
+    assert '异常池中心log值' not in anomaly_df.columns
+    assert '异常池原始MAD' not in anomaly_df.columns
+    assert '异常池有效MAD' not in anomaly_df.columns
+    assert '相对中位偏离' not in anomaly_df.columns
+    assert row['异常明细解释'] == ''
     assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
 
 
@@ -1324,11 +1325,165 @@ def test_build_report_artifacts_uses_product_level_modified_zscore() -> None:
     assert suspicious_row['总成本异常标记'] == '高度可疑'
     assert suspicious_row['异常等级'] == '高度可疑'
     assert suspicious_row['异常主要来源'] == '总成本异常'
-    assert suspicious_row['异常池样本数'] == 3
-    assert suspicious_row['异常池中心log值'] == pytest.approx(math.log(11))
-    assert suspicious_row['异常池原始MAD'] == pytest.approx(math.log(11) - math.log(10))
-    assert suspicious_row['异常池有效MAD'] == pytest.approx(math.log(11) - math.log(10))
-    assert suspicious_row['相对中位偏离'] == pytest.approx((50 / 11) - 1)
+    assert '异常池样本数' not in anomaly_df.columns
+    assert '异常池中心log值' not in anomaly_df.columns
+    assert '异常池原始MAD' not in anomaly_df.columns
+    assert '异常池有效MAD' not in anomaly_df.columns
+    assert '相对中位偏离' not in anomaly_df.columns
+    assert '异常明细解释' in anomaly_df.columns
+
+    explanation = suspicious_row['异常明细解释']
+    assert explanation.startswith('总成本: 高度可疑')
+    assert '当前值=50.00' in explanation
+    assert f'当前log={math.log(50):.4f}' in explanation
+    assert '基准值=11.00' in explanation
+    assert f'基准log={math.log(11):.4f}' in explanation
+    assert f'log偏离={math.log(50) - math.log(11):.4f}' in explanation
+    assert f'相对偏离={(50 / 11) - 1:.2%}' in explanation
+    assert 'score=' in explanation
+    assert '有效工单数=3' in explanation
+    assert f'原始MAD={math.log(11) - math.log(10):.4f}' in explanation
+    assert f'有效MAD={math.log(11) - math.log(10):.4f}' in explanation
+
+
+def test_work_order_anomaly_detail_explanation_lists_multiple_flags_in_metric_order() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 70,
+            },
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 30,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 77,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 33,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 700,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '成本项目名称': '直接人工',
+                '本期完工金额': 300,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 110,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'P001',
+                '产品名称': '产品A',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 1000,
+            },
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    anomaly_df = artifacts.work_order_sheet.data
+    suspicious_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-003'].iloc[0]
+    explanation = suspicious_row['异常明细解释']
+
+    total_index = explanation.index('总成本:')
+    material_index = explanation.index('直接材料:')
+    labor_index = explanation.index('直接人工:')
+
+    assert total_index < material_index < labor_index
+    assert explanation.count('有效工单数=3') >= 3
 
 
 def test_build_report_artifacts_scores_normal_and_rework_in_separate_pools() -> None:

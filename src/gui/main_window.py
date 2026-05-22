@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.last_output_dir: Path | None = None
         self.current_worker: ServiceWorker | None = None
         self.whitelist_action_buttons: list[QPushButton] = []
+        self.candidate_products_all: ProductOrder = ()
 
         self.pipeline_combo = QComboBox()
         self.pipeline_combo.addItems(['gb', 'sk'])
@@ -105,6 +106,8 @@ class MainWindow(QMainWindow):
 
         self.whitelist_table = QTableWidget(0, 2)
         self.candidate_table = QTableWidget(0, 2)
+        self.candidate_search_edit = QLineEdit()
+        self.candidate_search_edit.setPlaceholderText('搜索产品编码或产品名称')
 
         self.scan_button = QPushButton('扫描产品')
         self.precheck_button = QPushButton('预检')
@@ -161,6 +164,7 @@ class MainWindow(QMainWindow):
         candidate_group = QGroupBox('候选产品')
         candidate_layout = QVBoxLayout(candidate_group)
         self._setup_table(self.candidate_table, editable=False)
+        candidate_layout.addWidget(self.candidate_search_edit)
         candidate_layout.addWidget(self.candidate_table)
         self.add_candidate_button.clicked.connect(self._add_selected_candidates)
         candidate_layout.addWidget(self.add_candidate_button, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -345,6 +349,7 @@ class MainWindow(QMainWindow):
         self.month_start_edit.textChanged.connect(self._invalidate_precheck)
         self.month_end_edit.textChanged.connect(self._invalidate_precheck)
         self.whitelist_table.itemChanged.connect(self._invalidate_precheck)
+        self.candidate_search_edit.textChanged.connect(self._refresh_candidate_table)
 
         self.scan_button.clicked.connect(self._scan_products)
         self.precheck_button.clicked.connect(self._precheck)
@@ -355,7 +360,7 @@ class MainWindow(QMainWindow):
 
     def _on_pipeline_changed(self) -> None:
         self._load_pipeline_defaults()
-        self.candidate_table.setRowCount(0)
+        self._clear_candidate_products()
         self._invalidate_precheck()
 
     def _load_pipeline_defaults(self) -> None:
@@ -548,11 +553,11 @@ class MainWindow(QMainWindow):
             self.last_output_dir = result.workbook_path.parent
 
         if result.status == ServiceStatus.SUCCEEDED:
-            self._set_table_pairs(self.candidate_table, result.candidate_products)
+            self._set_candidate_products(result.candidate_products)
             self.precheck_passed = task_kind in {'precheck', 'run'}
             self._set_status(result.message, 'success')
         else:
-            self._set_table_pairs(self.candidate_table, ())
+            self._clear_candidate_products()
             self.precheck_passed = False
             self._set_status(result.message, 'failed')
             self._refresh_buttons()
@@ -570,7 +575,7 @@ class MainWindow(QMainWindow):
             return
 
         self.precheck_passed = False
-        self._set_table_pairs(self.candidate_table, ())
+        self._clear_candidate_products()
         self._set_status('处理失败', 'failed')
         self.stage_label.setText('-')
         self.summary_label.setText('任务异常终止')
@@ -688,7 +693,7 @@ class MainWindow(QMainWindow):
     def _ignore_stale_worker_result(self) -> None:
         self.precheck_passed = False
         self.last_output_dir = None
-        self._set_table_pairs(self.candidate_table, ())
+        self._clear_candidate_products()
         self._reset_progress()
         self._append_log('表单配置已变更，已忽略过期任务结果')
         self._refresh_buttons()
@@ -713,7 +718,7 @@ class MainWindow(QMainWindow):
         self.form_revision += 1
         self.precheck_passed = False
         self.last_output_dir = None
-        self.candidate_table.setRowCount(0)
+        self._clear_candidate_products()
         self.stage_label.setText('-')
         self.summary_label.setText('尚未运行')
         self._reset_progress()
@@ -750,6 +755,32 @@ class MainWindow(QMainWindow):
             if code or name:
                 pairs.append((code, name))
         return tuple(pairs)
+
+    def _clear_candidate_products(self) -> None:
+        previous_block_state = self.candidate_search_edit.blockSignals(True)
+        try:
+            self.candidate_search_edit.clear()
+        finally:
+            self.candidate_search_edit.blockSignals(previous_block_state)
+        self.candidate_products_all = ()
+        self.candidate_table.setRowCount(0)
+
+    def _set_candidate_products(self, pairs: ProductOrder) -> None:
+        self.candidate_products_all = tuple((str(code), str(name)) for code, name in pairs)
+        self._refresh_candidate_table()
+
+    def _refresh_candidate_table(self, *_args: object) -> None:
+        keyword = self.candidate_search_edit.text().strip().casefold()
+        if not keyword:
+            self._set_table_pairs(self.candidate_table, self.candidate_products_all)
+            return
+
+        visible_pairs = tuple(
+            (code, name)
+            for code, name in self.candidate_products_all
+            if keyword in code.casefold() or keyword in name.casefold()
+        )
+        self._set_table_pairs(self.candidate_table, visible_pairs)
 
     def _add_blank_whitelist_row(self) -> None:
         row = self.whitelist_table.rowCount()
@@ -845,7 +876,7 @@ class MainWindow(QMainWindow):
         self.input_edit.clear()
         self.month_start_edit.clear()
         self.month_end_edit.clear()
-        self.candidate_table.setRowCount(0)
+        self._clear_candidate_products()
         self.precheck_passed = False
         self.last_output_dir = None
         self.stage_label.setText('-')

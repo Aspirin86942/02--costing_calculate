@@ -231,6 +231,84 @@ def test_form_changes_clear_stale_candidates(main_window: MainWindow) -> None:
     assert main_window.candidate_table.rowCount() == 0
 
 
+def test_candidate_search_filters_by_product_code_contains(main_window: MainWindow) -> None:
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        candidate_products=(
+            ('DP.C.P0197AA', '动力线'),
+            ('DP.C.P0201AA', '动力线'),
+            ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ),
+    )
+    main_window._on_worker_finished(result, task_kind='scan')
+
+    main_window.candidate_search_edit.setText('P0197')
+
+    assert main_window._table_pairs(main_window.candidate_table) == (('DP.C.P0197AA', '动力线'),)
+
+
+def test_candidate_search_filters_by_product_name_and_clear_restores_all(main_window: MainWindow) -> None:
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        candidate_products=(
+            ('DP.C.P0197AA', '动力线'),
+            ('DP.C.P0246AA', '动力抱闸线'),
+            ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ),
+    )
+    main_window._on_worker_finished(result, task_kind='scan')
+
+    main_window.candidate_search_edit.setText('抱闸')
+
+    assert main_window._table_pairs(main_window.candidate_table) == (('DP.C.P0246AA', '动力抱闸线'),)
+
+    main_window.candidate_search_edit.clear()
+
+    assert main_window._table_pairs(main_window.candidate_table) == (
+        ('DP.C.P0197AA', '动力线'),
+        ('DP.C.P0246AA', '动力抱闸线'),
+        ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+    )
+
+
+def test_add_selected_candidates_uses_current_filtered_candidate_rows(main_window: MainWindow) -> None:
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        candidate_products=(
+            ('DP.C.P0197AA', '动力线'),
+            ('DP.C.P0201AA', '动力线'),
+            ('GB_C.D.B0040AA', 'BMS-750W驱动器'),
+        ),
+    )
+    main_window._on_worker_finished(result, task_kind='scan')
+    main_window._set_table_pairs(main_window.whitelist_table, ())
+    main_window.candidate_search_edit.setText('B0040')
+    main_window.candidate_table.selectRow(0)
+
+    main_window._add_selected_candidates()
+
+    assert main_window._table_pairs(main_window.whitelist_table) == (('GB_C.D.B0040AA', 'BMS-750W驱动器'),)
+
+
+def test_candidate_search_state_clears_when_form_changes(main_window: MainWindow) -> None:
+    result = CostingRunResult(
+        status=ServiceStatus.SUCCEEDED,
+        message='预检通过',
+        candidate_products=(('DP.C.P0197AA', '动力线'),),
+    )
+    main_window._on_worker_finished(result, task_kind='scan')
+    main_window.candidate_search_edit.setText('P0197')
+
+    main_window.month_start_edit.setText('2025-01')
+
+    assert main_window.candidate_search_edit.text() == ''
+    assert main_window.candidate_products_all == ()
+    assert main_window.candidate_table.rowCount() == 0
+
+
 def test_save_whitelist_logs_oserror_without_raising(
     main_window: MainWindow,
     monkeypatch: pytest.MonkeyPatch,

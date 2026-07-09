@@ -65,28 +65,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 安装
-conda run -n costing311 python -m pip install -e .
+uv sync
 
 # 安装开发依赖
-conda run -n costing311 python -m pip install -e '.[dev]'
+uv sync --extra dev
 
 # 运行 ETL
-conda run -n costing311 python main.py gb
-conda run -n costing311 python main.py sk
+uv run python main.py gb
+uv run python main.py sk
 
 # 预检 + benchmark（只跑分析链路，不落 workbook 或任何外部摘要文件）
-conda run -n costing311 python main.py gb --check-only --benchmark
-conda run -n costing311 python main.py sk --check-only --benchmark
+uv run python main.py gb --check-only --benchmark
+uv run python main.py sk --check-only --benchmark
 
-# 测试 (需使用 conda costing311 环境)
-conda run -n costing311 python -m pytest tests -q
+# 测试（使用项目 uv/.venv 环境）
+uv run python -m pytest tests -q
 
 # 单测
-conda run -n costing311 python -m pytest tests/ -k test_name -q
+uv run python -m pytest tests/ -k test_name -q
 
 # 代码检查/格式化
-conda run -n costing311 python -m ruff check src tests
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m ruff check src tests
+uv run python -m ruff format src tests --check
 ```
 
 ## 测试契约 (Test Contracts)

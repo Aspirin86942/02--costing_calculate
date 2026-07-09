@@ -3,7 +3,7 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Rust CLI 主实现仓库，保留 Python 作为迁移期 oracle/legacy 路径：
-- `rust/`: Cargo workspace，包含 `costing-cli`、`costing-core` 和 `costing-xlsx` crates
+- `rust/`: Cargo workspace，包含 `costing-cli`、`costing-core`、`costing-xlsx` 和 `costing-oracle-tests` crates
 - `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
 - `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
 - `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）

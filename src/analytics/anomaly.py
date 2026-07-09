@@ -286,6 +286,12 @@ def build_anomaly_sheet(
 ) -> FlatSheet:
     if standalone_metas is None:
         standalone_metas = resolve_standalone_cost_item_metas(DEFAULT_STANDALONE_COST_ITEMS)
+    anomaly_df = build_anomaly_internal_frame(work_order_df)
+    return build_work_order_output_sheet(anomaly_df, standalone_metas)
+
+
+def build_anomaly_internal_frame(work_order_df: pd.DataFrame) -> pd.DataFrame:
+    """构建完整工单异常计算台账，内部保留 log、score、标记与 MAD 字段。"""
     anomaly_df = work_order_df.copy()
     reason_series = pd.Series('', index=anomaly_df.index, dtype='object')
 
@@ -424,6 +430,14 @@ def build_anomaly_sheet(
 
     anomaly_df['异常明细解释'] = _build_anomaly_detail_explanations(anomaly_df)
 
+    return anomaly_df
+
+
+def build_work_order_output_sheet(
+    anomaly_df: pd.DataFrame,
+    standalone_metas: tuple[StandaloneCostItemMeta, ...],
+) -> FlatSheet:
+    """把内部异常台账转换为最终 Excel 可见列。"""
     rename_map = {
         'period_display': '月份',
         'cost_center': '成本中心',
@@ -453,24 +467,6 @@ def build_anomaly_sheet(
         'moh_consumables_unit_cost': '制造费用_机物料及低耗单位完工成本',
         'moh_depreciation_unit_cost': '制造费用_折旧单位完工成本',
         'moh_utilities_unit_cost': '制造费用_水电费单位完工成本',
-        'log_total_unit_cost': 'log_总单位完工成本',
-        'log_dm_unit_cost': 'log_直接材料单位完工成本',
-        'log_dl_unit_cost': 'log_直接人工单位完工成本',
-        'log_moh_unit_cost': 'log_制造费用单位完工成本',
-        'log_moh_other_unit_cost': 'log_制造费用_其他单位完工成本',
-        'log_moh_labor_unit_cost': 'log_制造费用_人工单位完工成本',
-        'log_moh_consumables_unit_cost': 'log_制造费用_机物料及低耗单位完工成本',
-        'log_moh_depreciation_unit_cost': 'log_制造费用_折旧单位完工成本',
-        'log_moh_utilities_unit_cost': 'log_制造费用_水电费单位完工成本',
-        'modified_z_total_unit_cost': 'Modified Z-score_总单位完工成本',
-        'modified_z_dm_unit_cost': 'Modified Z-score_直接材料',
-        'modified_z_dl_unit_cost': 'Modified Z-score_直接人工',
-        'modified_z_moh_unit_cost': 'Modified Z-score_制造费用',
-        'modified_z_moh_other_unit_cost': 'Modified Z-score_制造费用_其他',
-        'modified_z_moh_labor_unit_cost': 'Modified Z-score_制造费用_人工',
-        'modified_z_moh_consumables_unit_cost': 'Modified Z-score_制造费用_机物料及低耗',
-        'modified_z_moh_depreciation_unit_cost': 'Modified Z-score_制造费用_折旧',
-        'modified_z_moh_utilities_unit_cost': 'Modified Z-score_制造费用_水电费',
     }
     output_columns = WORK_ORDER_OUTPUT_COLUMNS.copy()
     output_column_types = WORK_ORDER_COLUMN_TYPES.copy()

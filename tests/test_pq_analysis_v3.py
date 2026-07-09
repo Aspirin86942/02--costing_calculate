@@ -1487,7 +1487,8 @@ def test_work_order_anomaly_sheet_hides_algorithm_columns_but_keeps_detail_expla
         ]
     )
 
-    anomaly_df = build_report_artifacts(df_detail, df_qty).work_order_sheet.data
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    anomaly_df = artifacts.work_order_sheet.data
     suspicious_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-003'].iloc[0]
 
     for column_name in REMOVED_WORK_ORDER_ALGORITHM_COLUMNS:
@@ -1512,6 +1513,118 @@ def test_work_order_anomaly_sheet_hides_algorithm_columns_but_keeps_detail_expla
         '有效MAD=',
     ):
         assert token in explanation
+
+
+def test_work_order_anomaly_internal_frame_keeps_algorithm_fields() -> None:
+    """最终 Excel 隐藏算法列，但内部异常计算台账必须继续保留这些字段。"""
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 110,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 500,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 110,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 500,
+            },
+        ]
+    )
+
+    artifacts = build_report_artifacts(df_detail, df_qty)
+    assert artifacts.fact_bundle is not None
+
+    work_order_fact = pd.DataFrame(artifacts.fact_bundle.work_order_fact.to_dicts())
+    internal_frame = anomaly_module.build_anomaly_internal_frame(work_order_fact)
+
+    for metric_key, _display_name, flag_column, _source_label in anomaly_module.ANOMALY_METRICS:
+        for column_name in (
+            f'log_{metric_key}',
+            f'modified_z_{metric_key}',
+            flag_column,
+            f'audit_pool_sample_size_{metric_key}',
+            f'audit_pool_center_log_{metric_key}',
+            f'audit_pool_raw_mad_{metric_key}',
+            f'audit_pool_effective_mad_{metric_key}',
+            f'audit_relative_deviation_{metric_key}',
+        ):
+            assert column_name in internal_frame.columns
+
+    suspicious_row = internal_frame.loc[internal_frame['order_no'] == 'WO-003'].iloc[0]
+    assert suspicious_row['总成本异常标记'] == '高度可疑'
+    assert suspicious_row['异常等级'] == '高度可疑'
+    assert suspicious_row['异常主要来源'] == '总成本异常'
+    assert '当前log=' in suspicious_row['异常明细解释']
 
 
 def test_work_order_anomaly_detail_explanation_lists_multiple_flags_in_metric_order() -> None:

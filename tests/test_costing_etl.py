@@ -679,9 +679,19 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
         ).to_dicts()
     )
 
-    assert work_order_model.write_mode is None
-    assert work_order_model.style_profile is None
-    assert work_order_model.source_frame is None
+    assert work_order_model.write_mode == 'dataframe_fast'
+    assert work_order_model.style_profile == 'lightweight_flat'
+    assert isinstance(work_order_model.source_frame, pl.DataFrame)
+    assert work_order_model.conditional_formats == ()
+    assert work_order_model.freeze_panes == 'A2'
+    assert work_order_model.auto_filter is True
+    assert (
+        work_order_model.source_frame.to_dicts()
+        == pl.DataFrame(
+            work_order_sheet.data.to_dict(orient='list'),
+            strict=False,
+        ).to_dicts()
+    )
     assert product_anomaly_model.write_mode is None
     assert product_anomaly_model.style_profile is None
     assert product_anomaly_model.source_frame is None
@@ -976,6 +986,34 @@ def test_write_workbook_from_models_routes_hot_sheet_models_to_fast_tabular_writ
 
     assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == ['成本计算单总表']
     assert [call.args[1].sheet_name for call in generic_mock.call_args_list] == ['成本分析工单维度']
+
+
+def test_write_workbook_from_models_routes_built_work_order_model_to_fast_tabular_writer(tmp_path: Path) -> None:
+    output_path = tmp_path / 'built_work_order_model_route_fast.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        qty_sheet_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame([{'月份': '2025年01期', '总单位完工成本': 10.0}]),
+            column_types={'月份': 'text', '总单位完工成本': 'price'},
+        ),
+        product_anomaly_sections=[],
+    )
+
+    with patch.object(
+        writer.sheet_writer,
+        'write_sheet_model_as_lightweight_table',
+        wraps=writer.sheet_writer.write_sheet_model_as_lightweight_table,
+    ) as fast_tabular_mock:
+        writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    assert [call.args[1].sheet_name for call in fast_tabular_mock.call_args_list] == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+    ]
 
 
 def test_sheet_model_fast_tabular_writer_lightweight_data_cells(tmp_path: Path) -> None:

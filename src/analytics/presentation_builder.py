@@ -7,7 +7,6 @@ from collections.abc import Mapping
 import pandas as pd
 import polars as pl
 
-from src.analytics.anomaly import build_work_order_conditional_formats
 from src.analytics.contracts import (
     ConditionalFormatRule,
     FactBundle,
@@ -132,7 +131,6 @@ def build_sheet_models(
     work_order_frame = _to_polars_frame(work_order_sheet.data)
     work_order_column_types = dict(work_order_sheet.column_types)
     work_order_number_formats = _build_number_formats(work_order_column_types)
-    work_order_conditional_formats = build_work_order_conditional_formats(list(work_order_frame.columns))
 
     (
         product_anomaly_frame,
@@ -166,7 +164,9 @@ def build_sheet_models(
         frame=work_order_frame,
         column_types=work_order_column_types,
         number_formats=work_order_number_formats,
-        conditional_formats=work_order_conditional_formats,
+        write_mode='dataframe_fast',
+        style_profile='lightweight_flat',
+        source_frame=work_order_frame,
     )
     product_anomaly_model = dataframe_to_sheet_model(
         sheet_name='成本分析产品维度',

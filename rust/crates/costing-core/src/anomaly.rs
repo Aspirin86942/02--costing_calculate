@@ -769,7 +769,9 @@ mod tests {
 
     fn bundle(rows: Vec<TableRow>) -> FactBundle {
         FactBundle {
+            detail_columns: Vec::new(),
             detail_fact: vec![],
+            qty_columns: Vec::new(),
             qty_fact: vec![],
             work_order_fact: rows,
             error_issues: Vec::<ErrorIssue>::new(),

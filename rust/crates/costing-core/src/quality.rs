@@ -28,9 +28,11 @@ mod tests {
     #[test]
     fn quality_metrics_report_fact_row_counts() {
         let bundle = FactBundle {
+            detail_columns: Vec::new(),
             detail_fact: vec![TableRow {
                 values: BTreeMap::new(),
             }],
+            qty_columns: Vec::new(),
             qty_fact: vec![
                 TableRow {
                     values: BTreeMap::new(),

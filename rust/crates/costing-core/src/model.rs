@@ -46,7 +46,9 @@ pub struct NormalizedCostFrame {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SplitResult {
+    pub detail_columns: Vec<String>,
     pub detail_rows: Vec<TableRow>,
+    pub qty_columns: Vec<String>,
     pub qty_rows: Vec<TableRow>,
 }
 
@@ -61,7 +63,9 @@ pub struct ErrorIssue {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FactBundle {
+    pub detail_columns: Vec<String>,
     pub detail_fact: Vec<TableRow>,
+    pub qty_columns: Vec<String>,
     pub qty_fact: Vec<TableRow>,
     pub work_order_fact: Vec<TableRow>,
     pub error_issues: Vec<ErrorIssue>,

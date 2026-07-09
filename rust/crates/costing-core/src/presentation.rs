@@ -2,22 +2,52 @@ use std::collections::BTreeMap;
 
 use crate::anomaly::build_work_order_anomaly_sheet;
 use crate::error::CostingError;
-use crate::fact::build_qty_sheet_rows;
+use crate::fact::{build_qty_sheet_rows, qty_sheet_columns};
 use crate::model::{CellValue, FactBundle, SheetModel, StageTimings, TableRow, WorkbookPayload};
 use crate::pipeline::PipelineConfig;
 use crate::quality::build_quality_metrics;
 
 const PRODUCT_DIMENSION_SHEET: &str = "成本分析产品维度";
+const DETAIL_TWO_DECIMAL_COLUMNS: &[&str] = &["本期完工单位成本", "本期完工金额"];
+const QTY_TWO_DECIMAL_COLUMNS: &[&str] = &[
+    "本期完工单位成本",
+    "本期完工金额",
+    "本期完工直接材料合计完工金额",
+    "本期完工直接人工合计完工金额",
+    "本期完工制造费用合计完工金额",
+    "本期完工制造费用_其他合计完工金额",
+    "本期完工制造费用_人工合计完工金额",
+    "本期完工制造费用_机物料及低耗合计完工金额",
+    "本期完工制造费用_折旧合计完工金额",
+    "本期完工制造费用_水电费合计完工金额",
+    "本期完工委外加工费合计完工金额",
+    "直接材料单位完工金额",
+    "直接人工单位完工金额",
+    "制造费用单位完工金额",
+    "制造费用_其他单位完工成本",
+    "制造费用_人工单位完工成本",
+    "制造费用_机物料及低耗单位完工成本",
+    "制造费用_折旧单位完工成本",
+    "制造费用_水电费单位完工成本",
+    "委外加工费单位完工成本",
+];
 
 pub fn build_workbook_payload(
     bundle: FactBundle,
     config: &PipelineConfig,
     timings: StageTimings,
 ) -> Result<WorkbookPayload, CostingError> {
-    let detail_sheet = build_flat_sheet("成本计算单总表", bundle.detail_fact.clone());
+    let detail_sheet = build_flat_sheet(
+        "成本计算单总表",
+        bundle.detail_columns.clone(),
+        bundle.detail_fact.clone(),
+        detail_number_format_columns,
+    );
     let qty_sheet = build_flat_sheet(
         "成本计算单数量聚合维度",
+        qty_sheet_columns(&bundle.qty_columns, config),
         build_qty_sheet_rows(&bundle, config),
+        qty_number_format_columns,
     );
     let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config);
     let sheets = vec![detail_sheet, qty_sheet, work_order_sheet];
@@ -31,11 +61,12 @@ pub fn build_workbook_payload(
     })
 }
 
-fn build_flat_sheet(sheet_name: &str, rows: Vec<TableRow>) -> SheetModel {
-    let columns = rows
-        .first()
-        .map(|row| row.values.keys().cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
+fn build_flat_sheet(
+    sheet_name: &str,
+    columns: Vec<String>,
+    rows: Vec<TableRow>,
+    number_format_columns: fn(&[String]) -> Vec<String>,
+) -> SheetModel {
     let sheet_rows = rows
         .iter()
         .map(|row| {
@@ -48,7 +79,7 @@ fn build_flat_sheet(sheet_name: &str, rows: Vec<TableRow>) -> SheetModel {
     SheetModel {
         sheet_name: sheet_name.to_string(),
         column_types: build_column_types(&columns),
-        number_formats: build_number_formats(&columns),
+        number_formats: build_number_formats(&number_format_columns(&columns)),
         columns,
         rows: sheet_rows,
         freeze_panes: Some("A2".to_string()),
@@ -60,32 +91,34 @@ fn build_flat_sheet(sheet_name: &str, rows: Vec<TableRow>) -> SheetModel {
 fn build_column_types(columns: &[String]) -> BTreeMap<String, String> {
     columns
         .iter()
-        .map(|column| {
-            let column_type = if column.contains("单位成本") || column.contains("单位完工")
-            {
-                "price"
-            } else if column.contains("数量") {
-                "qty"
-            } else if column.contains("金额") || column.contains("成本") {
-                "amount"
-            } else {
-                "text"
-            };
-            (column.clone(), column_type.to_string())
-        })
+        .map(|column| (column.clone(), "text".to_string()))
         .collect()
 }
 
 fn build_number_formats(columns: &[String]) -> BTreeMap<String, String> {
-    build_column_types(columns)
-        .into_iter()
-        .filter_map(|(column, column_type)| {
-            if matches!(column_type.as_str(), "amount" | "price" | "qty") {
-                Some((column, "#,##0.00".to_string()))
-            } else {
-                None
-            }
+    columns
+        .iter()
+        .map(|column| (column.clone(), "#,##0.00".to_string()))
+        .collect()
+}
+
+fn detail_number_format_columns(columns: &[String]) -> Vec<String> {
+    columns
+        .iter()
+        .filter(|column| DETAIL_TWO_DECIMAL_COLUMNS.contains(&column.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn qty_number_format_columns(columns: &[String]) -> Vec<String> {
+    columns
+        .iter()
+        .filter(|column| {
+            QTY_TWO_DECIMAL_COLUMNS.contains(&column.as_str())
+                || ((column.starts_with("本期完工") && column.ends_with("合计完工金额"))
+                    || column.ends_with("单位完工成本"))
         })
+        .cloned()
         .collect()
 }
 
@@ -123,10 +156,25 @@ mod tests {
 
     fn bundle() -> FactBundle {
         FactBundle {
+            detail_columns: vec![
+                "月份".to_string(),
+                "成本中心名称".to_string(),
+                "成本项目名称".to_string(),
+                "本期完工金额".to_string(),
+            ],
             detail_fact: vec![row(&[
                 ("月份", CellValue::Text("2025年01期".to_string())),
+                ("成本中心名称", CellValue::Text("成型车间".to_string())),
+                ("成本项目名称", CellValue::Text("直接材料".to_string())),
                 ("本期完工金额", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
+            qty_columns: vec![
+                "月份".to_string(),
+                "成本中心名称".to_string(),
+                "成本项目名称".to_string(),
+                "本期完工数量".to_string(),
+                "本期完工金额".to_string(),
+            ],
             qty_fact: vec![row(&[
                 ("月份", CellValue::Text("2025年01期".to_string())),
                 ("产品编码", CellValue::Text("P1".to_string())),
@@ -161,6 +209,27 @@ mod tests {
                 reason: "missing".to_string(),
                 action: "filled zero".to_string(),
             }],
+        }
+    }
+
+    fn empty_bundle_with_schema() -> FactBundle {
+        FactBundle {
+            detail_columns: vec![
+                "月份".to_string(),
+                "成本中心名称".to_string(),
+                "成本项目名称".to_string(),
+                "本期完工金额".to_string(),
+            ],
+            detail_fact: Vec::new(),
+            qty_columns: vec![
+                "月份".to_string(),
+                "成本中心名称".to_string(),
+                "本期完工数量".to_string(),
+                "本期完工金额".to_string(),
+            ],
+            qty_fact: Vec::new(),
+            work_order_fact: Vec::new(),
+            error_issues: Vec::new(),
         }
     }
 
@@ -204,5 +273,60 @@ mod tests {
         assert_eq!(payload.error_log_count, 1);
         assert_eq!(payload.quality_metrics.len(), 2);
         assert_eq!(payload.stage_timings.stages.get("reader_rows"), Some(&1.0));
+    }
+
+    #[test]
+    fn empty_flat_sheets_keep_source_schema() {
+        let payload = build_workbook_payload(
+            empty_bundle_with_schema(),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+        )
+        .unwrap();
+
+        let detail = &payload.sheet_models[0];
+        assert_eq!(
+            detail.columns,
+            vec!["月份", "成本中心名称", "成本项目名称", "本期完工金额"]
+        );
+        assert!(detail.rows.is_empty());
+
+        let qty = &payload.sheet_models[1];
+        assert_eq!(
+            &qty.columns[..4],
+            ["月份", "成本中心名称", "本期完工数量", "本期完工金额"]
+        );
+        assert!(qty
+            .columns
+            .contains(&"本期完工直接材料合计完工金额".to_string()));
+        assert!(qty.rows.is_empty());
+    }
+
+    #[test]
+    fn flat_sheet_metadata_matches_default_python_contract() {
+        let payload = build_workbook_payload(
+            bundle(),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+        )
+        .unwrap();
+        let detail = &payload.sheet_models[0];
+        let qty = &payload.sheet_models[1];
+
+        assert_eq!(detail.column_types["成本中心名称"], "text");
+        assert_eq!(detail.column_types["成本项目名称"], "text");
+        assert_eq!(detail.column_types["本期完工金额"], "text");
+        assert!(!detail.number_formats.contains_key("成本中心名称"));
+        assert!(!detail.number_formats.contains_key("成本项目名称"));
+        assert_eq!(detail.number_formats["本期完工金额"], "#,##0.00");
+
+        assert_eq!(qty.column_types["成本中心名称"], "text");
+        assert_eq!(qty.column_types["本期完工数量"], "text");
+        assert!(!qty.number_formats.contains_key("成本中心名称"));
+        assert_eq!(qty.number_formats["本期完工金额"], "#,##0.00");
+        assert_eq!(
+            qty.number_formats["本期完工直接材料合计完工金额"],
+            "#,##0.00"
+        );
     }
 }

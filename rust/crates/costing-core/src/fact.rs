@@ -181,11 +181,46 @@ pub fn build_fact_bundle(
     }
 
     Ok(FactBundle {
+        detail_columns: split.detail_columns,
         detail_fact: split.detail_rows,
+        qty_columns: split.qty_columns,
         qty_fact,
         work_order_fact,
         error_issues,
     })
+}
+
+pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> Vec<String> {
+    let mut columns = source_columns.to_vec();
+    append_column(&mut columns, QTY_DM_AMOUNT);
+    append_column(&mut columns, QTY_DL_AMOUNT);
+    append_column(&mut columns, QTY_MOH_AMOUNT);
+    append_column(&mut columns, QTY_MOH_OTHER_AMOUNT);
+    append_column(&mut columns, QTY_MOH_LABOR_AMOUNT);
+    append_column(&mut columns, QTY_MOH_CONSUMABLES_AMOUNT);
+    append_column(&mut columns, QTY_MOH_DEPRECIATION_AMOUNT);
+    append_column(&mut columns, QTY_MOH_UTILITIES_AMOUNT);
+    append_column(&mut columns, QTY_DM_UNIT_COST);
+    append_column(&mut columns, QTY_DL_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_UNIT_COST);
+    for item in config.standalone_cost_items {
+        append_column(&mut columns, &format!("本期完工{item}合计完工金额"));
+        append_column(&mut columns, standalone_unit_cost_column(item));
+    }
+    append_column(&mut columns, QTY_MOH_MATCH);
+    append_column(
+        &mut columns,
+        &total_match_column(config.standalone_cost_items),
+    );
+    append_column(&mut columns, QTY_CHECK_STATUS);
+    append_column(&mut columns, QTY_CHECK_REASON);
+    columns
+}
+
+fn append_column(columns: &mut Vec<String>, column: &str) {
+    if !columns.iter().any(|value| value == column) {
+        columns.push(column.to_string());
+    }
 }
 
 pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec<TableRow> {
@@ -486,6 +521,28 @@ mod tests {
         }
     }
 
+    fn split_result(detail_rows: Vec<TableRow>, qty_rows: Vec<TableRow>) -> SplitResult {
+        let columns = [
+            "月份",
+            "产品编码",
+            "产品名称",
+            "工单编号",
+            "工单行号",
+            "成本项目名称",
+            "本期完工数量",
+            "本期完工金额",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        SplitResult {
+            detail_columns: columns.clone(),
+            detail_rows,
+            qty_columns: columns,
+            qty_rows,
+        }
+    }
+
     #[test]
     fn gb_quantity_sheet_includes_outsource_total_match() {
         let detail = vec![
@@ -518,14 +575,7 @@ mod tests {
             ("本期完工金额", CellValue::Decimal(Decimal::new(105, 0))),
         ])];
         let config = PipelineConfig::for_name(PipelineName::Gb);
-        let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
-            &config,
-        )
-        .unwrap();
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
         assert_eq!(
             sheet[0].values["本期完工委外加工费合计完工金额"],
@@ -558,14 +608,7 @@ mod tests {
             ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
         ])];
         let config = PipelineConfig::for_name(PipelineName::Sk);
-        let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
-            &config,
-        )
-        .unwrap();
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
         assert_eq!(
             sheet[0].values["本期完工软件费用合计完工金额"],
@@ -606,10 +649,7 @@ mod tests {
         ];
 
         let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
+            split_result(detail, qty),
             &PipelineConfig::for_name(PipelineName::Gb),
         )
         .unwrap();
@@ -656,14 +696,7 @@ mod tests {
             ("本期完工金额", CellValue::Decimal(Decimal::new(99, 0))),
         ])];
         let config = PipelineConfig::for_name(PipelineName::Gb);
-        let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
-            &config,
-        )
-        .unwrap();
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
 
         assert_eq!(
@@ -726,14 +759,7 @@ mod tests {
         ];
         let config = PipelineConfig::for_name(PipelineName::Gb);
 
-        let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
-            &config,
-        )
-        .unwrap();
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
 
         assert_eq!(bundle.qty_fact.len(), 1);
@@ -767,14 +793,7 @@ mod tests {
         ])];
         let config = PipelineConfig::for_name(PipelineName::Gb);
 
-        let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
-            &config,
-        )
-        .unwrap();
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
 
         assert!(bundle
@@ -820,10 +839,7 @@ mod tests {
         ];
 
         let bundle = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
+            split_result(detail, qty),
             &PipelineConfig::for_name(PipelineName::Gb),
         )
         .unwrap();
@@ -861,10 +877,7 @@ mod tests {
         ])];
 
         let error = build_fact_bundle(
-            SplitResult {
-                detail_rows: detail,
-                qty_rows: qty,
-            },
+            split_result(detail, qty),
             &PipelineConfig::for_name(PipelineName::Gb),
         )
         .unwrap_err();

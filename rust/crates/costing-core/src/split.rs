@@ -8,6 +8,7 @@ const ORDER_NUMBER_COLUMN: &str = "工单编号";
 const DIRECT_MATERIAL_NAME: &str = "直接材料";
 
 pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, CostingError> {
+    let source_columns = frame.columns;
     let mut detail_rows = Vec::new();
     let mut qty_rows = Vec::new();
 
@@ -44,7 +45,9 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
     }
 
     Ok(SplitResult {
+        detail_columns: source_columns.clone(),
         detail_rows,
+        qty_columns: source_columns,
         qty_rows,
     })
 }
@@ -127,6 +130,8 @@ mod tests {
 
         assert_eq!(result.qty_rows.len(), 1);
         assert_eq!(result.detail_rows.len(), 2);
+        assert!(result.detail_columns.is_empty());
+        assert!(result.qty_columns.is_empty());
     }
 
     #[test]

@@ -85,10 +85,10 @@ mod tests {
     fn gb_and_sk_configs_match_python_contract() {
         let gb = PipelineConfig::for_name(PipelineName::Gb);
         assert_eq!(gb.standalone_cost_items, ["委外加工费"]);
-        assert_eq!(gb.product_order[0], ("GB_C.D.B0048AA", "BMS-400W驱动器"));
+        assert_eq!(gb.product_order, GB_PRODUCT_ORDER);
 
         let sk = PipelineConfig::for_name(PipelineName::Sk);
         assert_eq!(sk.standalone_cost_items, ["委外加工费", "软件费用"]);
-        assert_eq!(sk.product_order[0], ("DP.C.P0197AA", "动力线"));
+        assert_eq!(sk.product_order, SK_PRODUCT_ORDER);
     }
 }

@@ -79,7 +79,7 @@ uv run python main.py gb --check-only --benchmark
 uv run python main.py sk --check-only --benchmark
 
 # 测试（使用项目 uv/.venv 环境）
-uv run python -m pytest tests -q
+uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
 
 # 单测
 uv run python -m pytest tests/ -k test_name -q

@@ -29,7 +29,7 @@
 - `uv run python main.py sk`: 执行 SK Python legacy/oracle/regression 管线
 - `uv run python main.py gb --check-only --benchmark`: GB Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
 - `uv run python main.py sk --check-only --benchmark`: SK Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `uv run python -m pytest tests -q`: 运行 Python oracle/regression 测试
+- `uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression`: 运行 Python oracle/regression 测试
 - `uv run python -m ruff check src tests`: Python 代码检查
 - `uv run python -m ruff format src tests --check`: Python 代码格式化检查
 

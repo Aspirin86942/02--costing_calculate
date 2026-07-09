@@ -131,7 +131,7 @@ uv sync --extra dev
 uv run python -c "import sys; print(sys.executable)"
 
 # Python oracle/regression
-uv run python -m pytest tests -q
+uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
 
 # Python lint
 uv run python -m ruff check src tests

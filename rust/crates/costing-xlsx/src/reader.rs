@@ -4,6 +4,9 @@ use calamine::{open_workbook_auto, Data, Reader};
 use costing_core::model::{CellValue, RawWorkbook};
 use rust_decimal::Decimal;
 
+const HEADER_ANCHOR: &str = "年期";
+const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编号", "成本项目名称"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum CostingXlsxError {
     #[error("{0}")]
@@ -26,14 +29,20 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
             "workbook must contain two header rows".to_string(),
         ));
     }
-    let max_width = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let header_start = find_header_start(&rows);
+    let max_width = rows
+        .iter()
+        .skip(header_start)
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0);
     let header_rows = [
-        normalize_header_row(rows.first().expect("checked len"), max_width),
-        normalize_header_row(rows.get(1).expect("checked len"), max_width),
+        normalize_header_row(rows.get(header_start).expect("checked len"), max_width),
+        normalize_header_row(rows.get(header_start + 1).expect("checked len"), max_width),
     ];
     let data_rows = rows
         .iter()
-        .skip(2)
+        .skip(header_start + 2)
         .map(|row| normalize_data_row(row, max_width))
         .collect();
     Ok(RawWorkbook {
@@ -41,6 +50,24 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
         header_rows,
         rows: data_rows,
     })
+}
+
+fn find_header_start(rows: &[Vec<Data>]) -> usize {
+    rows.windows(2)
+        .position(|pair| is_header_pair(&pair[0], &pair[1]))
+        .unwrap_or(0)
+}
+
+fn is_header_pair(top: &[Data], bottom: &[Data]) -> bool {
+    let top_tokens = normalize_header_row(top, top.len());
+    let mut tokens = top_tokens.clone();
+    tokens.extend(normalize_header_row(bottom, bottom.len()));
+
+    let has_anchor = top_tokens.iter().any(|token| token == HEADER_ANCHOR);
+    let has_hint = HEADER_HINTS
+        .iter()
+        .any(|hint| tokens.iter().any(|token| token == hint));
+    has_anchor && has_hint
 }
 
 fn normalize_header_row(row: &[Data], width: usize) -> Vec<String> {
@@ -189,6 +216,36 @@ mod tests {
         assert_eq!(snapshot.column_count, 3);
         assert_eq!(snapshot.headers, vec!["项目", "金额", "日期"]);
         assert_eq!(snapshot.null_counts["日期"], 1);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn skips_metadata_rows_before_header_pair() {
+        let path = unique_temp_path("metadata-header");
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+        worksheet.set_name("成本计算单").unwrap();
+        worksheet
+            .write_string(0, 0, "核算体系:财务会计核算体系")
+            .unwrap();
+        worksheet.write_string(1, 0, "币别:人民币").unwrap();
+        worksheet.write_string(2, 0, "年期").unwrap();
+        worksheet.write_string(2, 1, "成本中心名称").unwrap();
+        worksheet.write_string(2, 2, "产品编码").unwrap();
+        worksheet.write_string(3, 0, "年期").unwrap();
+        worksheet.write_string(3, 1, "成本中心名称").unwrap();
+        worksheet.write_string(3, 2, "产品编码").unwrap();
+        worksheet.write_string(4, 0, "2025年07期").unwrap();
+        worksheet.write_string(4, 1, "集成车间").unwrap();
+        worksheet.write_string(4, 2, "GB_C.D.B0048AA").unwrap();
+        workbook.save(&path).unwrap();
+
+        let raw = read_raw_workbook(&path).unwrap();
+
+        assert_eq!(raw.header_rows[0][0], "年期");
+        assert_eq!(raw.header_rows[1][2], "产品编码");
+        assert_eq!(raw.rows.len(), 1);
+        assert_eq!(raw.rows[0][0], CellValue::Text("2025年07期".to_string()));
         let _ = std::fs::remove_file(path);
     }
 }

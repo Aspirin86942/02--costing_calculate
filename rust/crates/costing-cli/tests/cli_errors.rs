@@ -5,7 +5,12 @@ use std::process::Command;
 fn cli_failure_json_has_stable_fields() {
     let binary_path = locate_costing_binary();
     let output = Command::new(&binary_path)
-        .args(["gb", "--input", "does-not-exist-costing-cli-test.xlsx", "--check-only"])
+        .args([
+            "gb",
+            "--input",
+            "does-not-exist-costing-cli-test.xlsx",
+            "--check-only",
+        ])
         .output()
         .expect("run costing-calculate binary");
     assert!(!output.status.success());

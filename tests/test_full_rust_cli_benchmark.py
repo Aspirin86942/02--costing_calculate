@@ -35,6 +35,13 @@ def test_classify_verdict_requires_validation_and_no_regression() -> None:
     assert classify_verdict(True, 10.0, 10.1) == 'PERFORMANCE_REGRESSION'
 
 
+def test_classify_verdict_preserves_earliest_failure_layer() -> None:
+    assert classify_verdict(False, 10.0, 9.0, ['reader snapshot mismatch: row 1']) == 'READER_MISMATCH'
+    assert classify_verdict(False, 10.0, 9.0, ['value mismatch 成本计算单数量聚合维度!2,1']) == 'ETL_MISMATCH'
+    assert classify_verdict(False, 10.0, 9.0, ['value mismatch 成本分析工单维度!2,35']) == 'ANALYSIS_MISMATCH'
+    assert classify_verdict(False, 10.0, 9.0, ['freeze panes mismatch 成本计算单总表']) == 'WORKBOOK_MISMATCH'
+
+
 @pytest.mark.skipif(_first_sample('COSTING_GB_SAMPLE', ('data/raw/gb/*.xlsx',)) is None, reason='GB raw sample missing')
 def test_gb_rust_benchmark_validated(tmp_path: Path) -> None:
     input_path = _first_sample('COSTING_GB_SAMPLE', ('data/raw/gb/*.xlsx',))

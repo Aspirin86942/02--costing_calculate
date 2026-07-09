@@ -22,6 +22,7 @@ def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, 
     python_seconds: list[float] = []
     rust_seconds: list[float] = []
     validation_passed = True
+    validation_errors: list[str] = []
     rust_executable = build_rust_cli_release()
 
     for idx in range(repeats):
@@ -37,17 +38,42 @@ def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, 
         rust_seconds.append(time.perf_counter() - start)
 
         report = compare_workbooks(python_output, rust_output)
+        if not report['passed'] and not validation_errors:
+            validation_errors = [str(error) for error in report['errors']]
         validation_passed = validation_passed and bool(report['passed'])
 
     python_median = statistics.median(python_seconds)
     rust_median = statistics.median(rust_seconds)
-    verdict = classify_verdict(validation_passed, python_median, rust_median)
+    verdict = classify_verdict(validation_passed, python_median, rust_median, validation_errors)
     return BenchmarkResult(pipeline, python_median, rust_median, validation_passed, verdict)
 
 
-def classify_verdict(validation_passed: bool, python_median: float, rust_median: float) -> str:
+def classify_verdict(
+    validation_passed: bool,
+    python_median: float,
+    rust_median: float,
+    validation_errors: list[str] | tuple[str, ...] | None = None,
+) -> str:
     if not validation_passed:
-        return 'WORKBOOK_MISMATCH'
+        return classify_validation_errors(validation_errors or [])
     if rust_median > python_median:
         return 'PERFORMANCE_REGRESSION'
     return 'VALIDATED'
+
+
+def classify_validation_errors(errors: list[str] | tuple[str, ...]) -> str:
+    for error in errors:
+        lowered = error.lower()
+        if 'reader snapshot' in lowered or 'reader mismatch' in lowered:
+            return 'READER_MISMATCH'
+        if error.startswith('value mismatch 成本分析工单维度') or 'anomaly mismatch' in lowered:
+            return 'ANALYSIS_MISMATCH'
+        if (
+            error.startswith('value mismatch 成本计算单总表')
+            or error.startswith('value mismatch 成本计算单数量聚合维度')
+            or 'normalized row mismatch' in lowered
+            or 'fact mismatch' in lowered
+            or 'qty mismatch' in lowered
+        ):
+            return 'ETL_MISMATCH'
+    return 'WORKBOOK_MISMATCH'

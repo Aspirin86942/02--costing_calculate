@@ -362,12 +362,13 @@ fn normalize_period_key(value: &CellValue) -> Option<String> {
 
 fn normalize_period_key_from_text(value: &str) -> Option<String> {
     let digits: String = value.chars().filter(|ch| ch.is_ascii_digit()).collect();
-    if digits.len() < 6 {
+    if digits.len() < 5 {
         return None;
     }
 
     let year = &digits[0..4];
-    let month: u32 = digits[4..6].parse().ok()?;
+    let month_end = digits.len().min(6);
+    let month: u32 = digits[4..month_end].parse().ok()?;
     if !(1..=12).contains(&month) {
         return None;
     }
@@ -624,6 +625,29 @@ mod tests {
         assert_eq!(
             normalized.rows[0].values["月份"],
             CellValue::Text("2025年01期".to_string())
+        );
+    }
+
+    #[test]
+    fn zero_pads_single_digit_month_display_like_python() {
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let raw = RawWorkbook {
+            sheet_name: "成本计算单".to_string(),
+            header_rows: [
+                vec!["年期".to_string(), "工单编号".to_string()],
+                vec!["".to_string(), "".to_string()],
+            ],
+            rows: vec![vec![
+                CellValue::Text("2025年7期".to_string()),
+                CellValue::Text("WO-1".to_string()),
+            ]],
+        };
+
+        let normalized = normalize_workbook(raw, &config, None).unwrap();
+
+        assert_eq!(
+            normalized.rows[0].values["月份"],
+            CellValue::Text("2025年07期".to_string())
         );
     }
 

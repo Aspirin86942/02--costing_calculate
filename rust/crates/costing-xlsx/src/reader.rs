@@ -91,11 +91,10 @@ fn normalize_data_row(row: &[Data], width: usize) -> Vec<CellValue> {
         .map(|idx| match row.get(idx).unwrap_or(&Data::Empty) {
             Data::Empty => CellValue::Blank,
             Data::String(value) => {
-                let text = value.trim().to_string();
-                if text.is_empty() {
+                if value.trim().is_empty() {
                     CellValue::Blank
                 } else {
-                    CellValue::Text(text)
+                    CellValue::Text(value.clone())
                 }
             }
             Data::Float(value) => float_cell_value(*value),
@@ -246,6 +245,31 @@ mod tests {
         assert_eq!(raw.header_rows[1][2], "产品编码");
         assert_eq!(raw.rows.len(), 1);
         assert_eq!(raw.rows[0][0], CellValue::Text("2025年07期".to_string()));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preserves_non_blank_string_cell_whitespace() {
+        let path = unique_temp_path("preserve-whitespace");
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+        worksheet.set_name("成本计算单").unwrap();
+        worksheet.write_string(0, 0, "年期").unwrap();
+        worksheet.write_string(0, 1, "产品名称").unwrap();
+        worksheet.write_string(1, 0, "").unwrap();
+        worksheet.write_string(1, 1, "").unwrap();
+        worksheet.write_string(2, 0, "2025年7期").unwrap();
+        worksheet
+            .write_string(2, 1, " PCBA_BMS_SMPS电源小板")
+            .unwrap();
+        workbook.save(&path).unwrap();
+
+        let raw = read_raw_workbook(&path).unwrap();
+
+        assert_eq!(
+            raw.rows[0][1],
+            CellValue::Text(" PCBA_BMS_SMPS电源小板".to_string())
+        );
         let _ = std::fs::remove_file(path);
     }
 }

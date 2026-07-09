@@ -29,6 +29,11 @@ const QTY_MOH_UTILITIES_AMOUNT: &str = "本期完工制造费用_水电费合计
 const QTY_DM_UNIT_COST: &str = "直接材料单位完工金额";
 const QTY_DL_UNIT_COST: &str = "直接人工单位完工金额";
 const QTY_MOH_UNIT_COST: &str = "制造费用单位完工金额";
+const QTY_MOH_OTHER_UNIT_COST: &str = "制造费用_其他单位完工成本";
+const QTY_MOH_LABOR_UNIT_COST: &str = "制造费用_人工单位完工成本";
+const QTY_MOH_CONSUMABLES_UNIT_COST: &str = "制造费用_机物料及低耗单位完工成本";
+const QTY_MOH_DEPRECIATION_UNIT_COST: &str = "制造费用_折旧单位完工成本";
+const QTY_MOH_UTILITIES_UNIT_COST: &str = "制造费用_水电费单位完工成本";
 const QTY_OUTSOURCE_UNIT_COST: &str = "委外加工费单位完工成本";
 const QTY_SOFTWARE_UNIT_COST: &str = "软件费用单位完工成本";
 const QTY_MOH_MATCH: &str = "制造费用明细项合计是否等于制造费用合计";
@@ -242,11 +247,18 @@ pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> 
     append_column(&mut columns, QTY_MOH_CONSUMABLES_AMOUNT);
     append_column(&mut columns, QTY_MOH_DEPRECIATION_AMOUNT);
     append_column(&mut columns, QTY_MOH_UTILITIES_AMOUNT);
+    for item in config.standalone_cost_items {
+        append_column(&mut columns, &format!("本期完工{item}合计完工金额"));
+    }
     append_column(&mut columns, QTY_DM_UNIT_COST);
     append_column(&mut columns, QTY_DL_UNIT_COST);
     append_column(&mut columns, QTY_MOH_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_OTHER_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_LABOR_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_CONSUMABLES_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_DEPRECIATION_UNIT_COST);
+    append_column(&mut columns, QTY_MOH_UTILITIES_UNIT_COST);
     for item in config.standalone_cost_items {
-        append_column(&mut columns, &format!("本期完工{item}合计完工金额"));
         append_column(&mut columns, standalone_unit_cost_column(item));
     }
     append_column(&mut columns, QTY_MOH_MATCH);
@@ -315,6 +327,26 @@ pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec
             values.insert(
                 QTY_MOH_UNIT_COST.to_string(),
                 decimal_or_blank(safe_divide(moh, completed_qty)),
+            );
+            values.insert(
+                QTY_MOH_OTHER_UNIT_COST.to_string(),
+                decimal_or_blank(safe_divide(moh_other, completed_qty)),
+            );
+            values.insert(
+                QTY_MOH_LABOR_UNIT_COST.to_string(),
+                decimal_or_blank(safe_divide(moh_labor, completed_qty)),
+            );
+            values.insert(
+                QTY_MOH_CONSUMABLES_UNIT_COST.to_string(),
+                decimal_or_blank(safe_divide(moh_consumables, completed_qty)),
+            );
+            values.insert(
+                QTY_MOH_DEPRECIATION_UNIT_COST.to_string(),
+                decimal_or_blank(safe_divide(moh_depreciation, completed_qty)),
+            );
+            values.insert(
+                QTY_MOH_UTILITIES_UNIT_COST.to_string(),
+                decimal_or_blank(safe_divide(moh_utilities, completed_qty)),
             );
 
             let mut derived_total = dm + dl + moh;
@@ -755,6 +787,13 @@ mod tests {
         let config = PipelineConfig::for_name(PipelineName::Gb);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let sheet = build_qty_sheet_rows(&bundle, &config);
+        let columns = qty_sheet_columns(&bundle.qty_columns, &config);
+
+        assert!(columns.contains(&"制造费用_人工单位完工成本".to_string()));
+        assert_eq!(
+            sheet[0].values["制造费用_人工单位完工成本"],
+            CellValue::Decimal(Decimal::new(5, 0))
+        );
 
         assert_eq!(
             sheet[0].values["制造费用明细项合计是否等于制造费用合计"],

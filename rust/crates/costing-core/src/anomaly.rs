@@ -546,7 +546,7 @@ fn map_work_order_value(row: &AnomalyRow, column: &str, config: &PipelineConfig)
         "异常等级" => CellValue::Text(row.anomaly_level.clone()),
         "异常主要来源" => CellValue::Text(row.anomaly_source.clone()),
         "异常明细解释" => CellValue::Text(row.detail_explanation.clone()),
-        "复核原因" => CellValue::Text(row.reasons.join("; ")),
+        "复核原因" => CellValue::Text(row.reasons.join(";")),
         other => standalone_display_value(row, other, config),
     }
 }
@@ -894,7 +894,10 @@ mod tests {
         let CellValue::Text(reason) = &sheet.rows[0][reason_idx] else {
             panic!("reason should be text");
         };
-        assert!(reason.contains("单据类型未归类"));
+        assert_eq!(
+            reason,
+            "单据类型未归类，不参与正常生产/返工生产异常池;直接人工单位完工成本小于等于0或为空;制造费用单位完工成本小于等于0或为空;制造费用_其他单位完工成本小于等于0或为空;制造费用_人工单位完工成本小于等于0或为空;制造费用_机物料及低耗单位完工成本小于等于0或为空;制造费用_折旧单位完工成本小于等于0或为空;制造费用_水电费单位完工成本小于等于0或为空"
+        );
     }
 
     #[test]

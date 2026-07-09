@@ -86,3 +86,10 @@
 - `软件费用`仅在`sk`管线按独立成本项处理：不归属`制造费用`，也不因为独立成本项身份写入`error_log`；它只在`成本计算单数量聚合维度`和`成本分析工单维度`中展示，并参与`sk`口径下的总完工成本勾稽。
 - `error_log`至少保留`MISSING_AMOUNT`、`TOTAL_COST_MISMATCH`、`MOH_BREAKDOWN_MISMATCH`、`DUPLICATE_WORK_ORDER_KEY`、`NON_POSITIVE_UNIT_COST`等可审计异常。
 - `成本分析产品维度`sheet不属于默认 workbook 输出；产品维度 legacy/helper 逻辑保留按产品分块的紧凑布局，不再输出`四、按单个产品异常值分析`标题；不再执行 IQR 检测；列宽固定为`15`，并去除该 sheet 的条件格式数据条与异常值红底红字高亮。
+
+涉及架构分析、跨文件修改、核心业务逻辑、调用链判断时，必须优先使用 codebase-memory-mcp：
+1. list_projects 确认项目索引；
+2. search_graph 搜核心符号；
+3. 需要理解调用关系时用 trace_path；
+4. MCP 不可用或索引过期时，明确标注 degraded，再降级为 rg/read_file。
+

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::error::ErrorCode;
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -60,4 +61,12 @@ pub struct RunSummary {
     pub sheet_count: usize,
     pub error_log_count: usize,
     pub stage_timings: StageTimings,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ErrorSummary {
+    pub status: String,
+    pub code: ErrorCode,
+    pub message: String,
+    pub retryable: bool,
 }

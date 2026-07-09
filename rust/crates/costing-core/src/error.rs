@@ -35,16 +35,21 @@ pub enum CostingError {
         retryable: bool,
     },
     #[error("{message}")]
-    Internal {
-        code: ErrorCode,
-        message: String,
-    },
+    Internal { code: ErrorCode, message: String },
 }
 
 impl CostingError {
     pub fn code(&self) -> ErrorCode {
         match self {
             Self::User { code, .. } | Self::Io { code, .. } | Self::Internal { code, .. } => *code,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::User { message, .. }
+            | Self::Io { message, .. }
+            | Self::Internal { message, .. } => message,
         }
     }
 

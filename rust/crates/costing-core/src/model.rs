@@ -57,8 +57,10 @@ pub struct ErrorIssue {
     pub row_id: String,
     pub issue_type: String,
     pub field_name: String,
+    pub original_value: String,
     pub reason: String,
     pub action: String,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -110,6 +112,7 @@ pub struct WorkbookPayload {
     pub sheet_models: Vec<SheetModel>,
     pub quality_metrics: Vec<QualityMetric>,
     pub error_log_count: usize,
+    pub error_log: Vec<ErrorIssue>,
     pub stage_timings: StageTimings,
 }
 
@@ -121,6 +124,9 @@ pub struct RunSummary {
     pub workbook_path: Option<String>,
     pub sheet_count: usize,
     pub error_log_count: usize,
+    pub error_log_preview: Vec<ErrorIssue>,
+    pub error_log_preview_truncated: bool,
+    pub quality_metrics: Vec<QualityMetric>,
     pub stage_timings: StageTimings,
 }
 

@@ -69,25 +69,30 @@ pub fn build_fact_bundle(
         let buckets = bucket_names(&cost_item, config.standalone_cost_items);
         if buckets.is_empty() {
             if !cost_item.trim().is_empty() {
-                error_issues.push(ErrorIssue {
-                    row_id: key,
-                    issue_type: "UNMAPPED_COST_ITEM".to_string(),
-                    field_name: "成本项目名称".to_string(),
-                    reason: "成本项目未映射到直接材料/直接人工/制造费用".to_string(),
-                    action: "该行已从分析数据中排除".to_string(),
-                });
+                error_issues.push(error_issue(
+                    key,
+                    "UNMAPPED_COST_ITEM",
+                    "成本项目名称",
+                    cost_item,
+                    "成本项目未映射到直接材料/直接人工/制造费用",
+                    "该行已从分析数据中排除",
+                ));
             }
             continue;
         }
 
         if amount.is_none() {
-            error_issues.push(ErrorIssue {
-                row_id: key.clone(),
-                issue_type: "MISSING_AMOUNT".to_string(),
-                field_name: "本期完工金额".to_string(),
-                reason: "成本明细金额为空，已按 0 参与汇总".to_string(),
-                action: "金额置为 0 后继续计算".to_string(),
-            });
+            error_issues.push(error_issue(
+                key.clone(),
+                "MISSING_AMOUNT",
+                "本期完工金额",
+                row.values
+                    .get("本期完工金额")
+                    .map(cell_to_text)
+                    .unwrap_or_default(),
+                "成本明细金额为空，已按 0 参与汇总",
+                "金额置为 0 后继续计算",
+            ));
         }
 
         for bucket in buckets {
@@ -112,13 +117,14 @@ pub fn build_fact_bundle(
 
     for (key, count) in &qty_rows_by_key {
         if *count > 1 {
-            error_issues.push(ErrorIssue {
-                row_id: key.clone(),
-                issue_type: "DUPLICATE_WORK_ORDER_KEY".to_string(),
-                field_name: "工单主键".to_string(),
-                reason: "数量页存在重复工单主键".to_string(),
-                action: "数量页原样保留，异常分析按首条记录去重".to_string(),
-            });
+            error_issues.push(error_issue(
+                key.clone(),
+                "DUPLICATE_WORK_ORDER_KEY",
+                "工单主键",
+                count.to_string(),
+                "数量页存在重复工单主键",
+                "数量页原样保留，异常分析按首条记录去重",
+            ));
         }
     }
 
@@ -146,27 +152,29 @@ pub fn build_fact_bundle(
         let moh_sum = moh_component_sum(&values);
         let moh_total = decimal_from_values(&values, MOH_AMOUNT_KEY);
         if moh_sum != moh_total {
-            error_issues.push(ErrorIssue {
-                row_id: key.clone(),
-                issue_type: "MOH_BREAKDOWN_MISMATCH".to_string(),
-                field_name: "制造费用".to_string(),
-                reason: "制造费用明细项合计不等于制造费用合计".to_string(),
-                action: "保留结果并标记需复核".to_string(),
-            });
+            error_issues.push(error_issue(
+                key.clone(),
+                "MOH_BREAKDOWN_MISMATCH",
+                "制造费用",
+                format!("明细合计={};制造费用={}", moh_sum, moh_total),
+                "制造费用明细项合计不等于制造费用合计",
+                "保留结果并标记需复核",
+            ));
         }
 
         let derived_total = total_amount_from_values(&values, config);
         if derived_total != completed_total {
-            error_issues.push(ErrorIssue {
-                row_id: key,
-                issue_type: "TOTAL_COST_MISMATCH".to_string(),
-                field_name: "总完工成本".to_string(),
-                reason: format!(
+            error_issues.push(error_issue(
+                key,
+                "TOTAL_COST_MISMATCH",
+                "总完工成本",
+                format!("计算值={};数量页={}", derived_total, completed_total),
+                &format!(
                     "{}不等于数量页总完工成本",
                     total_expression(config.standalone_cost_items)
                 ),
-                action: "保留结果并标记需复核".to_string(),
-            });
+                "保留结果并标记需复核",
+            ));
         }
 
         qty_fact.push(TableRow { values });
@@ -189,6 +197,25 @@ pub fn build_fact_bundle(
         work_order_fact,
         error_issues,
     })
+}
+
+fn error_issue(
+    row_id: String,
+    issue_type: &str,
+    field_name: &str,
+    original_value: impl Into<String>,
+    reason: &str,
+    action: &str,
+) -> ErrorIssue {
+    ErrorIssue {
+        row_id,
+        issue_type: issue_type.to_string(),
+        field_name: field_name.to_string(),
+        original_value: original_value.into(),
+        reason: reason.to_string(),
+        action: action.to_string(),
+        retryable: false,
+    }
 }
 
 pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> Vec<String> {
@@ -369,11 +396,19 @@ fn moh_component_sum(values: &BTreeMap<String, CellValue>) -> Decimal {
 }
 
 fn work_order_key(row: &TableRow) -> String {
-    ["月份", "年期", "产品编码", "工单编号", "工单行号"]
-        .iter()
-        .filter_map(|column| row.values.get(*column).map(cell_to_text))
-        .collect::<Vec<_>>()
-        .join("|")
+    let period = row
+        .values
+        .get("月份")
+        .or_else(|| row.values.get("年期"))
+        .map(cell_to_text)
+        .unwrap_or_default();
+    [
+        period,
+        text(row, "产品编码"),
+        text(row, "工单编号"),
+        text(row, "工单行号"),
+    ]
+    .join("|")
 }
 
 fn bucket_names(cost_item: &str, standalone_items: &[&str]) -> Vec<String> {

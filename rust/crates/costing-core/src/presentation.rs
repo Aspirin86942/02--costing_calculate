@@ -53,11 +53,13 @@ pub fn build_workbook_payload(
     let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config);
     let sheets = vec![detail_sheet, qty_sheet, work_order_sheet];
     ensure_no_product_dimension(&sheets)?;
+    let error_log = bundle.error_issues.clone();
 
     Ok(WorkbookPayload {
         sheet_models: sheets,
         quality_metrics: build_quality_metrics(&bundle),
-        error_log_count: bundle.error_issues.len(),
+        error_log_count: error_log.len(),
+        error_log,
         stage_timings: timings,
     })
 }
@@ -207,8 +209,10 @@ mod tests {
                 row_id: "row-1".to_string(),
                 issue_type: "MISSING_AMOUNT".to_string(),
                 field_name: "本期完工金额".to_string(),
+                original_value: String::new(),
                 reason: "missing".to_string(),
                 action: "filled zero".to_string(),
+                retryable: false,
             }],
         }
     }
@@ -298,7 +302,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(payload.error_log_count, 1);
-        assert_eq!(payload.quality_metrics.len(), 2);
+        assert_eq!(payload.error_log.len(), 1);
+        assert_eq!(payload.error_log[0].original_value, "");
+        assert!(payload
+            .quality_metrics
+            .iter()
+            .any(|metric| metric.metric == "可参与分析占比"));
         assert_eq!(payload.stage_timings.stages.get("reader_rows"), Some(&1.0));
     }
 

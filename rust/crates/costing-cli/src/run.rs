@@ -8,6 +8,8 @@ use costing_xlsx::{reader::read_raw_workbook, snapshot::build_reader_snapshot};
 
 use crate::args::CliArgs;
 
+const ERROR_LOG_PREVIEW_LIMIT: usize = 20;
+
 pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     validate_cli_request(&args)?;
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
@@ -29,6 +31,12 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     timings.insert("qty_sheet_rows", qty_sheet_rows.len() as f64);
     timings.insert("quality_metric_count", quality_metrics.len() as f64);
     let payload = build_workbook_payload(bundle, &pipeline, timings.clone())?;
+    let error_log_preview = payload
+        .error_log
+        .iter()
+        .take(ERROR_LOG_PREVIEW_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>();
 
     Ok(RunSummary {
         status: "succeeded".to_string(),
@@ -37,6 +45,9 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         workbook_path: args.output.map(|path| path.display().to_string()),
         sheet_count: payload.sheet_models.len(),
         error_log_count: payload.error_log_count,
+        error_log_preview_truncated: payload.error_log.len() > ERROR_LOG_PREVIEW_LIMIT,
+        error_log_preview,
+        quality_metrics: payload.quality_metrics,
         stage_timings: timings,
     })
 }
@@ -212,6 +223,18 @@ mod tests {
         assert_eq!(summary.stage_timings.stages.get("detail_rows"), Some(&0.0));
         assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
         assert_eq!(summary.sheet_count, 3);
+        assert!(summary
+            .quality_metrics
+            .iter()
+            .any(|metric| metric.metric == "可参与分析占比"));
+        assert!(summary.error_log_preview.len() <= ERROR_LOG_PREVIEW_LIMIT);
+        if summary.error_log_count > 0 {
+            assert!(!summary.error_log_preview.is_empty());
+            assert!(summary
+                .error_log_preview
+                .iter()
+                .all(|issue| !issue.issue_type.is_empty() && !issue.field_name.is_empty()));
+        }
         assert!(!summary.output_written);
         let _ = std::fs::remove_file(path);
     }

@@ -11,7 +11,7 @@
 ## 当前基线
 
 - `baselines/workbook_semantics.json`
-  - 冻结 4 张 Sheet 的顺序、列序、freeze panes、auto filter、number format、column width 和工单异常高亮位置。
+  - 该基线冻结默认 3 张 workbook Sheet 的顺序、列序、freeze panes、auto filter、number format、column width 和工单异常高亮位置。
 - `baselines/error_log_contract.json`
   - 冻结运行时 `error_log` 数据契约；当前 CLI 不再写出 CSV，但内存汇总与质量计数仍依赖该契约。
 

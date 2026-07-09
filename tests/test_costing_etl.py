@@ -831,25 +831,23 @@ def test_sheet_model_fast_metadata_keeps_rows_factory_in_sync() -> None:
     assert list(model.rows_factory()) == list(source_frame.iter_rows())
 
 
-def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
-    output_path = tmp_path / 'product_anomaly_model.xlsx'
-    writer = CostingWorkbookWriter()
-    sheet_models = (
-        build_product_anomaly_sheet_model(
-            [
-                ProductAnomalySection(
-                    product_code='P001',
-                    product_name='产品A',
-                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
-                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                    amount_columns=['总成本'],
-                    outlier_cells=set(),
-                )
-            ]
-        ),
-    )
+def test_product_anomaly_writer_legacy_helper_preserves_layout(tmp_path: Path) -> None:
+    from src.excel.product_anomaly_writer import write_product_anomaly_sheet
 
-    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+    output_path = tmp_path / 'product_anomaly_legacy_helper.xlsx'
+    sections = [
+        ProductAnomalySection(
+            product_code='P001',
+            product_name='产品A',
+            data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+            column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+            amount_columns=['总成本'],
+            outlier_cells=set(),
+        )
+    ]
+
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        write_product_anomaly_sheet(writer, '成本分析产品维度', sections)
 
     workbook = load_workbook(output_path)
     worksheet = workbook['成本分析产品维度']
@@ -881,6 +879,36 @@ def test_build_product_anomaly_sheet_model_preserves_legacy_rows() -> None:
     assert list(model.rows_factory())[0][:2] == ('P001', '产品A')
 
 
+def test_write_workbook_from_models_routes_product_anomaly_model_to_legacy_helper(tmp_path: Path) -> None:
+    output_path = tmp_path / 'product_anomaly_model_route.xlsx'
+    writer = CostingWorkbookWriter()
+    model = build_product_anomaly_sheet_model(
+        [
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+            )
+        ]
+    )
+
+    with patch.object(
+        writer.sheet_writer,
+        'write_product_anomaly_sheet',
+        wraps=writer.sheet_writer.write_product_anomaly_sheet,
+    ) as product_writer_mock:
+        writer.write_workbook_from_models(output_path, sheet_models=(model,))
+
+    product_writer_mock.assert_called_once()
+    _, sheet_name_arg, sections_arg = product_writer_mock.call_args.args
+    assert sheet_name_arg == '成本分析产品维度'
+    assert sections_arg[0].product_code == 'P001'
+    assert sections_arg[0].product_name == '产品A'
+
+
 def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract() -> None:
     models = build_sheet_models(
         detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
@@ -910,35 +938,33 @@ def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contrac
     assert all(model.sheet_name != '成本分析产品维度' for model in models)
 
 
-def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
-    output_path = tmp_path / 'product_anomaly_scope_split_model.xlsx'
-    writer = CostingWorkbookWriter()
-    sheet_models = (
-        build_product_anomaly_sheet_model(
-            [
-                ProductAnomalySection(
-                    product_code='P001',
-                    product_name='产品A',
-                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
-                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                    amount_columns=['总成本'],
-                    outlier_cells=set(),
-                    section_label='全部',
-                ),
-                ProductAnomalySection(
-                    product_code='P001',
-                    product_name='产品A',
-                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
-                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                    amount_columns=['总成本'],
-                    outlier_cells=set(),
-                    section_label='正常生产',
-                ),
-            ]
-        ),
-    )
+def test_product_anomaly_writer_scoped_helper_preserves_layout(tmp_path: Path) -> None:
+    from src.excel.product_anomaly_writer import write_product_anomaly_sheet
 
-    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+    output_path = tmp_path / 'product_anomaly_scoped_helper.xlsx'
+    sections = [
+        ProductAnomalySection(
+            product_code='P001',
+            product_name='产品A',
+            data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+            column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+            amount_columns=['总成本'],
+            outlier_cells=set(),
+            section_label='全部',
+        ),
+        ProductAnomalySection(
+            product_code='P001',
+            product_name='产品A',
+            data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+            column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+            amount_columns=['总成本'],
+            outlier_cells=set(),
+            section_label='正常生产',
+        ),
+    ]
+
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        write_product_anomaly_sheet(writer, '成本分析产品维度', sections)
 
     workbook = load_workbook(output_path)
     worksheet = workbook['成本分析产品维度']

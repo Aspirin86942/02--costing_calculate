@@ -16,20 +16,17 @@
 - 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
 
 ### Build / Test / Dev Commands
-- `/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev]'`: 安装开发依赖
-- `/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'`: 安装开发与 GUI 依赖
-- `/home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `/home/george/miniconda3/bin/conda run -n test python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `/home/george/miniconda3/bin/conda run -n test python main.py gb`: 执行 GB 管线
-- `/home/george/miniconda3/bin/conda run -n test python main.py sk`: 执行 SK 管线
-- `/home/george/miniconda3/bin/conda run -n test python -m src.gui.app`: 启动本地 GUI
-- `/home/george/miniconda3/bin/conda run -n test python -m pytest tests -q`: 运行测试
-- `/home/george/miniconda3/bin/conda run -n test python -m ruff check src tests`: 代码检查
-- `/home/george/miniconda3/bin/conda run -n test python -m ruff format src tests`: 代码格式化
+- `conda run -n costing311 python -m pip install -e '.[dev]'`: 安装开发依赖
+- `conda run -n costing311 python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `conda run -n costing311 python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `conda run -n costing311 python main.py gb`: 执行 GB 管线
+- `conda run -n costing311 python main.py sk`: 执行 SK 管线
+- `conda run -n costing311 python -m pytest tests -q`: 运行测试
+- `conda run -n costing311 python -m ruff check src tests`: 代码检查
+- `conda run -n costing311 python -m ruff format src tests --check`: 代码格式化检查
 
-如缺少测试或 GUI 依赖，优先安装 editable extras：
-- `/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev]'`
-- `/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'`
+如缺少测试依赖，优先安装 editable extras：
+- `conda run -n costing311 python -m pip install -e '.[dev]'`
 
 ### Coding Style & Naming
 - 以 `pyproject.toml` 为准，保持与当前 Python 版本兼容（当前项目约束为 3.11+）。
@@ -66,9 +63,8 @@
 ### 当前业务规则（GB / SK 分析输出）
 - 每个处理后的工作簿默认按顺序输出以下 4 张 Sheet：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`、`成本分析产品维度`。
 - 每次处理只落盘 `*_处理后.xlsx`，不再额外生成 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`。
-- 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台或 GUI 状态区；`--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件。
+- 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台；`--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
-- GUI 候选产品搜索按产品编码或产品名称包含匹配，只影响候选产品表显示；实际白名单过滤仍按 `产品编码 + 产品名称` 双字段精确匹配。
 - 产品白名单池按 `产品编码 + 产品名称` 双字段精确匹配，影响分析维度 Sheet，不过滤 `成本计算单总表` 和 `成本计算单数量聚合维度`。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
 - `成本计算单总表`sheet保留工单级成本记录；`本期完工金额`为空时，后续分析按`0`参与汇总，并继续写入`error_log`的`MISSING_AMOUNT`。

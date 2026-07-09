@@ -70,3 +70,7 @@ def test_project_no_longer_imports_legacy_sheet_writer() -> None:
     for module_path in _project_python_files():
         imports = _collect_imports(module_path)
         assert 'src.excel.sheet_writers' not in imports, module_path
+
+
+def test_project_has_no_gui_package() -> None:
+    assert not (SRC_ROOT / 'gui').exists()

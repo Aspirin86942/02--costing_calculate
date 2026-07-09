@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `analytics` 不得导入 `etl` 或 `excel`
 - `excel` 不得导入 `etl`
 - `etl/stages/*` 不得导入 `excel`
-- 仅 `etl/costing_etl.py` 和 `etl/pipeline.py` 可导入 `excel` 模块
+- 仅 `etl/costing_etl.py` 可导入 `excel` 模块
 
 ### 数据流 (Data Flow)
 
@@ -52,9 +52,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `成本分析工单维度`
 - `成本分析产品维度`
 
-**工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时输出到控制台或 GUI 状态区，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
+**工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时输出到控制台，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
 
-**工单异常解释字段**：`成本分析工单维度` 新增 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`，用于快速复核异常来源，不改变评分阈值
+**工单异常解释字段**：`成本分析工单维度` 保留 `异常等级`、`异常主要来源`、`复核原因`，并使用单列 `异常明细解释` 展示达到关注或高度可疑的异常项；不再输出 `异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离` 五个旧解释列
 
 ## 依赖 (Dependencies)
 
@@ -65,35 +65,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # 安装
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e .
+conda run -n costing311 python -m pip install -e .
 
-# 安装开发与 GUI 依赖
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
+# 安装开发依赖
+conda run -n costing311 python -m pip install -e '.[dev]'
 
 # 运行 ETL
-/home/george/miniconda3/bin/conda run -n test python main.py gb
-/home/george/miniconda3/bin/conda run -n test python main.py sk
+conda run -n costing311 python main.py gb
+conda run -n costing311 python main.py sk
 
 # 预检 + benchmark（只跑分析链路，不落 workbook 或任何外部摘要文件）
-/home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark
-/home/george/miniconda3/bin/conda run -n test python main.py sk --check-only --benchmark
+conda run -n costing311 python main.py gb --check-only --benchmark
+conda run -n costing311 python main.py sk --check-only --benchmark
 
-# 启动 GUI
-/home/george/miniconda3/bin/conda run -n test python -m src.gui.app
-
-# 涉及 GUI 测试前先安装 .[dev,gui]
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
-
-# 测试 (需使用 conda test 环境)
-/home/george/miniconda3/bin/conda run -n test python -m pytest -q
+# 测试 (需使用 conda costing311 环境)
+conda run -n costing311 python -m pytest tests -q
 
 # 单测
-/home/george/miniconda3/bin/conda run -n test python -m pytest tests/ -k test_name -q
+conda run -n costing311 python -m pytest tests/ -k test_name -q
 
 # 代码检查/格式化
-/home/george/miniconda3/bin/conda run -n test ruff check .
-/home/george/miniconda3/bin/conda run -n test ruff format . --check
-/home/george/miniconda3/bin/conda run -n test ruff format .
+conda run -n costing311 python -m ruff check src tests
+conda run -n costing311 python -m ruff format src tests --check
 ```
 
 ## 测试契约 (Test Contracts)

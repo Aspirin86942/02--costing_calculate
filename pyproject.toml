@@ -19,13 +19,14 @@ dev = [
     "pytest>=8.0.0",
     "ruff>=0.8.0",
 ]
-gui = [
-    "PySide6>=6.8",
-]
 
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["_archive"]
 
 [tool.ruff]
 target-version = "py311"

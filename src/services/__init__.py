@@ -1,1 +1,1 @@
-"""Shared service layer for CLI and GUI entry points."""
+"""Shared service layer for CLI entry points."""

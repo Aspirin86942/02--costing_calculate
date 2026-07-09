@@ -76,7 +76,7 @@ def _candidate_text(value: object) -> str:
 
 
 def _extract_candidate_products_from_normalized(frame: pl.DataFrame) -> tuple[tuple[str, str], ...]:
-    """从标准化成本表提取 GUI 白名单候选产品。"""
+    """从标准化成本表提取产品白名单候选产品。"""
     required_columns = {'产品编码', '产品名称'}
     if frame.is_empty() or not required_columns.issubset(frame.columns):
         return ()

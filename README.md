@@ -5,36 +5,33 @@
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
 - 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
-- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台或 GUI 状态区展示
+- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 字段名提取和标准化
 
 ## 安装
 ```bash
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e .
+conda run -n costing311 python -m pip install -e .
 ```
 
-如需 GUI 和开发依赖：
+如需开发依赖：
 ```bash
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
+conda run -n costing311 python -m pip install -e '.[dev]'
 ```
 
-本文默认开发、测试、GUI 命令使用 Miniconda `test` 环境；仅纯运行时且当前解释器已安装依赖时，才可使用裸 `pip install -e .` / 裸 `python`。
+本文默认开发、测试命令使用 Miniconda `costing311` 环境；仅纯运行时且当前解释器已安装依赖时，才可使用裸 `pip install -e .` / 裸 `python`。
 
 ## 使用
 ```bash
 # GB 管线
-/home/george/miniconda3/bin/conda run -n test python main.py gb
+conda run -n costing311 python main.py gb
 
 # SK 管线
-/home/george/miniconda3/bin/conda run -n test python main.py sk
+conda run -n costing311 python main.py sk
 
 # 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-/home/george/miniconda3/bin/conda run -n test python main.py gb --check-only --benchmark
-/home/george/miniconda3/bin/conda run -n test python main.py sk --check-only --benchmark
-
-# GUI
-/home/george/miniconda3/bin/conda run -n test python -m src.gui.app
+conda run -n costing311 python main.py gb --check-only --benchmark
+conda run -n costing311 python main.py sk --check-only --benchmark
 ```
 
 ## 输出说明
@@ -46,13 +43,8 @@
 
 - 每次处理只在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
 - 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
-- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台或 GUI 状态区
+- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台
 - `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
-
-## GUI 使用
-运行命令：`/home/george/miniconda3/bin/conda run -n test python -m src.gui.app`
-
-GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份范围、维护产品白名单池、按产品编码或产品名称包含搜索候选产品、预检和后台处理。候选产品搜索只影响 GUI 显示；产品白名单池按 `产品编码 + 产品名称` 精确匹配，只影响分析维度 Sheet，不过滤总表和数量聚合维度。
 
 ## 分析输出口径
 - `成本计算单总表` 保留成本计算单明细，`本期完工金额`为空时后续分析按 `0` 参与汇总，并继续写入 `error_log` 的 `MISSING_AMOUNT`
@@ -100,8 +92,7 @@ GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份
 - `main.py` - 仓库根目录统一入口
 - `src/excel/` - Excel 写出与样式模块
   - `styles.py` / `fast_writer.py` / `workbook_writer.py`
-- `src/gui/` - GUI 入口、窗口状态、校验与后台任务封装
-- `src/services/` - CLI / GUI 共用的处理服务与结果对象
+- `src/services/` - CLI 应用服务层与结果对象
 - `src/config/` - 配置管理
 - `data/raw/` - 原始数据
   - `gb/` - GB 系列原始成本计算单
@@ -116,23 +107,20 @@ GUI 支持选择 GB/SK 管线、选择输入文件、自动查找、配置月份
 
 ## 测试
 ```bash
-# GUI / 开发依赖
-/home/george/miniconda3/bin/conda run -n test python -m pip install -e '.[dev,gui]'
+# 开发依赖
+conda run -n costing311 python -m pip install -e '.[dev]'
 
-# 先确认解释器来自 test 环境
-/home/george/miniconda3/bin/conda run -n test python -c "import sys; print(sys.executable)"
+# 先确认解释器来自 costing311 环境
+conda run -n costing311 python -c "import sys; print(sys.executable)"
 
 # 运行测试
-/home/george/miniconda3/bin/conda run -n test python -m pytest -q
-
-# GUI 测试
-/home/george/miniconda3/bin/conda run -n test python -m pytest tests/test_gui_form_state.py tests/test_gui_main_window.py -q
+conda run -n costing311 python -m pytest tests -q
 
 # 代码检查
-/home/george/miniconda3/bin/conda run -n test python -m ruff check src tests
+conda run -n costing311 python -m ruff check src tests
 
 # 代码格式化检查
-/home/george/miniconda3/bin/conda run -n test python -m ruff format src tests --check
+conda run -n costing311 python -m ruff format src tests --check
 ```
 
 ## Contract Baseline

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rust_decimal::Decimal;
 
@@ -33,11 +33,30 @@ const QTY_SOFTWARE_UNIT_COST: &str = "软件费用单位完工成本";
 const QTY_MOH_MATCH: &str = "制造费用明细项合计是否等于制造费用合计";
 const QTY_CHECK_STATUS: &str = "数据校验状态";
 const QTY_CHECK_REASON: &str = "异常原因说明";
+const REQUIRED_DETAIL_COLUMNS: &[&str] = &[
+    "产品编码",
+    "产品名称",
+    "工单编号",
+    "工单行号",
+    "成本项目名称",
+    "本期完工金额",
+];
+const REQUIRED_QTY_COLUMNS: &[&str] = &[
+    "产品编码",
+    "产品名称",
+    "工单编号",
+    "工单行号",
+    "本期完工数量",
+    "本期完工金额",
+];
 
 pub fn build_fact_bundle(
     split: SplitResult,
     config: &PipelineConfig,
 ) -> Result<FactBundle, CostingError> {
+    validate_required_columns(&split.detail_rows, REQUIRED_DETAIL_COLUMNS, "成本明细")?;
+    validate_required_columns(&split.qty_rows, REQUIRED_QTY_COLUMNS, "产品数量统计")?;
+
     let mut amount_by_key: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
     let mut qty_rows_by_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut error_issues = Vec::new();
@@ -46,6 +65,20 @@ pub fn build_fact_bundle(
         let key = work_order_key(row);
         let cost_item = text(row, "成本项目名称");
         let amount = decimal(row, "本期完工金额");
+        let buckets = bucket_names(&cost_item, config.standalone_cost_items);
+        if buckets.is_empty() {
+            if !cost_item.trim().is_empty() {
+                error_issues.push(ErrorIssue {
+                    row_id: key,
+                    issue_type: "UNMAPPED_COST_ITEM".to_string(),
+                    field_name: "成本项目名称".to_string(),
+                    reason: "成本项目未映射到直接材料/直接人工/制造费用".to_string(),
+                    action: "该行已从分析数据中排除".to_string(),
+                });
+            }
+            continue;
+        }
+
         if amount.is_none() {
             error_issues.push(ErrorIssue {
                 row_id: key.clone(),
@@ -56,15 +89,22 @@ pub fn build_fact_bundle(
             });
         }
 
-        let bucket = bucket_name(&cost_item);
-        *amount_by_key
-            .entry(key)
-            .or_default()
-            .entry(bucket)
-            .or_default() += amount.unwrap_or(ZERO);
+        for bucket in buckets {
+            *amount_by_key
+                .entry(key.clone())
+                .or_default()
+                .entry(bucket)
+                .or_default() += amount.unwrap_or(ZERO);
+        }
     }
 
-    for qty_row in &split.qty_rows {
+    let valid_qty_rows = split
+        .qty_rows
+        .into_iter()
+        .filter(is_valid_qty_row)
+        .collect::<Vec<_>>();
+
+    for qty_row in &valid_qty_rows {
         let key = work_order_key(qty_row);
         *qty_rows_by_key.entry(key).or_default() += 1;
     }
@@ -81,8 +121,8 @@ pub fn build_fact_bundle(
         }
     }
 
-    let mut work_order_fact = Vec::new();
-    for qty_row in &split.qty_rows {
+    let mut qty_fact = Vec::new();
+    for qty_row in &valid_qty_rows {
         let key = work_order_key(qty_row);
         let amounts = amount_by_key.get(&key).cloned().unwrap_or_default();
         let completed_qty = decimal(qty_row, "本期完工数量").unwrap_or(ZERO);
@@ -128,12 +168,21 @@ pub fn build_fact_bundle(
             });
         }
 
-        work_order_fact.push(TableRow { values });
+        qty_fact.push(TableRow { values });
+    }
+
+    let mut seen_work_order_keys = BTreeSet::new();
+    let mut work_order_fact = Vec::new();
+    for row in &qty_fact {
+        let key = work_order_key(row);
+        if seen_work_order_keys.insert(key) {
+            work_order_fact.push(row.clone());
+        }
     }
 
     Ok(FactBundle {
         detail_fact: split.detail_rows,
-        qty_fact: split.qty_rows,
+        qty_fact,
         work_order_fact,
         error_issues,
     })
@@ -141,7 +190,7 @@ pub fn build_fact_bundle(
 
 pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec<TableRow> {
     bundle
-        .work_order_fact
+        .qty_fact
         .iter()
         .map(|row| {
             let mut values = row.values.clone();
@@ -158,8 +207,14 @@ pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec
             values.insert(QTY_DM_AMOUNT.to_string(), CellValue::Decimal(dm));
             values.insert(QTY_DL_AMOUNT.to_string(), CellValue::Decimal(dl));
             values.insert(QTY_MOH_AMOUNT.to_string(), CellValue::Decimal(moh));
-            values.insert(QTY_MOH_OTHER_AMOUNT.to_string(), CellValue::Decimal(moh_other));
-            values.insert(QTY_MOH_LABOR_AMOUNT.to_string(), CellValue::Decimal(moh_labor));
+            values.insert(
+                QTY_MOH_OTHER_AMOUNT.to_string(),
+                CellValue::Decimal(moh_other),
+            );
+            values.insert(
+                QTY_MOH_LABOR_AMOUNT.to_string(),
+                CellValue::Decimal(moh_labor),
+            );
             values.insert(
                 QTY_MOH_CONSUMABLES_AMOUNT.to_string(),
                 CellValue::Decimal(moh_consumables),
@@ -225,7 +280,14 @@ pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec
             let reason = build_check_reason(moh_match, total_match, config.standalone_cost_items);
             values.insert(
                 QTY_CHECK_STATUS.to_string(),
-                CellValue::Text(if reason.is_empty() { "通过" } else { "需复核" }.to_string()),
+                CellValue::Text(
+                    if reason.is_empty() {
+                        "通过"
+                    } else {
+                        "需复核"
+                    }
+                    .to_string(),
+                ),
             );
             values.insert(QTY_CHECK_REASON.to_string(), CellValue::Text(reason));
             TableRow { values }
@@ -249,7 +311,10 @@ fn total_expression(standalone_items: &[&str]) -> String {
     parts.join("+")
 }
 
-fn total_amount_from_values(values: &BTreeMap<String, CellValue>, config: &PipelineConfig) -> Decimal {
+fn total_amount_from_values(
+    values: &BTreeMap<String, CellValue>,
+    config: &PipelineConfig,
+) -> Decimal {
     let mut total = decimal_from_values(values, DM_AMOUNT_KEY)
         + decimal_from_values(values, DL_AMOUNT_KEY)
         + decimal_from_values(values, MOH_AMOUNT_KEY);
@@ -275,20 +340,30 @@ fn work_order_key(row: &TableRow) -> String {
         .join("|")
 }
 
-fn bucket_name(cost_item: &str) -> String {
-    match cost_item.trim() {
-        "直接材料" => DM_AMOUNT_KEY.to_string(),
-        "直接人工" => DL_AMOUNT_KEY.to_string(),
-        "制造费用_其他" => MOH_OTHER_AMOUNT_KEY.to_string(),
-        "制造费用-人工" => MOH_LABOR_AMOUNT_KEY.to_string(),
-        "制造费用_机物料及低耗" => MOH_CONSUMABLES_AMOUNT_KEY.to_string(),
-        "制造费用_折旧" => MOH_DEPRECIATION_AMOUNT_KEY.to_string(),
-        "制造费用_水电费" => MOH_UTILITIES_AMOUNT_KEY.to_string(),
-        value if value.starts_with("制造费用") => MOH_AMOUNT_KEY.to_string(),
-        "委外加工费" => standalone_key("委外加工费"),
-        "软件费用" => standalone_key("软件费用"),
-        other => format!("unmapped:{other}"),
+fn bucket_names(cost_item: &str, standalone_items: &[&str]) -> Vec<String> {
+    let normalized = cost_item.trim();
+    let mut buckets = match normalized {
+        "直接材料" => vec![DM_AMOUNT_KEY.to_string()],
+        "直接人工" => vec![DL_AMOUNT_KEY.to_string()],
+        value if value.starts_with("制造费用") => {
+            // 制造费用明细同时参与制造费用总额和明细勾稽，保持 Python fact_builder 的双口径。
+            let mut buckets = vec![MOH_AMOUNT_KEY.to_string()];
+            if let Some(component_key) = moh_component_key(value) {
+                buckets.push(component_key.to_string());
+            }
+            buckets
+        }
+        _ => Vec::new(),
+    };
+
+    if standalone_items
+        .iter()
+        .any(|item| item.trim() == normalized)
+    {
+        buckets.push(standalone_key(normalized));
     }
+
+    buckets
 }
 
 fn standalone_key(item: &str) -> String {
@@ -296,6 +371,17 @@ fn standalone_key(item: &str) -> String {
         "委外加工费" => "outsource_amount".to_string(),
         "软件费用" => "software_amount".to_string(),
         other => format!("standalone:{other}"),
+    }
+}
+
+fn moh_component_key(item: &str) -> Option<&'static str> {
+    match item.trim() {
+        "制造费用_其他" => Some(MOH_OTHER_AMOUNT_KEY),
+        "制造费用-人工" => Some(MOH_LABOR_AMOUNT_KEY),
+        "制造费用_机物料及低耗" => Some(MOH_CONSUMABLES_AMOUNT_KEY),
+        "制造费用_折旧" => Some(MOH_DEPRECIATION_AMOUNT_KEY),
+        "制造费用_水电费" => Some(MOH_UTILITIES_AMOUNT_KEY),
+        _ => None,
     }
 }
 
@@ -312,14 +398,18 @@ fn total_match_column(items: &[&str]) -> String {
 }
 
 fn text(row: &TableRow, column: &str) -> String {
-    row.values
-        .get(column)
-        .map(cell_to_text)
-        .unwrap_or_default()
+    row.values.get(column).map(cell_to_text).unwrap_or_default()
 }
 
 fn decimal(row: &TableRow, column: &str) -> Option<Decimal> {
     row.values.get(column).and_then(cell_to_decimal)
+}
+
+fn is_valid_qty_row(row: &TableRow) -> bool {
+    decimal(row, "本期完工数量")
+        .map(|value| value > ZERO)
+        .unwrap_or(false)
+        && decimal(row, "本期完工金额").is_some()
 }
 
 fn decimal_from_values(values: &BTreeMap<String, CellValue>, column: &str) -> Decimal {
@@ -354,8 +444,34 @@ fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
     }
 }
 
+fn validate_required_columns(
+    rows: &[TableRow],
+    required_columns: &[&str],
+    dataset_name: &str,
+) -> Result<(), CostingError> {
+    let missing = rows
+        .iter()
+        .flat_map(|row| {
+            required_columns
+                .iter()
+                .filter(|column| !row.values.contains_key(**column))
+                .copied()
+        })
+        .collect::<BTreeSet<_>>();
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    Err(CostingError::invalid_input(format!(
+        "{dataset_name}缺少必要字段: {}",
+        missing.into_iter().collect::<Vec<_>>().join(", ")
+    )))
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::error::ErrorCode;
     use crate::model::{CellValue, SplitResult, TableRow};
     use crate::pipeline::{PipelineConfig, PipelineName};
 
@@ -566,5 +682,194 @@ mod tests {
             .error_issues
             .iter()
             .any(|issue| issue.issue_type == "TOTAL_COST_MISMATCH"));
+    }
+
+    #[test]
+    fn filters_invalid_qty_rows_before_fact_and_sheet_output() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+        let qty = vec![
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO1".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+            ]),
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO-ZERO".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(0, 0))),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+            ]),
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO-MISSING".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
+                ("本期完工金额", CellValue::Blank),
+            ]),
+        ];
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+
+        let bundle = build_fact_bundle(
+            SplitResult {
+                detail_rows: detail,
+                qty_rows: qty,
+            },
+            &config,
+        )
+        .unwrap();
+        let sheet = build_qty_sheet_rows(&bundle, &config);
+
+        assert_eq!(bundle.qty_fact.len(), 1);
+        assert_eq!(bundle.work_order_fact.len(), 1);
+        assert_eq!(sheet.len(), 1);
+        assert_eq!(
+            bundle.qty_fact[0].values["工单编号"],
+            CellValue::Text("WO1".to_string())
+        );
+    }
+
+    #[test]
+    fn gb_software_fee_is_unmapped_not_standalone() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("软件费用".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
+        ])];
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(0, 0))),
+        ])];
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+
+        let bundle = build_fact_bundle(
+            SplitResult {
+                detail_rows: detail,
+                qty_rows: qty,
+            },
+            &config,
+        )
+        .unwrap();
+        let sheet = build_qty_sheet_rows(&bundle, &config);
+
+        assert!(bundle
+            .error_issues
+            .iter()
+            .any(|issue| issue.issue_type == "UNMAPPED_COST_ITEM"));
+        assert!(!bundle.work_order_fact[0]
+            .values
+            .contains_key("software_amount"));
+        assert!(!sheet[0].values.contains_key("本期完工软件费用合计完工金额"));
+    }
+
+    #[test]
+    fn qty_fact_keeps_duplicates_but_work_order_fact_keeps_first() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+        let qty = vec![
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO1".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+            ]),
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO1".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(20, 0))),
+            ]),
+        ];
+
+        let bundle = build_fact_bundle(
+            SplitResult {
+                detail_rows: detail,
+                qty_rows: qty,
+            },
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(bundle.qty_fact.len(), 2);
+        assert_eq!(bundle.work_order_fact.len(), 1);
+        assert_eq!(
+            bundle.work_order_fact[0].values["本期完工数量"],
+            CellValue::Decimal(Decimal::new(1, 0))
+        );
+        assert!(bundle
+            .error_issues
+            .iter()
+            .any(|issue| issue.issue_type == "DUPLICATE_WORK_ORDER_KEY"));
+    }
+
+    #[test]
+    fn missing_required_columns_returns_error() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ])];
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+
+        let error = build_fact_bundle(
+            SplitResult {
+                detail_rows: detail,
+                qty_rows: qty,
+            },
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert!(error.message().contains("本期完工金额"));
     }
 }

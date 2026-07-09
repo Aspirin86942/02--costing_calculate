@@ -162,18 +162,33 @@ mod tests {
         let sheet = workbook.add_worksheet();
         sheet.set_name("成本计算单").unwrap();
         sheet.write_string(0, 0, "年期").unwrap();
-        sheet.write_string(0, 1, "工单编号").unwrap();
-        sheet.write_string(0, 2, "日期").unwrap();
+        sheet.write_string(0, 1, "产品编码").unwrap();
+        sheet.write_string(0, 2, "产品名称").unwrap();
+        sheet.write_string(0, 3, "工单编号").unwrap();
+        sheet.write_string(0, 4, "工单行号").unwrap();
+        sheet.write_string(0, 5, "本期完工数量").unwrap();
+        sheet.write_string(0, 6, "本期完工金额").unwrap();
+        sheet.write_string(0, 7, "日期").unwrap();
         sheet.write_string(1, 0, "").unwrap();
         sheet.write_string(1, 1, "").unwrap();
         sheet.write_string(1, 2, "").unwrap();
+        sheet.write_string(1, 3, "").unwrap();
+        sheet.write_string(1, 4, "").unwrap();
+        sheet.write_string(1, 5, "").unwrap();
+        sheet.write_string(1, 6, "").unwrap();
+        sheet.write_string(1, 7, "").unwrap();
         sheet.write_string(2, 0, "2025年01期").unwrap();
-        sheet.write_string(2, 1, "WO-1").unwrap();
+        sheet.write_string(2, 1, "P1").unwrap();
+        sheet.write_string(2, 2, "产品").unwrap();
+        sheet.write_string(2, 3, "WO-1").unwrap();
+        sheet.write_string(2, 4, "1").unwrap();
+        sheet.write_number(2, 5, 1).unwrap();
+        sheet.write_number(2, 6, 10).unwrap();
         let date_format = Format::new().set_num_format("yyyy-mm-dd");
         sheet
             .write_datetime_with_format(
                 2,
-                2,
+                7,
                 ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
                 &date_format,
             )
@@ -224,13 +239,33 @@ mod tests {
         let sheet = workbook.add_worksheet();
         sheet.set_name("成本计算单").unwrap();
         sheet.write_string(0, 0, "年期").unwrap();
-        sheet.write_string(0, 1, "工单编号").unwrap();
+        sheet.write_string(0, 1, "产品编码").unwrap();
+        sheet.write_string(0, 2, "产品名称").unwrap();
+        sheet.write_string(0, 3, "工单编号").unwrap();
+        sheet.write_string(0, 4, "工单行号").unwrap();
+        sheet.write_string(0, 5, "本期完工数量").unwrap();
+        sheet.write_string(0, 6, "本期完工金额").unwrap();
         sheet.write_string(1, 0, "").unwrap();
         sheet.write_string(1, 1, "").unwrap();
+        sheet.write_string(1, 2, "").unwrap();
+        sheet.write_string(1, 3, "").unwrap();
+        sheet.write_string(1, 4, "").unwrap();
+        sheet.write_string(1, 5, "").unwrap();
+        sheet.write_string(1, 6, "").unwrap();
         sheet.write_string(2, 0, "2025年01期").unwrap();
-        sheet.write_string(2, 1, "WO-1").unwrap();
+        sheet.write_string(2, 1, "P1").unwrap();
+        sheet.write_string(2, 2, "产品").unwrap();
+        sheet.write_string(2, 3, "WO-1").unwrap();
+        sheet.write_string(2, 4, "1").unwrap();
+        sheet.write_number(2, 5, 1).unwrap();
+        sheet.write_number(2, 6, 10).unwrap();
         sheet.write_string(3, 0, "2025年02期").unwrap();
-        sheet.write_string(3, 1, "WO-2").unwrap();
+        sheet.write_string(3, 1, "P2").unwrap();
+        sheet.write_string(3, 2, "产品").unwrap();
+        sheet.write_string(3, 3, "WO-2").unwrap();
+        sheet.write_string(3, 4, "1").unwrap();
+        sheet.write_number(3, 5, 1).unwrap();
+        sheet.write_number(3, 6, 10).unwrap();
         workbook.save(&path).unwrap();
 
         let args = CliArgs {

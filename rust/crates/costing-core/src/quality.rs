@@ -31,11 +31,14 @@ mod tests {
             detail_fact: vec![TableRow {
                 values: BTreeMap::new(),
             }],
-            qty_fact: vec![TableRow {
-                values: BTreeMap::new(),
-            }, TableRow {
-                values: BTreeMap::new(),
-            }],
+            qty_fact: vec![
+                TableRow {
+                    values: BTreeMap::new(),
+                },
+                TableRow {
+                    values: BTreeMap::new(),
+                },
+            ],
             work_order_fact: Vec::new(),
             error_issues: Vec::new(),
         };

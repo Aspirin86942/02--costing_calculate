@@ -4,6 +4,7 @@ pub mod fact;
 pub mod model;
 pub mod normalize;
 pub mod pipeline;
+pub mod presentation;
 pub mod quality;
 pub mod scoring;
 pub mod split;

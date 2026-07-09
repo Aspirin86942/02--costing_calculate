@@ -1,5 +1,6 @@
 use costing_core::fact::{build_fact_bundle, build_qty_sheet_rows};
 use costing_core::normalize::{build_month_range, normalize_workbook};
+use costing_core::presentation::build_workbook_payload;
 use costing_core::quality::build_quality_metrics;
 use costing_core::split::split_detail_and_qty;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
@@ -27,14 +28,15 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     timings.insert("work_order_rows", bundle.work_order_fact.len() as f64);
     timings.insert("qty_sheet_rows", qty_sheet_rows.len() as f64);
     timings.insert("quality_metric_count", quality_metrics.len() as f64);
+    let payload = build_workbook_payload(bundle, &pipeline, timings.clone())?;
 
     Ok(RunSummary {
         status: "succeeded".to_string(),
         pipeline: pipeline.name.as_str().to_string(),
         output_written,
         workbook_path: args.output.map(|path| path.display().to_string()),
-        sheet_count: 0,
-        error_log_count: bundle.error_issues.len(),
+        sheet_count: payload.sheet_models.len(),
+        error_log_count: payload.error_log_count,
         stage_timings: timings,
     })
 }
@@ -209,6 +211,7 @@ mod tests {
         assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&1.0));
         assert_eq!(summary.stage_timings.stages.get("detail_rows"), Some(&0.0));
         assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
+        assert_eq!(summary.sheet_count, 3);
         assert!(!summary.output_written);
         let _ = std::fs::remove_file(path);
     }

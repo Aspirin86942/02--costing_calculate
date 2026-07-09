@@ -131,6 +131,7 @@ pub struct RunSummary {
     pub error_log_preview: Vec<ErrorIssue>,
     pub error_log_preview_truncated: bool,
     pub quality_metrics: Vec<QualityMetric>,
+    pub run_counts: BTreeMap<String, usize>,
     pub stage_timings: StageTimings,
 }
 

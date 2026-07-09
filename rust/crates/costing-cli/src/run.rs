@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
-use costing_core::fact::{build_fact_bundle, build_qty_sheet_rows};
+use costing_core::fact::build_fact_bundle;
 use costing_core::normalize::{build_month_range, normalize_workbook};
 use costing_core::presentation::build_workbook_payload;
-use costing_core::quality::build_quality_metrics;
 use costing_core::split::split_detail_and_qty;
+use costing_core::timing::measure;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{
     reader::read_raw_workbook, snapshot::build_reader_snapshot, writer::write_workbook,
@@ -18,29 +19,56 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     validate_cli_request(&args)?;
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
     let pipeline = PipelineConfig::for_name(args.pipeline);
-    let raw = read_raw_workbook(&args.input)?;
-    let snapshot = build_reader_snapshot(&raw);
-    let normalized = normalize_workbook(raw, &pipeline, month_range)?;
-    let split = split_detail_and_qty(normalized)?;
-    let bundle = build_fact_bundle(split, &pipeline)?;
-    let qty_sheet_rows = build_qty_sheet_rows(&bundle, &pipeline);
-    let quality_metrics = build_quality_metrics(&bundle);
     let mut timings = StageTimings::default();
-    timings.insert("ingest", 0.0);
-    timings.insert("reader_rows", snapshot.row_count as f64);
-    timings.insert("detail_rows", bundle.detail_fact.len() as f64);
-    timings.insert("qty_rows", bundle.qty_fact.len() as f64);
-    timings.insert("work_order_rows", bundle.work_order_fact.len() as f64);
-    timings.insert("qty_sheet_rows", qty_sheet_rows.len() as f64);
-    timings.insert("quality_metric_count", quality_metrics.len() as f64);
-    let payload = build_workbook_payload(bundle, &pipeline, timings.clone())?;
+    let total_started = args.benchmark.then(Instant::now);
+    let (raw, snapshot) = measure(&mut timings, "ingest", || {
+        let raw = read_raw_workbook(&args.input)?;
+        let snapshot = build_reader_snapshot(&raw);
+        Ok::<_, anyhow::Error>((raw, snapshot))
+    })?;
+    let normalized = measure(&mut timings, "normalize", || {
+        Ok::<_, anyhow::Error>(normalize_workbook(raw, &pipeline, month_range)?)
+    })?;
+    let split = measure(&mut timings, "split", || {
+        Ok::<_, anyhow::Error>(split_detail_and_qty(normalized)?)
+    })?;
+    let bundle = measure(&mut timings, "fact", || {
+        Ok::<_, anyhow::Error>(build_fact_bundle(split, &pipeline)?)
+    })?;
+    let mut run_counts = BTreeMap::from([
+        ("reader_rows".to_string(), snapshot.row_count),
+        ("detail_rows".to_string(), bundle.detail_fact.len()),
+        ("qty_rows".to_string(), bundle.qty_fact.len()),
+        ("work_order_rows".to_string(), bundle.work_order_fact.len()),
+    ]);
+    let payload_timings = timings.clone();
+    let payload = measure(&mut timings, "presentation", || {
+        build_workbook_payload(bundle, &pipeline, payload_timings)
+    })?;
+    run_counts.insert(
+        "qty_sheet_rows".to_string(),
+        payload
+            .sheet_models
+            .iter()
+            .find(|sheet| sheet.sheet_name == "成本计算单数量聚合维度")
+            .expect("workbook payload must contain the quantity aggregation sheet")
+            .rows
+            .len(),
+    );
+    run_counts.insert(
+        "quality_metric_count".to_string(),
+        payload.quality_metrics.len(),
+    );
     let workbook_path = args.output.as_ref().map(|path| path.display().to_string());
     if !args.check_only {
         let output = args
             .output
             .as_ref()
             .expect("validate_cli_request requires --output for non check-only runs");
-        write_workbook(output, &payload)?;
+        measure(&mut timings, "export", || write_workbook(output, &payload))?;
+    }
+    if let Some(started) = total_started {
+        timings.insert("total", started.elapsed().as_secs_f64());
     }
     let mut issue_type_counts = BTreeMap::new();
     for issue in &payload.error_log {
@@ -66,6 +94,7 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         error_log_preview_truncated: payload.error_log.len() > ERROR_LOG_PREVIEW_LIMIT,
         error_log_preview,
         quality_metrics: payload.quality_metrics,
+        run_counts,
         stage_timings: timings,
     })
 }
@@ -116,7 +145,7 @@ mod tests {
     use std::process;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use costing_core::{ErrorCode, PipelineName};
+    use costing_core::{ErrorCode, PipelineName, RunSummary};
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
     use super::*;
@@ -187,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn run_populates_reader_rows_from_input_workbook() {
+    fn run_reports_actual_stage_timings_and_exact_run_counts() {
         let path = unique_temp_path(&std::env::temp_dir(), "run-reader", "xlsx");
         write_minimal_input_workbook(&path);
 
@@ -202,9 +231,8 @@ mod tests {
         };
         let summary = run(args).unwrap();
 
-        assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&1.0));
-        assert_eq!(summary.stage_timings.stages.get("detail_rows"), Some(&0.0));
-        assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
+        assert_run_counts(&summary, 1, 0, 1, 1, 1, 10);
+        assert_stage_timings(&summary, false, false);
         assert_eq!(summary.sheet_count, 3);
         assert!(summary
             .quality_metrics
@@ -246,8 +274,29 @@ mod tests {
         assert!(summary.output_written);
         assert_eq!(summary.workbook_path, Some(output.display().to_string()));
         assert!(output.exists());
+        assert_stage_timings(&summary, true, false);
         let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn run_adds_total_timing_only_when_benchmark_is_enabled() {
+        let path = unique_temp_path(&std::env::temp_dir(), "run-benchmark", "xlsx");
+        write_minimal_input_workbook(&path);
+
+        let summary = run(CliArgs {
+            pipeline: PipelineName::Gb,
+            input: path.clone(),
+            output: None,
+            month_start: None,
+            month_end: None,
+            check_only: true,
+            benchmark: true,
+        })
+        .unwrap();
+
+        assert_stage_timings(&summary, false, true);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -341,9 +390,49 @@ mod tests {
         };
         let summary = run(args).unwrap();
 
-        assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&2.0));
-        assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
+        assert_run_counts(&summary, 2, 0, 1, 1, 1, 10);
         let _ = std::fs::remove_file(path);
+    }
+
+    fn assert_run_counts(
+        summary: &RunSummary,
+        reader_rows: usize,
+        detail_rows: usize,
+        qty_rows: usize,
+        work_order_rows: usize,
+        qty_sheet_rows: usize,
+        quality_metric_count: usize,
+    ) {
+        assert_eq!(summary.run_counts.len(), 6);
+        assert_eq!(summary.run_counts.get("reader_rows"), Some(&reader_rows));
+        assert_eq!(summary.run_counts.get("detail_rows"), Some(&detail_rows));
+        assert_eq!(summary.run_counts.get("qty_rows"), Some(&qty_rows));
+        assert_eq!(
+            summary.run_counts.get("work_order_rows"),
+            Some(&work_order_rows)
+        );
+        assert_eq!(
+            summary.run_counts.get("qty_sheet_rows"),
+            Some(&qty_sheet_rows)
+        );
+        assert_eq!(
+            summary.run_counts.get("quality_metric_count"),
+            Some(&quality_metric_count)
+        );
+    }
+
+    fn assert_stage_timings(summary: &RunSummary, has_export: bool, has_total: bool) {
+        let timings = &summary.stage_timings.stages;
+        for stage in ["ingest", "normalize", "split", "fact", "presentation"] {
+            assert!(timings.contains_key(stage), "missing timing for {stage}");
+        }
+        assert_eq!(timings.contains_key("export"), has_export);
+        assert_eq!(timings.contains_key("total"), has_total);
+        assert!(timings.keys().all(|stage| !stage.ends_with("_rows")));
+        assert!(!timings.contains_key("quality_metric_count"));
+        assert!(timings
+            .values()
+            .all(|seconds| seconds.is_finite() && *seconds >= 0.0));
     }
 
     fn unique_temp_path(base_dir: &std::path::Path, suffix: &str, ext: &str) -> PathBuf {

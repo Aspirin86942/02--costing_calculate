@@ -1,0 +1,7 @@
+[package]
+name = "costing-oracle-tests"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+costing-core = { path = "../costing-core" }

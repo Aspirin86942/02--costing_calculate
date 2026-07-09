@@ -2,6 +2,7 @@
 members = [
     "crates/costing-cli",
     "crates/costing-core",
+    "crates/costing-oracle-tests",
     "crates/costing-xlsx",
 ]
 resolver = "2"

@@ -314,6 +314,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "costing-oracle-tests"
+version = "0.1.0"
+dependencies = [
+ "costing-core",
+]
+
+[[package]]
 name = "costing-xlsx"
 version = "0.1.0"
 dependencies = [

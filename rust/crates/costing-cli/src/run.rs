@@ -72,6 +72,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use costing_core::{ErrorCode, PipelineName};
+    use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
     use super::*;
     use crate::args::CliArgs;
@@ -140,17 +141,59 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn run_populates_reader_rows_from_input_workbook() {
+        let path = unique_temp_path(&std::env::temp_dir(), "run-reader", "xlsx");
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("成本计算单").unwrap();
+        sheet.write_string(0, 0, "项目").unwrap();
+        sheet.write_string(0, 1, "金额").unwrap();
+        sheet.write_string(0, 2, "日期").unwrap();
+        sheet.write_string(1, 0, "").unwrap();
+        sheet.write_string(1, 1, "").unwrap();
+        sheet.write_string(1, 2, "").unwrap();
+        sheet.write_string(2, 0, "首行").unwrap();
+        sheet.write_number(2, 1, 0.1).unwrap();
+        let date_format = Format::new().set_num_format("yyyy-mm-dd");
+        sheet
+            .write_datetime_with_format(
+                2,
+                2,
+                ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
+                &date_format,
+            )
+            .unwrap();
+        workbook.save(&path).unwrap();
+
+        let args = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: path.clone(),
+            output: None,
+            month_start: None,
+            month_end: None,
+            check_only: true,
+            benchmark: false,
+        };
+        let summary = run(args).unwrap();
+
+        assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&1.0));
+        assert!(!summary.output_written);
+        let _ = std::fs::remove_file(path);
+    }
+
     fn unique_temp_path(base_dir: &std::path::Path, suffix: &str, ext: &str) -> PathBuf {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        base_dir.join(format!(
-            "costing-rust-{}-pid{}-{}",
-            suffix,
-            process::id(),
-            now
-        ))
-        .with_extension(ext)
+        base_dir
+            .join(format!(
+                "costing-rust-{}-pid{}-{}",
+                suffix,
+                process::id(),
+                now
+            ))
+            .with_extension(ext)
     }
 }

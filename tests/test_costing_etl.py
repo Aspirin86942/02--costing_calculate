@@ -534,7 +534,7 @@ def test_workbook_writer_can_export_sheet_models_with_conditional_formats(tmp_pa
     assert worksheet.conditional_formatting
 
 
-def test_build_sheet_models_outputs_four_business_named_sheets() -> None:
+def test_build_sheet_models_outputs_three_default_business_sheets() -> None:
     models = build_sheet_models(
         detail_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
         qty_sheet_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
@@ -550,8 +550,8 @@ def test_build_sheet_models_outputs_four_business_named_sheets() -> None:
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
-        '成本分析产品维度',
     ]
+    assert all(model.sheet_name != '成本分析产品维度' for model in models)
 
 
 def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> None:
@@ -588,10 +588,12 @@ def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> Non
             product_anomaly_sections=product_sections,
         )
 
-    assert len(models) == 4
-    product_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
-    assert product_model.freeze_panes == 'A4'
-    assert list(product_model.rows_factory())[0][0:2] == ('P001', '产品A')
+    assert [model.sheet_name for model in models] == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+    ]
+    assert all(model.sheet_name != '成本分析产品维度' for model in models)
 
 
 def test_build_sheet_models_handles_leading_nan_before_text_in_pandas_object_column() -> None:
@@ -654,9 +656,8 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
     detail_model = next(model for model in models if model.sheet_name == '成本计算单总表')
     qty_model = next(model for model in models if model.sheet_name == '成本计算单数量聚合维度')
     work_order_model = next(model for model in models if model.sheet_name == '成本分析工单维度')
-    product_anomaly_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
 
-    assert len(models) == 4
+    assert len(models) == 3
     assert detail_model.write_mode == 'dataframe_fast'
     assert detail_model.style_profile == 'lightweight_flat'
     assert isinstance(detail_model.source_frame, pl.DataFrame)
@@ -692,9 +693,6 @@ def test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets() -> None:
             strict=False,
         ).to_dicts()
     )
-    assert product_anomaly_model.write_mode is None
-    assert product_anomaly_model.style_profile is None
-    assert product_anomaly_model.source_frame is None
 
 
 def test_dataframe_to_sheet_model_rejects_invalid_fast_metadata() -> None:
@@ -802,7 +800,7 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     assert worksheet.freeze_panes == 'A4'
 
 
-def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() -> None:
+def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract() -> None:
     models = build_sheet_models(
         detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
         qty_sheet_df=pd.DataFrame(
@@ -820,25 +818,15 @@ def test_build_sheet_models_serializes_scope_label_for_product_anomaly_rows() ->
                 outlier_cells=set(),
                 section_label='全部',
             ),
-            ProductAnomalySection(
-                product_code='P001',
-                product_name='产品A',
-                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
-                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                amount_columns=['总成本'],
-                outlier_cells=set(),
-                section_label='正常生产',
-            ),
         ],
     )
 
-    product_model = next(model for model in models if model.sheet_name == '成本分析产品维度')
-    rows = list(product_model.rows_factory())
-
-    assert product_model.columns[:4] == ('产品编码', '产品名称', '分析口径', '月份')
-    assert rows[0][:4] == ('P001', '产品A', '全部', '2025年01期')
-    assert rows[1][:4] == ('P001', '产品A', '正常生产', '2025年01期')
-    assert product_model.freeze_panes == 'A5'
+    assert [model.sheet_name for model in models] == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+    ]
+    assert all(model.sheet_name != '成本分析产品维度' for model in models)
 
 
 def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
@@ -1254,8 +1242,8 @@ def test_build_sheet_models_handles_fact_bundle_summary_without_pyarrow() -> Non
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
-        '成本分析产品维度',
     ]
+    assert all(model.sheet_name != '成本分析产品维度' for model in models)
 
 
 def test_write_dataframe_fast_keeps_blank_numeric_cell_format(tmp_path) -> None:

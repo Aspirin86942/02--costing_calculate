@@ -124,20 +124,13 @@ def build_sheet_models(
     work_order_sheet: FlatSheet,
     product_anomaly_sections: list[ProductAnomalySection],
 ) -> tuple[SheetModel, ...]:
-    """构建 workbook 的 4 张业务 SheetModel。"""
+    """构建默认 workbook 的 3 张业务 SheetModel。"""
     detail_frame = _to_polars_frame(detail_df)
     qty_frame = _to_polars_frame(qty_sheet_df)
 
     work_order_frame = _to_polars_frame(work_order_sheet.data)
     work_order_column_types = dict(work_order_sheet.column_types)
     work_order_number_formats = _build_number_formats(work_order_column_types)
-
-    (
-        product_anomaly_frame,
-        product_anomaly_column_types,
-        has_scoped_product_anomaly_section,
-    ) = _build_product_anomaly_frame(product_anomaly_sections)
-    product_anomaly_number_formats = _build_number_formats(product_anomaly_column_types)
 
     detail_model = dataframe_to_sheet_model(
         sheet_name='成本计算单总表',
@@ -168,19 +161,10 @@ def build_sheet_models(
         style_profile='lightweight_flat',
         source_frame=work_order_frame,
     )
-    product_anomaly_model = dataframe_to_sheet_model(
-        sheet_name='成本分析产品维度',
-        frame=product_anomaly_frame,
-        column_types=product_anomaly_column_types,
-        number_formats=product_anomaly_number_formats,
-        freeze_panes='A5' if has_scoped_product_anomaly_section else 'A4',
-        fixed_width=15.0,
-    )
     return (
         detail_model,
         qty_model,
         work_order_model,
-        product_anomaly_model,
     )
 
 

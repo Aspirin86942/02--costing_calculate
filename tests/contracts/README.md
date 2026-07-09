@@ -42,3 +42,14 @@ Bash 示例：
 ```bash
 COSTING_GB_SAMPLE=... COSTING_SK_SAMPLE=... uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
 ```
+
+## Rust Oracle Parity
+
+Rust rewrite 必须通过 Python oracle 比对后，才能替换 Python 默认路径。
+
+Required checks:
+
+- `tests/test_full_rust_cli_oracle.py`
+- `tests/test_full_rust_cli_benchmark.py`
+
+验证器会拒绝任何包含 `成本分析产品维度` 的 Rust workbook。

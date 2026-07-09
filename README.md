@@ -34,6 +34,25 @@ uv run python main.py gb --check-only --benchmark
 uv run python main.py sk --check-only --benchmark
 ```
 
+## Rust CLI
+
+Rust CLI 是完成 GB/SK 全量校验后的目标主入口：
+
+```powershell
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
+```
+
+Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
+
+- `成本计算单总表`
+- `成本计算单数量聚合维度`
+- `成本分析工单维度`
+
+`成本分析产品维度` 不属于 Rust 新系统输出契约。
+
 ## 输出说明
 每个处理后的工作簿默认按顺序输出以下 3 张 Sheet：
 - `成本计算单总表`

@@ -75,7 +75,8 @@ fn null_rate(rows: &[TableRow], column: &str) -> f64 {
     }
     let null_count = rows
         .iter()
-        .filter(|row| row.values.get(column).map(is_blank_like).unwrap_or(true))
+        // fact 中未出现的派生金额 bucket 会在数量页按 0 写出，不应计为空值。
+        .filter(|row| row.values.get(column).is_some_and(is_blank_like))
         .count();
     null_count as f64 / rows.len() as f64
 }
@@ -299,6 +300,7 @@ mod tests {
         assert_eq!(metric_map["因完工数量无效被过滤行数"].value, "1");
         assert_eq!(metric_map["因总完工成本为空被过滤行数"].value, "0");
         assert_eq!(metric_map["直接材料金额缺失率"].category, "空值率");
+        assert_eq!(metric_map["直接材料金额缺失率"].value, "0.00%");
         assert_eq!(metric_map["工单主键重复行数"].category, "唯一性检查");
         assert_eq!(metric_map["可参与分析占比"].category, "分析覆盖率");
         assert_eq!(metric_map["可参与分析占比"].value, "50.00%");

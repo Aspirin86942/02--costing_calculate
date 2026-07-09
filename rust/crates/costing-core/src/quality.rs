@@ -14,9 +14,27 @@ pub fn build_quality_metrics(bundle: &FactBundle) -> Vec<QualityMetric> {
         },
         QualityMetric {
             category: "行数勾稽".to_string(),
+            metric: "产品数量统计输入行数".to_string(),
+            value: bundle.qty_input_row_count.to_string(),
+            description: "拆分后的数量页原始行数".to_string(),
+        },
+        QualityMetric {
+            category: "行数勾稽".to_string(),
             metric: "产品数量统计输出行数".to_string(),
             value: bundle.qty_fact.len().to_string(),
             description: "仅保留完工数量大于 0 且总完工成本非空的工单".to_string(),
+        },
+        QualityMetric {
+            category: "行数勾稽".to_string(),
+            metric: "因完工数量无效被过滤行数".to_string(),
+            value: bundle.filtered_invalid_qty_count.to_string(),
+            description: "过滤条件包含完工数量为空、等于 0 或小于 0".to_string(),
+        },
+        QualityMetric {
+            category: "行数勾稽".to_string(),
+            metric: "因总完工成本为空被过滤行数".to_string(),
+            value: bundle.filtered_missing_total_amount_count.to_string(),
+            description: "仅统计完工数量有效但总完工成本为空的工单".to_string(),
         },
         QualityMetric {
             category: "行数勾稽".to_string(),
@@ -175,6 +193,9 @@ mod tests {
                 values: BTreeMap::new(),
             }],
             qty_columns: Vec::new(),
+            qty_input_row_count: 3,
+            filtered_invalid_qty_count: 1,
+            filtered_missing_total_amount_count: 0,
             qty_fact: vec![
                 TableRow {
                     values: BTreeMap::from([
@@ -237,7 +258,10 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         assert_eq!(metric_map["成本明细输入行数"].value, "1");
+        assert_eq!(metric_map["产品数量统计输入行数"].value, "3");
         assert_eq!(metric_map["产品数量统计输出行数"].value, "2");
+        assert_eq!(metric_map["因完工数量无效被过滤行数"].value, "1");
+        assert_eq!(metric_map["因总完工成本为空被过滤行数"].value, "0");
         assert_eq!(metric_map["直接材料金额缺失率"].category, "空值率");
         assert_eq!(metric_map["工单主键重复行数"].category, "唯一性检查");
         assert_eq!(metric_map["可参与分析占比"].category, "分析覆盖率");

@@ -104,6 +104,17 @@ pub fn build_fact_bundle(
         }
     }
 
+    let qty_input_row_count = split.qty_rows.len();
+    let filtered_invalid_qty_count = split
+        .qty_rows
+        .iter()
+        .filter(|row| !has_positive_completed_qty(row))
+        .count();
+    let filtered_missing_total_amount_count = split
+        .qty_rows
+        .iter()
+        .filter(|row| has_positive_completed_qty(row) && !has_completed_amount(row))
+        .count();
     let valid_qty_rows = split
         .qty_rows
         .into_iter()
@@ -193,6 +204,9 @@ pub fn build_fact_bundle(
         detail_columns: split.detail_columns,
         detail_fact: split.detail_rows,
         qty_columns: split.qty_columns,
+        qty_input_row_count,
+        filtered_invalid_qty_count,
+        filtered_missing_total_amount_count,
         qty_fact,
         work_order_fact,
         error_issues,
@@ -477,10 +491,17 @@ fn decimal(row: &TableRow, column: &str) -> Option<Decimal> {
 }
 
 fn is_valid_qty_row(row: &TableRow) -> bool {
+    has_positive_completed_qty(row) && has_completed_amount(row)
+}
+
+fn has_positive_completed_qty(row: &TableRow) -> bool {
     decimal(row, "本期完工数量")
         .map(|value| value > ZERO)
         .unwrap_or(false)
-        && decimal(row, "本期完工金额").is_some()
+}
+
+fn has_completed_amount(row: &TableRow) -> bool {
+    decimal(row, "本期完工金额").is_some()
 }
 
 fn decimal_from_values(values: &BTreeMap<String, CellValue>, column: &str) -> Decimal {
@@ -920,5 +941,58 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::InvalidInput);
         assert!(error.message().contains("本期完工金额"));
+    }
+
+    #[test]
+    fn fact_bundle_keeps_qty_filter_audit_counts() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+        let qty = vec![
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO1".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+            ]),
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO-ZERO".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::ZERO)),
+                ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+            ]),
+            row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text("WO-MISSING".to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
+                ("本期完工金额", CellValue::Blank),
+            ]),
+        ];
+
+        let bundle = build_fact_bundle(
+            split_result(detail, qty),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(bundle.qty_input_row_count, 3);
+        assert_eq!(bundle.filtered_invalid_qty_count, 1);
+        assert_eq!(bundle.filtered_missing_total_amount_count, 1);
+        assert_eq!(bundle.qty_fact.len(), 1);
     }
 }

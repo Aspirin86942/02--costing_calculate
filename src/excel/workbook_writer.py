@@ -99,7 +99,6 @@ class CostingWorkbookWriter:
                 columns=work_order_sheet.data.columns.tolist(),
                 max_row=len(work_order_sheet.data) + 1,
             )
-            self.sheet_writer.write_product_anomaly_sheet(writer, '成本分析产品维度', product_anomaly_sections)
 
     def write_workbook_from_models(self, output_path: Path, *, sheet_models: Sequence[SheetModel]) -> None:
         """按 SheetModel 契约写出完整 workbook。"""

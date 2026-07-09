@@ -365,6 +365,43 @@ def test_workbook_writer_routes_hot_sheets_to_fast_writer(tmp_path) -> None:
     dataframe_writer_mock.assert_not_called()
 
 
+def test_write_workbook_legacy_entrypoint_writes_three_default_sheets(tmp_path: Path) -> None:
+    output_path = tmp_path / 'legacy_entrypoint_three_sheets.xlsx'
+    writer = CostingWorkbookWriter()
+    detail_df = pd.DataFrame([{'月份': '2025年01期', '本期完工单位成本': 10.0, '本期完工金额': 100.0}])
+    qty_sheet_df = pd.DataFrame([{'月份': '2025年01期', '本期完工数量': 10.0, '本期完工金额': 100.0}])
+    work_order_sheet = FlatSheet(
+        data=pd.DataFrame([{'月份': '2025年01期', '本期完工数量': 10.0}]),
+        column_types={'月份': 'text', '本期完工数量': 'qty'},
+    )
+    product_sections = [
+        ProductAnomalySection(
+            product_code='P001',
+            product_name='产品A',
+            data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0}]),
+            column_types={'月份': 'text', '总成本': 'amount'},
+            amount_columns=['总成本'],
+            outlier_cells=set(),
+        )
+    ]
+
+    writer.write_workbook(
+        output_path,
+        detail_df=detail_df,
+        qty_sheet_df=qty_sheet_df,
+        work_order_sheet=work_order_sheet,
+        product_anomaly_sections=product_sections,
+    )
+
+    workbook = load_workbook(output_path)
+    assert workbook.sheetnames == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+    ]
+    assert '成本分析产品维度' not in workbook.sheetnames
+
+
 def test_legacy_price_volume_writer_api_is_not_exposed() -> None:
     signature = inspect.signature(CostingWorkbookWriter.write_workbook)
     legacy_param_name = 'analysis' + '_tables'
@@ -556,6 +593,31 @@ def test_build_sheet_models_outputs_three_default_business_sheets() -> None:
         '成本分析工单维度',
     ]
     assert all(model.sheet_name != '成本分析产品维度' for model in models)
+
+
+def test_write_workbook_from_models_writes_three_default_sheets(tmp_path: Path) -> None:
+    output_path = tmp_path / 'models_three_sheets.xlsx'
+    writer = CostingWorkbookWriter()
+    sheet_models = build_sheet_models(
+        detail_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        qty_sheet_df=pd.DataFrame([{'月份': '2025年01期', '本期完工金额': 100.0}]),
+        fact_bundle=None,
+        work_order_sheet=FlatSheet(
+            data=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
+            column_types={'月份': 'text', '产品编码': 'text'},
+        ),
+        product_anomaly_sections=[],
+    )
+
+    writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
+
+    workbook = load_workbook(output_path)
+    assert workbook.sheetnames == [
+        '成本计算单总表',
+        '成本计算单数量聚合维度',
+        '成本分析工单维度',
+    ]
+    assert '成本分析产品维度' not in workbook.sheetnames
 
 
 def test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs() -> None:
@@ -1450,7 +1512,6 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
-        '成本分析产品维度',
     ]
     assert xls.sheet_names == expected_sheets
 
@@ -1507,11 +1568,7 @@ def test_process_file_writes_v3_analysis_sheets(tmp_path) -> None:
     assert ws_work_order.freeze_panes == 'A2'
     assert ws_work_order.auto_filter.ref is not None
 
-    ws_product = wb['成本分析产品维度']
-    assert ws_product['A1'].value == '产品编码'
-    assert ws_product['A2'].value == 'GB_C.D.B0040AA'
-    assert ws_product['A3'].value == '月份'
-    assert ws_product.freeze_panes == 'A4'
+    assert '成本分析产品维度' not in wb.sheetnames
     assert 'error_log' not in wb.sheetnames
 
     quality_metrics = {metric.metric: metric.value for metric in etl.last_quality_metrics}
@@ -1565,7 +1622,7 @@ def test_process_file_logs_new_payload_stage_timings(caplog, tmp_path) -> None:
 
 
 def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
-    """轻量导出骨架：仍写出7张sheet，关键明细页保留A2冻结和数值格式。"""
+    """轻量导出骨架：写出三张默认 sheet，关键明细页保留A2冻结和数值格式。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -1616,7 +1673,6 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
         '成本计算单总表',
         '成本计算单数量聚合维度',
         '成本分析工单维度',
-        '成本分析产品维度',
     ]
 
     wb = load_workbook(output_path)

@@ -10,6 +10,7 @@ __pycache__/
 
 # build metadata
 *.egg-info/
+rust/target/
 
 # data files (ERP sensitive)
 data/raw/

@@ -64,7 +64,7 @@ pub fn build_quality_metrics(bundle: &FactBundle) -> Vec<QualityMetric> {
             category: "分析覆盖率".to_string(),
             metric: "可参与分析占比".to_string(),
             value: format_rate(analyzable_rate(&bundle.work_order_fact)),
-            description: "按完工数量和总单位成本基础条件估算可分析工单占比".to_string(),
+            description: "按完工数量、总单位成本和单据类型归类估算可分析工单占比".to_string(),
         },
     ]
 }
@@ -123,10 +123,17 @@ fn analyzable_rate(rows: &[TableRow]) -> f64 {
                 .get("completed_amount_total")
                 .and_then(cell_to_decimal)
                 .unwrap_or(Decimal::ZERO);
-            qty > Decimal::ZERO && total > Decimal::ZERO
+            qty > Decimal::ZERO && total > Decimal::ZERO && has_analyzable_doc_type(row)
         })
         .count();
     analyzable as f64 / rows.len() as f64
+}
+
+fn has_analyzable_doc_type(row: &TableRow) -> bool {
+    matches!(
+        text_any(row, &["doc_type", "单据类型"]).trim(),
+        "汇报入库-普通生产" | "直接入库-普通生产" | "汇报入库-返工生产"
+    )
 }
 
 fn format_rate(value: f64) -> String {
@@ -151,6 +158,13 @@ fn work_order_key(row: &TableRow) -> String {
 
 fn text(row: &TableRow, column: &str) -> String {
     row.values.get(column).map(cell_to_text).unwrap_or_default()
+}
+
+fn text_any(row: &TableRow, columns: &[&str]) -> String {
+    columns
+        .iter()
+        .find_map(|column| row.values.get(*column).map(cell_to_text))
+        .unwrap_or_default()
 }
 
 fn is_blank_like(value: &CellValue) -> bool {
@@ -236,18 +250,40 @@ mod tests {
                     ]),
                 },
             ],
-            work_order_fact: vec![TableRow {
-                values: BTreeMap::from([
-                    (
-                        "completed_qty".to_string(),
-                        CellValue::Decimal(Decimal::ONE),
-                    ),
-                    (
-                        "completed_amount_total".to_string(),
-                        CellValue::Decimal(Decimal::new(100, 0)),
-                    ),
-                ]),
-            }],
+            work_order_fact: vec![
+                TableRow {
+                    values: BTreeMap::from([
+                        (
+                            "completed_qty".to_string(),
+                            CellValue::Decimal(Decimal::ONE),
+                        ),
+                        (
+                            "completed_amount_total".to_string(),
+                            CellValue::Decimal(Decimal::new(100, 0)),
+                        ),
+                        (
+                            "单据类型".to_string(),
+                            CellValue::Text("汇报入库-普通生产".to_string()),
+                        ),
+                    ]),
+                },
+                TableRow {
+                    values: BTreeMap::from([
+                        (
+                            "completed_qty".to_string(),
+                            CellValue::Decimal(Decimal::ONE),
+                        ),
+                        (
+                            "completed_amount_total".to_string(),
+                            CellValue::Decimal(Decimal::new(100, 0)),
+                        ),
+                        (
+                            "单据类型".to_string(),
+                            CellValue::Text("其他入库".to_string()),
+                        ),
+                    ]),
+                },
+            ],
             error_issues: Vec::new(),
         };
 
@@ -265,5 +301,6 @@ mod tests {
         assert_eq!(metric_map["直接材料金额缺失率"].category, "空值率");
         assert_eq!(metric_map["工单主键重复行数"].category, "唯一性检查");
         assert_eq!(metric_map["可参与分析占比"].category, "分析覆盖率");
+        assert_eq!(metric_map["可参与分析占比"].value, "50.00%");
     }
 }

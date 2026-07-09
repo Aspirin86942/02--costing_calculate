@@ -401,6 +401,63 @@ def test_run_pipeline_check_only_failure_logs_service_error_code(monkeypatch, ca
     assert 'error_code=OUTPUT_EXISTS' in error_text
 
 
+def test_run_pipeline_check_only_benchmark_prints_failed_status_without_quality_summary(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    input_file = tmp_path / 'GB-成本计算单.xlsx'
+    input_file.write_bytes(b'raw')
+    config = _config(tmp_path)
+    planned_workbook = config.processed_dir / 'GB-成本计算单_处理后.xlsx'
+
+    monkeypatch.setattr(
+        runner,
+        'load_product_order_for_pipeline',
+        lambda pipeline_name: (('GB_SERVICE', '服务白名单'),),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner,
+        'precheck_costing_run',
+        lambda request, *, validate_output_dir=True: _failed_result(
+            planned_workbook,
+            '输出 workbook 已存在',
+            error_code='OUTPUT_EXISTS',
+        ),
+        raising=False,
+    )
+
+    exit_code = run_pipeline(config, check_only=True, benchmark=True)
+    stdout = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert stdout.splitlines()[:8] == [
+        'mode=check-only',
+        'status=failed',
+        'pipeline=gb',
+        f'input={input_file}',
+        f'planned_output={planned_workbook}',
+        'error_log_count=0',
+        'error_code=OUTPUT_EXISTS',
+        'message=输出 workbook 已存在',
+    ]
+    assert '[quality_metrics]' not in stdout
+    assert '[benchmark]' in stdout
+
+
+def test_temporary_root_log_level_restores_previous_level() -> None:
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    root_logger.setLevel(logging.DEBUG)
+    try:
+        with runner._temporary_root_log_level(logging.WARNING):
+            assert root_logger.level == logging.WARNING
+        assert root_logger.level == logging.DEBUG
+    finally:
+        root_logger.setLevel(previous_level)
+
+
 def test_run_pipeline_normal_failure_logs_service_technical_detail(monkeypatch, caplog, tmp_path) -> None:
     caplog.set_level(logging.ERROR, logger='src.etl.runner')
     input_file = tmp_path / 'SK-成本计算单.xlsx'
@@ -495,22 +552,30 @@ def test_build_benchmark_log_text_reports_stage_timings_without_sidecar_fields(t
 
 def test_run_pipeline_check_only_benchmark_prints_service_timings_without_writing(
     monkeypatch,
+    caplog,
     capsys,
     tmp_path,
 ) -> None:
+    caplog.set_level(logging.INFO)
     input_file = tmp_path / 'SK-成本计算单.xlsx'
     input_file.write_bytes(b'raw')
     config = _config(tmp_path, name='sk')
+    month_range = MonthRange(start='2025-01', end='2025-03')
 
     def _fake_precheck_costing_run(
         request: CostingRunRequest,
         *,
         validate_output_dir: bool = True,
     ) -> CostingRunResult:
+        logging.getLogger('src.etl.costing_etl').info('Quality metric | should be hidden')
+        logging.getLogger('src.etl.costing_etl').warning('warning should stay visible')
         return _succeeded_result(
             _planned_workbook_path(request),
+            quality_metrics=(_metric('3'),),
+            error_log_count=2,
             stage_timings={'ingest': 0.5, 'export': 0.75},
             ingest_backend='calamine',
+            month_filter_summary=_month_filter_summary(month_range),
         )
 
     monkeypatch.setattr(
@@ -521,23 +586,41 @@ def test_run_pipeline_check_only_benchmark_prints_service_timings_without_writin
     )
     monkeypatch.setattr(runner, 'precheck_costing_run', _fake_precheck_costing_run, raising=False)
 
-    exit_code = run_pipeline(config, check_only=True, benchmark=True)
+    exit_code = run_pipeline(config, month_range=month_range, check_only=True, benchmark=True)
     stdout = capsys.readouterr().out
 
     assert exit_code == 0
+    assert stdout.splitlines()[:8] == [
+        'mode=check-only',
+        'status=succeeded',
+        'pipeline=sk',
+        f'input={input_file}',
+        f'planned_output={config.processed_dir / "SK-成本计算单_处理后_2025-01_2025-03.xlsx"}',
+        'error_log_count=2',
+        'month_range=[2025-01, 2025-03]',
+        'month_filter_rows=3->2',
+    ]
     assert '[benchmark]' in stdout
+    assert '[quality_metrics]' not in stdout
+    assert '产品数量统计输出行数=3' not in stdout
+    assert 'months_before=' not in stdout
+    assert 'months_after=' not in stdout
     assert 'output_written=false' in stdout
     assert 'ingest_backend=calamine' in stdout
     assert 'input_size_bytes=3' in stdout
     assert 'output_size_bytes=0' in stdout
     assert 'error_log_size_bytes' not in stdout
     assert 'planned_error_log' not in stdout
-    assert 'error_log_count=0' in stdout
+    assert stdout.count('error_log_count=2') == 2
     assert 'payload_total_seconds=0.500' in stdout
     assert 'export_seconds=0.000' in stdout
     assert 'stage_export_seconds=0.750' in stdout
     assert 'stage_ingest_seconds=0.500' in stdout
     assert not config.processed_dir.exists()
+    log_text = '\n'.join(record.message for record in caplog.records)
+    assert 'Quality metric | should be hidden' not in log_text
+    assert 'warning should stay visible' in log_text
+    assert '预检成功' not in log_text
 
 
 def test_run_pipeline_normal_benchmark_reports_export_timing_and_zero_error_log_size(

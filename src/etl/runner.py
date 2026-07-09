@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from src.analytics.contracts import QualityMetric
@@ -64,6 +65,40 @@ def build_quality_log_text(
         )
     lines.extend(['', '[quality_metrics]'])
     lines.extend(f'{metric.metric}={metric.value} | {metric.description}' for metric in quality_metrics)
+    return '\n'.join(lines)
+
+
+def build_check_only_benchmark_summary_text(
+    *,
+    result: CostingRunResult,
+    pipeline_name: str,
+    input_path: Path,
+    output_path: Path,
+) -> str:
+    """构建 check-only benchmark 的紧凑顶部摘要。"""
+    status_text = 'succeeded' if result.status == ServiceStatus.SUCCEEDED else 'failed'
+    lines = [
+        'mode=check-only',
+        f'status={status_text}',
+        f'pipeline={pipeline_name}',
+        f'input={input_path}',
+        f'planned_output={output_path}',
+        f'error_log_count={result.error_log_count}',
+    ]
+    if result.month_filter_summary is not None:
+        lines.extend(
+            [
+                f'month_range={result.month_filter_summary.month_range.describe()}',
+                f'month_filter_rows={result.month_filter_summary.input_rows}->{result.month_filter_summary.output_rows}',
+            ]
+        )
+    if result.status != ServiceStatus.SUCCEEDED:
+        lines.extend(
+            [
+                f'error_code={result.error_code or "-"}',
+                f'message={result.message}',
+            ]
+        )
     return '\n'.join(lines)
 
 
@@ -201,6 +236,17 @@ def _log_failed_result(prefix: str, result: CostingRunResult) -> None:
         logger.error('%s technical_detail=%s', prefix, result.technical_detail)
 
 
+@contextmanager
+def _temporary_root_log_level(level: int) -> Iterator[None]:
+    root_logger = logging.getLogger()
+    previous_level = root_logger.level
+    root_logger.setLevel(level)
+    try:
+        yield
+    finally:
+        root_logger.setLevel(previous_level)
+
+
 def run_pipeline(
     config: PipelineConfig,
     month_range: MonthRange | None = None,
@@ -219,14 +265,28 @@ def run_pipeline(
     request = _build_request(config=config, input_file=input_file, month_range=month_range, benchmark=benchmark)
 
     if check_only:
-        result = precheck_costing_run(request, validate_output_dir=False)
-        output_file = _result_workbook_path(result, config=config, input_file=input_file, month_range=month_range)
-        print('mode=check-only')
-        _print_quality_summary(result, config=config, input_file=input_file, output_file=output_file)
         if benchmark:
+            with _temporary_root_log_level(logging.WARNING):
+                result = precheck_costing_run(request, validate_output_dir=False)
+        else:
+            result = precheck_costing_run(request, validate_output_dir=False)
+        output_file = _result_workbook_path(result, config=config, input_file=input_file, month_range=month_range)
+        if benchmark:
+            print(
+                build_check_only_benchmark_summary_text(
+                    result=result,
+                    pipeline_name=config.name,
+                    input_path=input_file,
+                    output_path=output_file,
+                )
+            )
             _print_benchmark_summary(result, input_file=input_file, output_file=output_file, output_written=False)
+        else:
+            print('mode=check-only')
+            _print_quality_summary(result, config=config, input_file=input_file, output_file=output_file)
         if result.status == ServiceStatus.SUCCEEDED:
-            logger.info('预检成功: %s', input_file.name)
+            if not benchmark:
+                logger.info('预检成功: %s', input_file.name)
         else:
             _log_failed_result('预检失败', result)
         return _exit_code_from_status(result.status)

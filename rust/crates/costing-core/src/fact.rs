@@ -5,6 +5,7 @@ use rust_decimal::Decimal;
 use crate::error::CostingError;
 use crate::model::{CellValue, ErrorIssue, FactBundle, SplitResult, TableRow};
 use crate::pipeline::PipelineConfig;
+use crate::sheet_contract::qty_sheet_base_columns;
 
 const ZERO: Decimal = Decimal::ZERO;
 const DM_AMOUNT_KEY: &str = "dm_amount";
@@ -191,7 +192,7 @@ pub fn build_fact_bundle(
 }
 
 pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> Vec<String> {
-    let mut columns = source_columns.to_vec();
+    let mut columns = qty_sheet_base_columns(source_columns);
     append_column(&mut columns, QTY_DM_AMOUNT);
     append_column(&mut columns, QTY_DL_AMOUNT);
     append_column(&mut columns, QTY_MOH_AMOUNT);

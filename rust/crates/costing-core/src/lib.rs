@@ -7,6 +7,7 @@ pub mod pipeline;
 pub mod presentation;
 pub mod quality;
 pub mod scoring;
+pub mod sheet_contract;
 pub mod split;
 pub mod timing;
 

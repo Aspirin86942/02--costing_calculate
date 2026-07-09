@@ -1,5 +1,6 @@
 use crate::error::CostingError;
 use crate::model::{CellValue, NormalizedCostFrame, SplitResult, TableRow};
+use crate::sheet_contract::{detail_sheet_columns, qty_sheet_base_columns};
 
 const CHILD_MATERIAL_COLUMN: &str = "子项物料编码";
 const COST_ITEM_COLUMN: &str = "成本项目名称";
@@ -45,9 +46,9 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
     }
 
     Ok(SplitResult {
-        detail_columns: source_columns.clone(),
+        detail_columns: detail_sheet_columns(&source_columns),
         detail_rows,
-        qty_columns: source_columns,
+        qty_columns: qty_sheet_base_columns(&source_columns),
         qty_rows,
     })
 }
@@ -161,6 +162,97 @@ mod tests {
         assert_eq!(
             result.detail_rows[0].values["成本项目名称"],
             CellValue::Text("直接人工".to_string())
+        );
+    }
+
+    #[test]
+    fn split_columns_follow_python_sheet_contracts() {
+        let columns = [
+            "年期",
+            "月份",
+            "成本中心名称",
+            "产品编码",
+            "产品名称",
+            "工单编号",
+            "工单行号",
+            "供应商编码",
+            "成本项目名称",
+            "子项物料编码",
+            "Filled_成本项目",
+            "本期完工数量",
+            "本期完工金额",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let qty = TableRow {
+            values: BTreeMap::from([
+                (
+                    "工单编号".to_string(),
+                    CellValue::Text("WO-QTY".to_string()),
+                ),
+                ("成本项目名称".to_string(), CellValue::Blank),
+                ("子项物料编码".to_string(), CellValue::Blank),
+            ]),
+        };
+        let detail = TableRow {
+            values: BTreeMap::from([
+                (
+                    "工单编号".to_string(),
+                    CellValue::Text("WO-DETAIL".to_string()),
+                ),
+                (
+                    "成本项目名称".to_string(),
+                    CellValue::Text("直接材料".to_string()),
+                ),
+                (
+                    "子项物料编码".to_string(),
+                    CellValue::Text("MAT-1".to_string()),
+                ),
+                (
+                    "Filled_成本项目".to_string(),
+                    CellValue::Text("直接材料".to_string()),
+                ),
+            ]),
+        };
+
+        let result = split_detail_and_qty(NormalizedCostFrame {
+            columns,
+            rows: vec![qty, detail],
+            key_columns: vec![],
+        })
+        .unwrap();
+
+        assert_eq!(
+            result.detail_columns,
+            vec![
+                "年期",
+                "月份",
+                "成本中心名称",
+                "产品编码",
+                "产品名称",
+                "工单编号",
+                "工单行号",
+                "供应商编码",
+                "成本项目名称",
+                "子项物料编码",
+                "本期完工数量",
+                "本期完工金额",
+            ]
+        );
+        assert_eq!(
+            result.qty_columns,
+            vec![
+                "年期",
+                "月份",
+                "成本中心名称",
+                "产品编码",
+                "产品名称",
+                "工单编号",
+                "工单行号",
+                "本期完工数量",
+                "本期完工金额",
+            ]
         );
     }
 }

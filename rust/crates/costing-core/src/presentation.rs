@@ -6,6 +6,7 @@ use crate::fact::{build_qty_sheet_rows, qty_sheet_columns};
 use crate::model::{CellValue, FactBundle, SheetModel, StageTimings, TableRow, WorkbookPayload};
 use crate::pipeline::PipelineConfig;
 use crate::quality::build_quality_metrics;
+use crate::sheet_contract::detail_sheet_columns;
 
 const PRODUCT_DIMENSION_SHEET: &str = "成本分析产品维度";
 const DETAIL_TWO_DECIMAL_COLUMNS: &[&str] = &["本期完工单位成本", "本期完工金额"];
@@ -39,7 +40,7 @@ pub fn build_workbook_payload(
 ) -> Result<WorkbookPayload, CostingError> {
     let detail_sheet = build_flat_sheet(
         "成本计算单总表",
-        bundle.detail_columns.clone(),
+        detail_sheet_columns(&bundle.detail_columns),
         bundle.detail_fact.clone(),
         detail_number_format_columns,
     );
@@ -233,6 +234,32 @@ mod tests {
         }
     }
 
+    fn bundle_with_internal_schema_columns() -> FactBundle {
+        let columns = vec![
+            "年期".to_string(),
+            "月份".to_string(),
+            "成本中心名称".to_string(),
+            "产品编码".to_string(),
+            "产品名称".to_string(),
+            "工单编号".to_string(),
+            "工单行号".to_string(),
+            "供应商编码".to_string(),
+            "成本项目名称".to_string(),
+            "子项物料编码".to_string(),
+            "Filled_成本项目".to_string(),
+            "本期完工数量".to_string(),
+            "本期完工金额".to_string(),
+        ];
+        FactBundle {
+            detail_columns: columns.clone(),
+            detail_fact: Vec::new(),
+            qty_columns: columns,
+            qty_fact: Vec::new(),
+            work_order_fact: Vec::new(),
+            error_issues: Vec::new(),
+        }
+    }
+
     #[test]
     fn payload_has_exactly_three_default_sheets_without_product_dimension() {
         let payload = build_workbook_payload(
@@ -327,6 +354,68 @@ mod tests {
         assert_eq!(
             qty.number_formats["本期完工直接材料合计完工金额"],
             "#,##0.00"
+        );
+    }
+
+    #[test]
+    fn flat_sheets_do_not_expose_internal_or_cross_sheet_columns() {
+        let payload = build_workbook_payload(
+            bundle_with_internal_schema_columns(),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+        )
+        .unwrap();
+
+        let detail = &payload.sheet_models[0];
+        assert_eq!(
+            detail.columns,
+            vec![
+                "年期",
+                "月份",
+                "成本中心名称",
+                "产品编码",
+                "产品名称",
+                "工单编号",
+                "工单行号",
+                "供应商编码",
+                "成本项目名称",
+                "子项物料编码",
+                "本期完工数量",
+                "本期完工金额",
+            ]
+        );
+
+        let qty = &payload.sheet_models[1];
+        assert_eq!(
+            qty.columns,
+            vec![
+                "年期",
+                "月份",
+                "成本中心名称",
+                "产品编码",
+                "产品名称",
+                "工单编号",
+                "工单行号",
+                "本期完工数量",
+                "本期完工金额",
+                "本期完工直接材料合计完工金额",
+                "本期完工直接人工合计完工金额",
+                "本期完工制造费用合计完工金额",
+                "本期完工制造费用_其他合计完工金额",
+                "本期完工制造费用_人工合计完工金额",
+                "本期完工制造费用_机物料及低耗合计完工金额",
+                "本期完工制造费用_折旧合计完工金额",
+                "本期完工制造费用_水电费合计完工金额",
+                "直接材料单位完工金额",
+                "直接人工单位完工金额",
+                "制造费用单位完工金额",
+                "本期完工委外加工费合计完工金额",
+                "委外加工费单位完工成本",
+                "制造费用明细项合计是否等于制造费用合计",
+                "直接材料+直接人工+制造费用+委外加工费是否等于总完工成本",
+                "数据校验状态",
+                "异常原因说明",
+            ]
         );
     }
 }

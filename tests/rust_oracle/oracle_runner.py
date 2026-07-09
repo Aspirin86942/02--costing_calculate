@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from src.services.costing_service import CostingRunRequest, ServiceStatus, run_costing_request
+from tests.rust_oracle.repo_paths import repo_root
 
 
 def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> None:
@@ -27,6 +28,7 @@ def run_rust_cli(pipeline: str, input_path: Path, output_path: Path) -> None:
     cargo = shutil.which('cargo')
     if cargo is None:
         raise AssertionError('cargo executable not found')
+    root = repo_root()
 
     completed = subprocess.run(  # noqa: S603 - test harness invokes local Cargo with fixed arguments.
         [
@@ -34,7 +36,7 @@ def run_rust_cli(pipeline: str, input_path: Path, output_path: Path) -> None:
             'run',
             '--quiet',
             '--manifest-path',
-            'rust/Cargo.toml',
+            str(root / 'rust' / 'Cargo.toml'),
             '-p',
             'costing-calculate',
             '--',
@@ -47,6 +49,7 @@ def run_rust_cli(pipeline: str, input_path: Path, output_path: Path) -> None:
         ],
         check=False,
         capture_output=True,
+        cwd=root,
         text=True,
     )
     if completed.returncode != 0:

@@ -57,15 +57,20 @@ def compare_workbooks(expected_path: Path, actual_path: Path) -> dict[str, Any]:
 def values_equal(expected: object, actual: object) -> bool:
     if is_blank(expected) and is_blank(actual):
         return True
-    expected_decimal = as_decimal(expected)
-    actual_decimal = as_decimal(actual)
-    if expected_decimal is not None and actual_decimal is not None:
-        return abs(expected_decimal - actual_decimal) <= DECIMAL_TOLERANCE
+    if is_number_like(expected) and is_number_like(actual):
+        expected_decimal = as_decimal(expected)
+        actual_decimal = as_decimal(actual)
+        if expected_decimal is not None and actual_decimal is not None:
+            return abs(expected_decimal - actual_decimal) <= DECIMAL_TOLERANCE
     return expected == actual
 
 
 def is_blank(value: object) -> bool:
     return value is None or value == ''
+
+
+def is_number_like(value: object) -> bool:
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
 
 
 def as_decimal(value: object) -> Decimal | None:

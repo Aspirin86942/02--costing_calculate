@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tests.rust_oracle.oracle_runner import run_python_oracle, run_rust_cli
+from tests.rust_oracle.repo_paths import repo_root
 from tests.rust_oracle.workbook_compare import compare_workbooks
 
 
@@ -21,8 +22,9 @@ def _first_sample(env_name: str, patterns: tuple[str, ...]) -> Path | None:
     env_path = _sample_from_env(env_name)
     if env_path is not None:
         return env_path
+    root = repo_root()
     for pattern in patterns:
-        matches = sorted(Path('.').glob(pattern))
+        matches = sorted(root.glob(pattern))
         if matches:
             return matches[0]
     return None

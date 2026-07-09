@@ -29,7 +29,15 @@ uv run python -m tests.contracts.generate_baselines
 
 `tests/test_full_rust_cli_oracle.py` 使用当前 Python service 路径生成 oracle workbook，再调用 Rust CLI 生成同一输入的 workbook，并通过 `tests/rust_oracle/workbook_compare.py` 比对 sheet 顺序、行列形状、freeze panes、auto filter 和单元格值。
 
-在 linked worktree 没有 `data/raw` 样本时，可通过环境变量指定本机样本：
+在 linked worktree 没有 `data/raw` 样本时，可通过环境变量指定本机样本。PowerShell 示例：
+
+```powershell
+$env:COSTING_GB_SAMPLE='D:\path\to\gb.xlsx'
+$env:COSTING_SK_SAMPLE='D:\path\to\sk.xlsx'
+uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
+```
+
+Bash 示例：
 
 ```bash
 COSTING_GB_SAMPLE=... COSTING_SK_SAMPLE=... uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle

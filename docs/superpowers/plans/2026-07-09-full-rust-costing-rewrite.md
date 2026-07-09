@@ -6,7 +6,7 @@
 
 **Architecture:** Add a `rust/` Cargo workspace with separate crates for CLI orchestration, core ETL/analytics, XLSX I/O, and oracle test support. Keep Python production code in place during implementation, but use it only as the oracle for contract, fixture, real-sample, and benchmark comparisons.
 
-**Tech Stack:** Rust 2021, `clap`, `serde`, `serde_json`, `thiserror`, `anyhow`, `rust_decimal`, `chrono`, `calamine`, `rust_xlsxwriter`, `csv`; existing Python oracle commands use `conda run -n costing311`.
+**Tech Stack:** Rust 2021, `clap`, `serde`, `serde_json`, `thiserror`, `anyhow`, `rust_decimal`, `chrono`, `calamine`, `rust_xlsxwriter`, `csv`; existing Python oracle commands use `uv run`.
 
 ## Global Constraints
 
@@ -19,8 +19,8 @@
 - `成本分析产品维度` must not be implemented in the Rust system and must be rejected by writer and validator code.
 - Do not delete Python before Rust GB + SK validation passes and a separate retirement change is approved.
 - Monetary, quantity, unit-cost, and score calculations must avoid binary float equality; use `rust_decimal::Decimal` for business values and explicit tolerances for validation.
-- Keep unrelated untracked files out of every commit: `docs/2026-07-09-work-order-anomaly-architecture-fast-writer-spec.md`, `docs/superpowers/plans/2026-07-09-three-sheet-workbook-phase0.md`, `uv.lock`.
-- Use `cargo` commands for Rust checks and `conda run -n costing311` for Python oracle/tests.
+- Keep unrelated untracked files out of every commit: `docs/2026-07-09-work-order-anomaly-architecture-fast-writer-spec.md`, `docs/superpowers/plans/2026-07-09-three-sheet-workbook-phase0.md`. Keep `uv.lock` unchanged unless dependency resolution changes.
+- Use `cargo` commands for Rust checks and `uv run` for Python oracle/tests after `uv sync --extra dev`.
 - Each task should be committed independently after its verification passes.
 
 ---
@@ -2399,7 +2399,7 @@ Extend tests to cover at least one `关注` and one `高度可疑` case after th
 Run:
 
 ```powershell
-conda run -n costing311 python -m pytest tests/test_weighted_zscore.py tests/test_pq_analysis_v3.py -q
+uv run python -m pytest tests/test_weighted_zscore.py tests/test_pq_analysis_v3.py -q
 cargo test --manifest-path rust/Cargo.toml -p costing-core anomaly::tests
 ```
 
@@ -2968,10 +2968,8 @@ from pathlib import Path
 def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> None:
     completed = subprocess.run(
         [
-            'conda',
+            'uv',
             'run',
-            '-n',
-            'costing311',
             'python',
             'main.py',
             pipeline,
@@ -3178,7 +3176,7 @@ def test_rust_sk_workbook_matches_python_oracle(tmp_path: Path) -> None:
 Run:
 
 ```powershell
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
+uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
 ```
 
 Expected:
@@ -3314,7 +3312,7 @@ def test_sk_rust_benchmark_validated(tmp_path: Path) -> None:
 Run:
 
 ```powershell
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-oracle
+uv run python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-oracle
 ```
 
 Expected during first execution:
@@ -3335,7 +3333,7 @@ For each failure, run the smallest relevant command before re-running the full o
 cargo test --manifest-path rust/Cargo.toml -p costing-core fact::tests
 cargo test --manifest-path rust/Cargo.toml -p costing-core anomaly::tests
 cargo test --manifest-path rust/Cargo.toml -p costing-xlsx
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py::<failing-test-name> -q --basetemp .pytest-tmp/full-rust-single
+uv run python -m pytest tests/test_full_rust_cli_oracle.py::<failing-test-name> -q --basetemp .pytest-tmp/full-rust-single
 ```
 
 Expected:
@@ -3350,10 +3348,10 @@ Run:
 ```powershell
 cargo fmt --manifest-path rust/Cargo.toml --check
 cargo test --manifest-path rust/Cargo.toml
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-final
-conda run -n costing311 python -m pytest tests -q --basetemp .pytest-tmp/python-regression
-conda run -n costing311 python -m ruff check src tests
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-final
+uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
+uv run python -m ruff check src tests
+uv run python -m ruff format src tests --check
 ```
 
 Expected:
@@ -3402,10 +3400,10 @@ Rust CLI is the validated replacement target for the default GB/SK costing ETL p
 ```powershell
 cargo fmt --manifest-path rust/Cargo.toml --check
 cargo test --manifest-path rust/Cargo.toml
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-final
-conda run -n costing311 python -m pytest tests -q --basetemp .pytest-tmp/python-regression
-conda run -n costing311 python -m ruff check src tests
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-final
+uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
+uv run python -m ruff check src tests
+uv run python -m ruff format src tests --check
 ```
 
 ## Manual Check
@@ -3509,10 +3507,10 @@ Run:
 ```powershell
 cargo fmt --manifest-path rust/Cargo.toml --check
 cargo test --manifest-path rust/Cargo.toml
-conda run -n costing311 python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-docs
-conda run -n costing311 python -m pytest tests -q --basetemp .pytest-tmp/python-regression-docs
-conda run -n costing311 python -m ruff check src tests
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m pytest tests/test_full_rust_cli_oracle.py tests/test_full_rust_cli_benchmark.py -q --basetemp .pytest-tmp/full-rust-docs
+uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression-docs
+uv run python -m ruff check src tests
+uv run python -m ruff format src tests --check
 ```
 
 Expected:

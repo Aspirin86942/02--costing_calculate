@@ -1,6 +1,8 @@
 # local/tooling
 .claude/
+.superpowers/
 .vscode/
+.venv/
 .pytest_cache/
 .ruff_cache/
 __pycache__/

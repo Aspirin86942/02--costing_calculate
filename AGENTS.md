@@ -16,17 +16,17 @@
 - 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
 
 ### Build / Test / Dev Commands
-- `conda run -n costing311 python -m pip install -e '.[dev]'`: 安装开发依赖
-- `conda run -n costing311 python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `conda run -n costing311 python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `conda run -n costing311 python main.py gb`: 执行 GB 管线
-- `conda run -n costing311 python main.py sk`: 执行 SK 管线
-- `conda run -n costing311 python -m pytest tests -q`: 运行测试
-- `conda run -n costing311 python -m ruff check src tests`: 代码检查
-- `conda run -n costing311 python -m ruff format src tests --check`: 代码格式化检查
+- `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装开发依赖
+- `uv run python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `uv run python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `uv run python main.py gb`: 执行 GB 管线
+- `uv run python main.py sk`: 执行 SK 管线
+- `uv run python -m pytest tests -q`: 运行测试
+- `uv run python -m ruff check src tests`: 代码检查
+- `uv run python -m ruff format src tests --check`: 代码格式化检查
 
 如缺少测试依赖，优先安装 editable extras：
-- `conda run -n costing311 python -m pip install -e '.[dev]'`
+- `uv sync --extra dev`
 
 ### Coding Style & Naming
 - 以 `pyproject.toml` 为准，保持与当前 Python 版本兼容（当前项目约束为 3.11+）。

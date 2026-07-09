@@ -11,27 +11,27 @@
 
 ## 安装
 ```bash
-conda run -n costing311 python -m pip install -e .
+uv sync
 ```
 
 如需开发依赖：
 ```bash
-conda run -n costing311 python -m pip install -e '.[dev]'
+uv sync --extra dev
 ```
 
-本文默认开发、测试命令使用 Miniconda `costing311` 环境；仅纯运行时且当前解释器已安装依赖时，才可使用裸 `pip install -e .` / 裸 `python`。
+本文默认开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
 
 ## 使用
 ```bash
 # GB 管线
-conda run -n costing311 python main.py gb
+uv run python main.py gb
 
 # SK 管线
-conda run -n costing311 python main.py sk
+uv run python main.py sk
 
 # 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-conda run -n costing311 python main.py gb --check-only --benchmark
-conda run -n costing311 python main.py sk --check-only --benchmark
+uv run python main.py gb --check-only --benchmark
+uv run python main.py sk --check-only --benchmark
 ```
 
 ## 输出说明
@@ -104,19 +104,19 @@ conda run -n costing311 python main.py sk --check-only --benchmark
 ## 测试
 ```bash
 # 开发依赖
-conda run -n costing311 python -m pip install -e '.[dev]'
+uv sync --extra dev
 
-# 先确认解释器来自 costing311 环境
-conda run -n costing311 python -c "import sys; print(sys.executable)"
+# 先确认解释器来自项目 .venv
+uv run python -c "import sys; print(sys.executable)"
 
 # 运行测试
-conda run -n costing311 python -m pytest tests -q
+uv run python -m pytest tests -q
 
 # 代码检查
-conda run -n costing311 python -m ruff check src tests
+uv run python -m ruff check src tests
 
 # 代码格式化检查
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m ruff format src tests --check
 ```
 
 ## Contract Baseline

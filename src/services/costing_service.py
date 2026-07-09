@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -41,6 +41,7 @@ class CostingRunResult:
     candidate_products: ProductOrder = ()
     quality_metrics: tuple[QualityMetric, ...] = ()
     error_log_count: int = 0
+    issue_type_counts: dict[str, int] = field(default_factory=dict)
     month_filter_summary: MonthFilterSummary | None = None
     anomaly_summary: dict[str, dict[str, int]] | None = None
     stage_timings: dict[str, float] | None = None
@@ -310,6 +311,7 @@ def _result_from_etl(
         candidate_products=tuple(getattr(etl, 'last_candidate_products', ())),
         quality_metrics=tuple(getattr(etl, 'last_quality_metrics', ())),
         error_log_count=int(getattr(etl, 'last_error_log_count', 0) or 0),
+        issue_type_counts=_value_counts(getattr(etl, 'last_error_log_frame', pd.DataFrame()), 'issue_type'),
         month_filter_summary=getattr(etl, 'last_month_filter_summary', None),
         anomaly_summary=_build_anomaly_summary(getattr(etl, 'last_work_order_sheet_frame', pd.DataFrame())),
         stage_timings=dict(getattr(etl, 'last_stage_timings', {})),

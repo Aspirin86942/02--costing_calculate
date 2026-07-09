@@ -39,6 +39,20 @@ const QTY_SOFTWARE_UNIT_COST: &str = "软件费用单位完工成本";
 const QTY_MOH_MATCH: &str = "制造费用明细项合计是否等于制造费用合计";
 const QTY_CHECK_STATUS: &str = "数据校验状态";
 const QTY_CHECK_REASON: &str = "异常原因说明";
+const NON_POSITIVE_UNIT_COST_METRICS: &[(&str, &str)] = &[
+    (COMPLETED_TOTAL_KEY, "总单位完工成本"),
+    (DM_AMOUNT_KEY, "直接材料单位完工成本"),
+    (DL_AMOUNT_KEY, "直接人工单位完工成本"),
+    (MOH_AMOUNT_KEY, "制造费用单位完工成本"),
+    (MOH_OTHER_AMOUNT_KEY, "制造费用_其他单位完工成本"),
+    (MOH_LABOR_AMOUNT_KEY, "制造费用_人工单位完工成本"),
+    (
+        MOH_CONSUMABLES_AMOUNT_KEY,
+        "制造费用_机物料及低耗单位完工成本",
+    ),
+    (MOH_DEPRECIATION_AMOUNT_KEY, "制造费用_折旧单位完工成本"),
+    (MOH_UTILITIES_AMOUNT_KEY, "制造费用_水电费单位完工成本"),
+];
 const REQUIRED_DETAIL_COLUMNS: &[&str] = &[
     "产品编码",
     "产品名称",
@@ -204,6 +218,7 @@ pub fn build_fact_bundle(
             work_order_fact.push(row.clone());
         }
     }
+    append_non_positive_unit_cost_issues(&work_order_fact, &mut error_issues);
 
     Ok(FactBundle {
         detail_columns: split.detail_columns,
@@ -216,6 +231,32 @@ pub fn build_fact_bundle(
         work_order_fact,
         error_issues,
     })
+}
+
+fn append_non_positive_unit_cost_issues(
+    work_order_fact: &[TableRow],
+    error_issues: &mut Vec<ErrorIssue>,
+) {
+    for row in work_order_fact {
+        let completed_qty = decimal_from_values(&row.values, COMPLETED_QTY_KEY);
+        if completed_qty <= ZERO {
+            continue;
+        }
+        let row_id = work_order_key(row);
+        for (amount_key, field_name) in NON_POSITIVE_UNIT_COST_METRICS {
+            let unit_cost = decimal_from_values(&row.values, amount_key) / completed_qty;
+            if unit_cost <= ZERO {
+                error_issues.push(error_issue(
+                    row_id.clone(),
+                    "NON_POSITIVE_UNIT_COST",
+                    field_name,
+                    unit_cost.normalize().to_string(),
+                    "单位成本小于等于 0，不参与 log 与 Modified Z-score",
+                    "保留在异常分析页并标记复核原因",
+                ));
+            }
+        }
+    }
 }
 
 fn error_issue(
@@ -751,6 +792,51 @@ mod tests {
             .error_issues
             .iter()
             .any(|issue| issue.issue_type == "DUPLICATE_WORK_ORDER_KEY"));
+    }
+
+    #[test]
+    fn fact_bundle_records_non_positive_unit_cost_audit_issues() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+
+        let bundle = build_fact_bundle(
+            split_result(detail, qty),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        let issues = bundle
+            .error_issues
+            .iter()
+            .filter(|issue| issue.issue_type == "NON_POSITIVE_UNIT_COST")
+            .collect::<Vec<_>>();
+        assert_eq!(issues.len(), 7);
+        assert!(issues.iter().any(|issue| {
+            issue.field_name == "直接人工单位完工成本"
+                && issue.row_id == "2025年01期|P1|WO1|1"
+                && issue.original_value == "0"
+                && issue.reason == "单位成本小于等于 0，不参与 log 与 Modified Z-score"
+                && issue.action == "保留在异常分析页并标记复核原因"
+        }));
+        assert!(!issues
+            .iter()
+            .any(|issue| issue.field_name == "委外加工费单位完工成本"));
     }
 
     #[test]

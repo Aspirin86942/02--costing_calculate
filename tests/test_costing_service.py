@@ -372,6 +372,34 @@ def test_precheck_returns_candidate_products_from_normalized_payload(monkeypatch
     )
 
 
+def test_precheck_exposes_full_error_log_issue_type_counts(monkeypatch, tmp_path: Path) -> None:
+    request = _request(tmp_path)
+
+    class _DummyETL:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.last_candidate_products = ()
+            self.last_quality_metrics = ()
+            self.last_error_log_count = 3
+            self.last_error_log_frame = pd.DataFrame(
+                {'issue_type': ['MISSING_AMOUNT', 'NON_POSITIVE_UNIT_COST', 'NON_POSITIVE_UNIT_COST']}
+            )
+            self.last_month_filter_summary = None
+            self.last_stage_timings = {}
+            self.last_ingest_backend = 'dummy'
+            self.last_work_order_sheet_frame = pd.DataFrame()
+
+        def prepare_payload(self, input_path: Path, *, progress_callback: object | None = None) -> bool:
+            assert input_path == request.input_path
+            return True
+
+    monkeypatch.setattr('src.services.costing_service.CostingWorkbookETL', _DummyETL)
+
+    result = precheck_costing_run(request)
+
+    assert result.status == ServiceStatus.SUCCEEDED
+    assert result.issue_type_counts == {'MISSING_AMOUNT': 1, 'NON_POSITIVE_UNIT_COST': 2}
+
+
 def test_extract_candidate_products_from_normalized_keeps_order_and_skips_invalid_values() -> None:
     extractor = getattr(pipeline_module, '_extract_candidate_products_from_normalized', None)
     frame = pl.DataFrame(

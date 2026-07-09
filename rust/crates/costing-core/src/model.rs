@@ -127,6 +127,7 @@ pub struct RunSummary {
     pub workbook_path: Option<String>,
     pub sheet_count: usize,
     pub error_log_count: usize,
+    pub issue_type_counts: BTreeMap<String, usize>,
     pub error_log_preview: Vec<ErrorIssue>,
     pub error_log_preview_truncated: bool,
     pub quality_metrics: Vec<QualityMetric>,

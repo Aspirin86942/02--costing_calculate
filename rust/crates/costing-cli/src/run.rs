@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use costing_core::fact::{build_fact_bundle, build_qty_sheet_rows};
 use costing_core::normalize::{build_month_range, normalize_workbook};
 use costing_core::presentation::build_workbook_payload;
@@ -40,6 +42,12 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
             .expect("validate_cli_request requires --output for non check-only runs");
         write_workbook(output, &payload)?;
     }
+    let mut issue_type_counts = BTreeMap::new();
+    for issue in &payload.error_log {
+        *issue_type_counts
+            .entry(issue.issue_type.clone())
+            .or_default() += 1;
+    }
     let error_log_preview = payload
         .error_log
         .iter()
@@ -54,6 +62,7 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         workbook_path,
         sheet_count: payload.sheet_models.len(),
         error_log_count: payload.error_log_count,
+        issue_type_counts,
         error_log_preview_truncated: payload.error_log.len() > ERROR_LOG_PREVIEW_LIMIT,
         error_log_preview,
         quality_metrics: payload.quality_metrics,
@@ -201,6 +210,10 @@ mod tests {
             .quality_metrics
             .iter()
             .any(|metric| metric.metric == "可参与分析占比"));
+        assert!(summary
+            .error_log_preview
+            .iter()
+            .any(|issue| issue.issue_type == "NON_POSITIVE_UNIT_COST"));
         assert!(summary.error_log_preview.len() <= ERROR_LOG_PREVIEW_LIMIT);
         if summary.error_log_count > 0 {
             assert!(!summary.error_log_preview.is_empty());

@@ -33,6 +33,30 @@ pub struct RawWorkbook {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TableRow {
+    pub values: BTreeMap<String, CellValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NormalizedCostFrame {
+    pub columns: Vec<String>,
+    pub rows: Vec<TableRow>,
+    pub key_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SplitResult {
+    pub detail_rows: Vec<TableRow>,
+    pub qty_rows: Vec<TableRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MonthRange {
+    pub start: Option<String>,
+    pub end: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ReaderSnapshot {
     pub sheet_name: String,
     pub row_count: usize,

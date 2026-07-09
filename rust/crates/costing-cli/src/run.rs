@@ -1,3 +1,5 @@
+use costing_core::normalize::{build_month_range, normalize_workbook};
+use costing_core::split::split_detail_and_qty;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{reader::read_raw_workbook, snapshot::build_reader_snapshot};
 
@@ -5,10 +7,19 @@ use crate::args::CliArgs;
 
 pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     validate_cli_request(&args)?;
+    let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
     let pipeline = PipelineConfig::for_name(args.pipeline);
     let raw = read_raw_workbook(&args.input)?;
     let snapshot = build_reader_snapshot(&raw);
+    let normalized = normalize_workbook(raw, &pipeline, month_range)?;
+    let split = split_detail_and_qty(normalized)?;
     let output_written = !args.check_only;
+    let mut timings = StageTimings::default();
+    timings.insert("ingest", 0.0);
+    timings.insert("reader_rows", snapshot.row_count as f64);
+    timings.insert("detail_rows", split.detail_rows.len() as f64);
+    timings.insert("qty_rows", split.qty_rows.len() as f64);
+
     Ok(RunSummary {
         status: "succeeded".to_string(),
         pipeline: pipeline.name.as_str().to_string(),
@@ -16,12 +27,7 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         workbook_path: args.output.map(|path| path.display().to_string()),
         sheet_count: 0,
         error_log_count: 0,
-        stage_timings: {
-            let mut timings = StageTimings::default();
-            timings.insert("ingest", 0.0);
-            timings.insert("reader_rows", snapshot.row_count as f64);
-            timings
-        },
+        stage_timings: timings,
     })
 }
 
@@ -147,14 +153,14 @@ mod tests {
         let mut workbook = Workbook::new();
         let sheet = workbook.add_worksheet();
         sheet.set_name("成本计算单").unwrap();
-        sheet.write_string(0, 0, "项目").unwrap();
-        sheet.write_string(0, 1, "金额").unwrap();
+        sheet.write_string(0, 0, "年期").unwrap();
+        sheet.write_string(0, 1, "工单编号").unwrap();
         sheet.write_string(0, 2, "日期").unwrap();
         sheet.write_string(1, 0, "").unwrap();
         sheet.write_string(1, 1, "").unwrap();
         sheet.write_string(1, 2, "").unwrap();
-        sheet.write_string(2, 0, "首行").unwrap();
-        sheet.write_number(2, 1, 0.1).unwrap();
+        sheet.write_string(2, 0, "2025年01期").unwrap();
+        sheet.write_string(2, 1, "WO-1").unwrap();
         let date_format = Format::new().set_num_format("yyyy-mm-dd");
         sheet
             .write_datetime_with_format(
@@ -178,7 +184,60 @@ mod tests {
         let summary = run(args).unwrap();
 
         assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&1.0));
+        assert_eq!(summary.stage_timings.stages.get("detail_rows"), Some(&0.0));
+        assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
         assert!(!summary.output_written);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn run_rejects_non_strict_month_range() {
+        let path = unique_temp_path(&std::env::temp_dir(), "invalid-month", "xlsx");
+        std::fs::write(&path, "placeholder").unwrap();
+        let args = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: path.clone(),
+            output: None,
+            month_start: Some("2025年01期".to_string()),
+            month_end: None,
+            check_only: true,
+            benchmark: false,
+        };
+
+        let error = run(args).unwrap_err().downcast::<CostingError>().unwrap();
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn run_filters_rows_inside_month_range_before_split_summary() {
+        let path = unique_temp_path(&std::env::temp_dir(), "month-range", "xlsx");
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("成本计算单").unwrap();
+        sheet.write_string(0, 0, "年期").unwrap();
+        sheet.write_string(0, 1, "工单编号").unwrap();
+        sheet.write_string(1, 0, "").unwrap();
+        sheet.write_string(1, 1, "").unwrap();
+        sheet.write_string(2, 0, "2025年01期").unwrap();
+        sheet.write_string(2, 1, "WO-1").unwrap();
+        sheet.write_string(3, 0, "2025年02期").unwrap();
+        sheet.write_string(3, 1, "WO-2").unwrap();
+        workbook.save(&path).unwrap();
+
+        let args = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: path.clone(),
+            output: None,
+            month_start: Some("2025-02".to_string()),
+            month_end: Some("2025-02".to_string()),
+            check_only: true,
+            benchmark: false,
+        };
+        let summary = run(args).unwrap();
+
+        assert_eq!(summary.stage_timings.stages.get("reader_rows"), Some(&2.0));
+        assert_eq!(summary.stage_timings.stages.get("qty_rows"), Some(&1.0));
         let _ = std::fs::remove_file(path);
     }
 

@@ -1602,8 +1602,8 @@ def test_lightweight_export_writes_workbook_skeleton(tmp_path) -> None:
     assert ws_work_order.cell(2, 10).value == 10
 
 
-def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> None:
-    """测试工单异常页会写出条件格式规则，而不是直接回填单元格颜色。"""
+def test_process_file_omits_work_order_conditional_format_rules_without_flag_columns(tmp_path) -> None:
+    """测试工单异常页删除单项标记列后，不再写出依赖标记列的条件格式规则。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / 'output.xlsx'
@@ -1660,14 +1660,10 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
                 '制造费用_机物料及低耗单位完工成本': 0.0,
                 '制造费用_折旧单位完工成本': 0.0,
                 '制造费用_水电费单位完工成本': 0.0,
-                '直接材料异常标记': '关注',
-                '直接人工异常标记': '正常',
-                '制造费用异常标记': '正常',
-                '制造费用_其他异常标记': '正常',
-                '制造费用_人工异常标记': '高度可疑',
-                '制造费用_机物料及低耗异常标记': '正常',
-                '制造费用_折旧异常标记': '正常',
-                '制造费用_水电费异常标记': '正常',
+                '异常等级': '高度可疑',
+                '异常主要来源': '材料异常; 制造费用人工异常',
+                '异常明细解释': '直接材料: 关注; 制造费用_人工: 高度可疑',
+                '复核原因': '',
             }
         ]
     )
@@ -1689,14 +1685,10 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
         '制造费用_机物料及低耗单位完工成本': 'price',
         '制造费用_折旧单位完工成本': 'price',
         '制造费用_水电费单位完工成本': 'price',
-        '直接材料异常标记': 'text',
-        '直接人工异常标记': 'text',
-        '制造费用异常标记': 'text',
-        '制造费用_其他异常标记': 'text',
-        '制造费用_人工异常标记': 'text',
-        '制造费用_机物料及低耗异常标记': 'text',
-        '制造费用_折旧异常标记': 'text',
-        '制造费用_水电费异常标记': 'text',
+        '异常等级': 'text',
+        '异常主要来源': 'text',
+        '异常明细解释': 'text',
+        '复核原因': 'text',
     }
     artifacts = AnalysisArtifacts(
         fact_df=pd.DataFrame(
@@ -1741,30 +1733,7 @@ def test_process_file_writes_work_order_conditional_format_rules(tmp_path) -> No
 
     highlight_semantics = _extract_highlight_semantics(output_path, '成本分析工单维度')
 
-    assert {
-        'sqref': 'J2:J1048576',
-        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
-        'fill': 'DDEBF7',
-        'font': None,
-    } in highlight_semantics['rules']
-    assert {
-        'sqref': 'R2:R1048576',
-        'formula': ['=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))'],
-        'fill': 'DDEBF7',
-        'font': None,
-    } in highlight_semantics['rules']
-    assert {
-        'sqref': 'N2:N1048576',
-        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
-        'fill': '4472C4',
-        'font': 'FFFFFF',
-    } in highlight_semantics['rules']
-    assert {
-        'sqref': 'V2:V1048576',
-        'formula': ['=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))'],
-        'fill': '4472C4',
-        'font': 'FFFFFF',
-    } in highlight_semantics['rules']
+    assert highlight_semantics['rules'] == []
 
 
 def test_process_file_passes_standalone_cost_items_to_pipeline_payload_builder(tmp_path) -> None:

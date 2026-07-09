@@ -27,6 +27,36 @@ from src.analytics.table_rendering import (
     map_doc_type_to_scope_label,
 )
 
+REMOVED_WORK_ORDER_ALGORITHM_COLUMNS = (
+    'log_总单位完工成本',
+    'log_直接材料单位完工成本',
+    'log_直接人工单位完工成本',
+    'log_制造费用单位完工成本',
+    'log_制造费用_其他单位完工成本',
+    'log_制造费用_人工单位完工成本',
+    'log_制造费用_机物料及低耗单位完工成本',
+    'log_制造费用_折旧单位完工成本',
+    'log_制造费用_水电费单位完工成本',
+    'Modified Z-score_总单位完工成本',
+    'Modified Z-score_直接材料',
+    'Modified Z-score_直接人工',
+    'Modified Z-score_制造费用',
+    'Modified Z-score_制造费用_其他',
+    'Modified Z-score_制造费用_人工',
+    'Modified Z-score_制造费用_机物料及低耗',
+    'Modified Z-score_制造费用_折旧',
+    'Modified Z-score_制造费用_水电费',
+    '总成本异常标记',
+    '直接材料异常标记',
+    '直接人工异常标记',
+    '制造费用异常标记',
+    '制造费用_其他异常标记',
+    '制造费用_人工异常标记',
+    '制造费用_机物料及低耗异常标记',
+    '制造费用_折旧异常标记',
+    '制造费用_水电费异常标记',
+)
+
 
 def _build_base_detail_df() -> pd.DataFrame:
     return pd.DataFrame(
@@ -685,7 +715,6 @@ def test_build_report_artifacts_marks_unknown_doc_type_as_not_analyzable() -> No
     assert row['是否可参与分析'] == '否'
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
-    assert row['Modified Z-score_总单位完工成本'] is None
     assert '异常池样本数' not in anomaly_df.columns
     assert '异常池中心log值' not in anomaly_df.columns
     assert '异常池原始MAD' not in anomaly_df.columns
@@ -809,7 +838,6 @@ def test_build_report_artifacts_marks_missing_doc_type_column_as_not_analyzable(
     assert row['是否可参与分析'] == '否'
     assert row['异常等级'] == ''
     assert row['异常主要来源'] == ''
-    assert row['Modified Z-score_总单位完工成本'] is None
     assert row['复核原因'] == '单据类型未归类，不参与正常生产/返工生产异常池'
 
 
@@ -1331,8 +1359,6 @@ def test_build_report_artifacts_uses_product_level_modified_zscore(monkeypatch: 
     anomaly_df = artifacts.work_order_sheet.data
     suspicious_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-003'].iloc[0]
 
-    assert suspicious_row['Modified Z-score_总单位完工成本'] is not None
-    assert suspicious_row['总成本异常标记'] == '高度可疑'
     assert suspicious_row['异常等级'] == '高度可疑'
     assert suspicious_row['异常主要来源'] == '总成本异常'
     assert '异常池样本数' not in anomaly_df.columns
@@ -1374,6 +1400,118 @@ def test_build_report_artifacts_uses_product_level_modified_zscore(monkeypatch: 
         assert token_index > previous_index
         previous_index = token_index
     assert len(explanation_calls) == len(anomaly_module.ANOMALY_METRICS)
+
+
+def test_work_order_anomaly_sheet_hides_algorithm_columns_but_keeps_detail_explanation() -> None:
+    df_detail = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 110,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '成本项目名称': '直接材料',
+                '本期完工金额': 500,
+            },
+        ]
+    )
+    df_qty = pd.DataFrame(
+        [
+            {
+                '月份': '2025年01期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-001',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 100,
+            },
+            {
+                '月份': '2025年02期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-002',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 110,
+            },
+            {
+                '月份': '2025年03期',
+                '成本中心名称': '中心A',
+                '产品编码': 'GB_C.D.B0040AA',
+                '产品名称': 'BMS-750W驱动器',
+                '规格型号': 'S-01',
+                '工单编号': 'WO-003',
+                '工单行号': 1,
+                '基本单位': 'PCS',
+                '单据类型': '汇报入库-普通生产',
+                '本期完工数量': 10,
+                '本期完工金额': 500,
+            },
+        ]
+    )
+
+    anomaly_df = build_report_artifacts(df_detail, df_qty).work_order_sheet.data
+    suspicious_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-003'].iloc[0]
+
+    for column_name in REMOVED_WORK_ORDER_ALGORITHM_COLUMNS:
+        assert column_name not in anomaly_df.columns
+    for column_name in ('异常等级', '异常主要来源', '异常明细解释', '复核原因'):
+        assert column_name in anomaly_df.columns
+
+    assert suspicious_row['异常等级'] == '高度可疑'
+    assert suspicious_row['异常主要来源'] == '总成本异常'
+    explanation = suspicious_row['异常明细解释']
+    assert explanation.startswith('总成本: 高度可疑')
+    for token in (
+        '当前值=',
+        '当前log=',
+        '基准值=',
+        '基准log=',
+        'log偏离=',
+        '相对偏离=',
+        'score=',
+        '有效工单数=',
+        '原始MAD=',
+        '有效MAD=',
+    ):
+        assert token in explanation
 
 
 def test_work_order_anomaly_detail_explanation_lists_multiple_flags_in_metric_order() -> None:
@@ -1684,14 +1822,14 @@ def test_build_report_artifacts_scores_normal_and_rework_in_separate_pools() -> 
 
     assert normal_outlier['生产类型'] == DOC_TYPE_NORMAL_LABEL
     assert rework_outlier['生产类型'] == DOC_TYPE_REWORK_LABEL
-    assert normal_outlier['Modified Z-score_总单位完工成本'] is not None
-    assert rework_outlier['Modified Z-score_总单位完工成本'] is not None
-    assert normal_outlier['总成本异常标记'] in {'关注', '高度可疑'}
-    assert rework_outlier['总成本异常标记'] in {'关注', '高度可疑'}
+    assert normal_outlier['异常等级'] in {'关注', '高度可疑'}
+    assert rework_outlier['异常等级'] in {'关注', '高度可疑'}
+    assert '总成本:' in normal_outlier['异常明细解释']
+    assert '总成本:' in rework_outlier['异常明细解释']
 
 
-def test_build_report_artifacts_keeps_log_but_not_score_when_scope_has_fewer_than_three_rows() -> None:
-    """测试单个生产类型样本不足 3 行时保留 log，但不计算 Modified Z-score。"""
+def test_build_report_artifacts_keeps_small_scope_without_anomaly_explanation() -> None:
+    """测试单个生产类型样本不足 3 行时不输出异常解释。"""
     df_detail = pd.DataFrame(
         [
             {
@@ -1831,9 +1969,10 @@ def test_build_report_artifacts_keeps_log_but_not_score_when_scope_has_fewer_tha
     rework_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-R2'].iloc[0]
 
     assert rework_row['生产类型'] == DOC_TYPE_REWORK_LABEL
-    assert rework_row['log_总单位完工成本'] is not None
-    assert rework_row['Modified Z-score_总单位完工成本'] is None
-    assert rework_row['总成本异常标记'] == ''
+    assert rework_row['是否可参与分析'] == '是'
+    assert rework_row['异常等级'] == '正常'
+    assert rework_row['异常主要来源'] == ''
+    assert rework_row['异常明细解释'] == ''
 
 
 def test_build_report_artifacts_supports_software_fee_as_sk_standalone_item() -> None:
@@ -2057,6 +2196,9 @@ def test_build_report_artifacts_uses_minimum_dispersion_for_near_zero_weighted_m
     extreme_row = anomaly_df.loc[anomaly_df['工单编号'] == 'WO-R-EXTREME'].iloc[0]
 
     assert close_row['生产类型'] == DOC_TYPE_REWORK_LABEL
-    assert close_row['直接材料异常标记'] == '正常'
-    assert far_row['直接材料异常标记'] == '高度可疑'
-    assert extreme_row['直接材料异常标记'] == '高度可疑'
+    assert close_row['异常等级'] == '正常'
+    assert close_row['异常明细解释'] == ''
+    assert far_row['异常等级'] == '高度可疑'
+    assert extreme_row['异常等级'] == '高度可疑'
+    assert 'score=' in far_row['异常明细解释']
+    assert 'score=' in extreme_row['异常明细解释']

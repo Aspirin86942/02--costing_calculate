@@ -59,7 +59,7 @@ def build_default_contract_workbook(tmp_path: Path) -> Path:
 
 
 def build_highlight_contract_workbook(tmp_path: Path) -> Path:
-    """生成带异常高亮的 workbook 语义样本。"""
+    """生成工单异常页条件格式语义样本。"""
     etl = CostingWorkbookETL(skip_rows=2)
     input_path = tmp_path / 'input.xlsx'
     output_path = tmp_path / HIGHLIGHT_WORKBOOK_BASENAME
@@ -116,14 +116,10 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
                 '制造费用_机物料及低耗单位完工成本': 0.0,
                 '制造费用_折旧单位完工成本': 0.0,
                 '制造费用_水电费单位完工成本': 0.0,
-                '直接材料异常标记': '关注',
-                '直接人工异常标记': '正常',
-                '制造费用异常标记': '正常',
-                '制造费用_其他异常标记': '正常',
-                '制造费用_人工异常标记': '高度可疑',
-                '制造费用_机物料及低耗异常标记': '正常',
-                '制造费用_折旧异常标记': '正常',
-                '制造费用_水电费异常标记': '正常',
+                '异常等级': '高度可疑',
+                '异常主要来源': '材料异常; 制造费用人工异常',
+                '异常明细解释': '直接材料: 关注; 制造费用_人工: 高度可疑',
+                '复核原因': '',
             }
         ]
     )
@@ -145,14 +141,10 @@ def build_highlight_contract_workbook(tmp_path: Path) -> Path:
         '制造费用_机物料及低耗单位完工成本': 'price',
         '制造费用_折旧单位完工成本': 'price',
         '制造费用_水电费单位完工成本': 'price',
-        '直接材料异常标记': 'text',
-        '直接人工异常标记': 'text',
-        '制造费用异常标记': 'text',
-        '制造费用_其他异常标记': 'text',
-        '制造费用_人工异常标记': 'text',
-        '制造费用_机物料及低耗异常标记': 'text',
-        '制造费用_折旧异常标记': 'text',
-        '制造费用_水电费异常标记': 'text',
+        '异常等级': 'text',
+        '异常主要来源': 'text',
+        '异常明细解释': 'text',
+        '复核原因': 'text',
     }
     artifacts = AnalysisArtifacts(
         fact_df=pd.DataFrame(

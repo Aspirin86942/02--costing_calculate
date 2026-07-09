@@ -102,7 +102,7 @@
       "成本分析工单维度": {
         "kind": "flat",
         "freeze_panes": "A2",
-        "auto_filter": "A1:BJ2",
+        "auto_filter": "A1:AI2",
         "columns": [
           "月份",
           "成本中心",
@@ -134,34 +134,7 @@
           "制造费用_折旧单位完工成本",
           "制造费用_水电费单位完工成本",
           "委外加工费单位完工成本",
-          "log_总单位完工成本",
-          "log_直接材料单位完工成本",
-          "log_直接人工单位完工成本",
-          "log_制造费用单位完工成本",
-          "log_制造费用_其他单位完工成本",
-          "log_制造费用_人工单位完工成本",
-          "log_制造费用_机物料及低耗单位完工成本",
-          "log_制造费用_折旧单位完工成本",
-          "log_制造费用_水电费单位完工成本",
-          "Modified Z-score_总单位完工成本",
-          "Modified Z-score_直接材料",
-          "Modified Z-score_直接人工",
-          "Modified Z-score_制造费用",
-          "Modified Z-score_制造费用_其他",
-          "Modified Z-score_制造费用_人工",
-          "Modified Z-score_制造费用_机物料及低耗",
-          "Modified Z-score_制造费用_折旧",
-          "Modified Z-score_制造费用_水电费",
           "是否可参与分析",
-          "总成本异常标记",
-          "直接材料异常标记",
-          "直接人工异常标记",
-          "制造费用异常标记",
-          "制造费用_其他异常标记",
-          "制造费用_人工异常标记",
-          "制造费用_机物料及低耗异常标记",
-          "制造费用_折旧异常标记",
-          "制造费用_水电费异常标记",
           "异常等级",
           "异常主要来源",
           "异常明细解释",
@@ -188,31 +161,12 @@
           "制造费用_机物料及低耗单位完工成本": "#,##0.00",
           "制造费用_折旧单位完工成本": "#,##0.00",
           "制造费用_水电费单位完工成本": "#,##0.00",
-          "委外加工费单位完工成本": "#,##0.00",
-          "log_总单位完工成本": "0.0000",
-          "log_直接材料单位完工成本": "0.0000",
-          "log_直接人工单位完工成本": "0.0000",
-          "log_制造费用单位完工成本": "0.0000",
-          "log_制造费用_其他单位完工成本": "0.0000",
-          "log_制造费用_人工单位完工成本": "0.0000",
-          "log_制造费用_机物料及低耗单位完工成本": "0.0000",
-          "log_制造费用_折旧单位完工成本": "0.0000",
-          "log_制造费用_水电费单位完工成本": "0.0000",
-          "Modified Z-score_总单位完工成本": "0.0000",
-          "Modified Z-score_直接材料": "0.0000",
-          "Modified Z-score_直接人工": "0.0000",
-          "Modified Z-score_制造费用": "0.0000",
-          "Modified Z-score_制造费用_其他": "0.0000",
-          "Modified Z-score_制造费用_人工": "0.0000",
-          "Modified Z-score_制造费用_机物料及低耗": "0.0000",
-          "Modified Z-score_制造费用_折旧": "0.0000",
-          "Modified Z-score_制造费用_水电费": "0.0000"
+          "委外加工费单位完工成本": "#,##0.00"
         },
         "column_widths": {
           "A": 15.0,
           "J": 15.0,
-          "AE": 15.0,
-          "AW": 15.0
+          "AE": 15.0
         }
       },
       "成本分析产品维度": {
@@ -332,263 +286,6 @@
   },
   "highlight_workbook": {
     "sheet": "成本分析工单维度",
-    "rules": [
-      {
-        "sqref": "J2:J1048576",
-        "formula": [
-          "=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "J2:J1048576",
-        "formula": [
-          "=EXACT($R2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "K2:K1048576",
-        "formula": [
-          "=EXACT($S2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "K2:K1048576",
-        "formula": [
-          "=EXACT($S2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "L2:L1048576",
-        "formula": [
-          "=EXACT($T2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "L2:L1048576",
-        "formula": [
-          "=EXACT($T2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "M2:M1048576",
-        "formula": [
-          "=EXACT($U2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "M2:M1048576",
-        "formula": [
-          "=EXACT($U2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "N2:N1048576",
-        "formula": [
-          "=EXACT($V2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "N2:N1048576",
-        "formula": [
-          "=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "O2:O1048576",
-        "formula": [
-          "=EXACT($W2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "O2:O1048576",
-        "formula": [
-          "=EXACT($W2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "P2:P1048576",
-        "formula": [
-          "=EXACT($X2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "P2:P1048576",
-        "formula": [
-          "=EXACT($X2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "Q2:Q1048576",
-        "formula": [
-          "=EXACT($Y2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "Q2:Q1048576",
-        "formula": [
-          "=EXACT($Y2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "R2:R1048576",
-        "formula": [
-          "=EXACT($R2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "R2:R1048576",
-        "formula": [
-          "=EXACT($R2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "S2:S1048576",
-        "formula": [
-          "=EXACT($S2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "S2:S1048576",
-        "formula": [
-          "=EXACT($S2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "T2:T1048576",
-        "formula": [
-          "=EXACT($T2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "T2:T1048576",
-        "formula": [
-          "=EXACT($T2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "U2:U1048576",
-        "formula": [
-          "=EXACT($U2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "U2:U1048576",
-        "formula": [
-          "=EXACT($U2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "V2:V1048576",
-        "formula": [
-          "=EXACT($V2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "V2:V1048576",
-        "formula": [
-          "=EXACT($V2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "W2:W1048576",
-        "formula": [
-          "=EXACT($W2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "W2:W1048576",
-        "formula": [
-          "=EXACT($W2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "X2:X1048576",
-        "formula": [
-          "=EXACT($X2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "X2:X1048576",
-        "formula": [
-          "=EXACT($X2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      },
-      {
-        "sqref": "Y2:Y1048576",
-        "formula": [
-          "=EXACT($Y2,UNICHAR(20851)&UNICHAR(27880))"
-        ],
-        "fill": "DDEBF7",
-        "font": null
-      },
-      {
-        "sqref": "Y2:Y1048576",
-        "formula": [
-          "=EXACT($Y2,UNICHAR(39640)&UNICHAR(24230)&UNICHAR(21487)&UNICHAR(30097))"
-        ],
-        "fill": "4472C4",
-        "font": "FFFFFF"
-      }
-    ]
+    "rules": []
   }
 }

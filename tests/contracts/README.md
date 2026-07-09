@@ -45,7 +45,7 @@ COSTING_GB_SAMPLE=... COSTING_SK_SAMPLE=... uv run python -m pytest tests/test_f
 
 ## Rust Oracle Parity
 
-Rust rewrite 必须通过 Python oracle 比对后，才能替换 Python 默认路径。
+Rust rewrite 必须通过 Python oracle 比对后，才能证明与 Python legacy/oracle 路径一致；Python retirement 仍需单独批准。
 
 Required checks:
 

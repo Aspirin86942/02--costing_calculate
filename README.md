@@ -22,27 +22,27 @@ uv sync --extra dev
 本文默认开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
 
 ## 使用
-```bash
-# GB 管线
-uv run python main.py gb
-
-# SK 管线
-uv run python main.py sk
-
-# 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-uv run python main.py gb --check-only --benchmark
-uv run python main.py sk --check-only --benchmark
-```
-
-## Rust CLI
-
-Rust CLI 是完成 GB/SK 全量校验后的目标主入口：
+Rust CLI 是当前默认/主入口：
 
 ```powershell
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
+```
+
+Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：
+
+```bash
+# GB legacy/oracle/regression
+uv run python main.py gb
+
+# SK legacy/oracle/regression
+uv run python main.py sk
+
+# 预检 + benchmark（不写 workbook 或任何外部摘要文件）
+uv run python main.py gb --check-only --benchmark
+uv run python main.py sk --check-only --benchmark
 ```
 
 Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
@@ -122,19 +122,23 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
 
 ## 测试
 ```bash
-# 开发依赖
+# Rust CLI checks
+cargo fmt --all --check
+cargo test --manifest-path rust/Cargo.toml
+
+# Python oracle/regression 依赖
 uv sync --extra dev
 
 # 先确认解释器来自项目 .venv
 uv run python -c "import sys; print(sys.executable)"
 
-# 运行测试
+# Python oracle/regression
 uv run python -m pytest tests -q
 
-# 代码检查
+# Python lint
 uv run python -m ruff check src tests
 
-# 代码格式化检查
+# Python format check
 uv run python -m ruff format src tests --check
 ```
 

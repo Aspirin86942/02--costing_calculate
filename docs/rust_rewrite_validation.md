@@ -3,6 +3,7 @@
 ## Status
 
 Rust CLI is the validated replacement target for the default GB/SK costing ETL path after the full parity suite passes.
+When `data/raw` samples are absent, set `COSTING_GB_SAMPLE` and `COSTING_SK_SAMPLE` to prove validation on real workbooks; default `skip` results are not evidence for GB/SK validation.
 
 ## Required Commands
 

@@ -2,7 +2,7 @@
 ## Repository Guidelines
 
 ### Project Structure & Module Organization
-本仓库是用于成本核算工作簿的 Python ETL 工具：
+本仓库是用于成本核算工作簿的 Rust CLI 主实现仓库，保留 Python 作为迁移期 oracle/legacy 路径：
 - `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
 - `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
 - `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）
@@ -16,14 +16,21 @@
 - 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
 
 ### Build / Test / Dev Commands
-- `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装开发依赖
-- `uv run python main.py gb --check-only --benchmark`: GB 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `uv run python main.py sk --check-only --benchmark`: SK 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `uv run python main.py gb`: 执行 GB 管线
-- `uv run python main.py sk`: 执行 SK 管线
-- `uv run python -m pytest tests -q`: 运行测试
-- `uv run python -m ruff check src tests`: 代码检查
-- `uv run python -m ruff format src tests --check`: 代码格式化检查
+- `cargo build --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
+- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx`: 执行 GB Rust 管线
+- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx`: 执行 SK Rust 管线
+- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark`: GB Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark`: SK Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
+- `cargo fmt --all --check`: Rust 格式检查
+- `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖
+- `uv run python main.py gb`: 执行 GB Python legacy/oracle/regression 管线
+- `uv run python main.py sk`: 执行 SK Python legacy/oracle/regression 管线
+- `uv run python main.py gb --check-only --benchmark`: GB Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `uv run python main.py sk --check-only --benchmark`: SK Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `uv run python -m pytest tests -q`: 运行 Python oracle/regression 测试
+- `uv run python -m ruff check src tests`: Python 代码检查
+- `uv run python -m ruff format src tests --check`: Python 代码格式化检查
 
 如缺少测试依赖，优先安装 editable extras：
 - `uv sync --extra dev`
@@ -63,6 +70,7 @@
 ### 当前业务规则（GB / SK 分析输出）
 - 成本核算 Rust CLI 默认按顺序输出以下 3 张 Sheet：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`。
 - `成本分析产品维度` 不属于 Rust 新系统输出契约；Python legacy helper 只作为退场前历史代码存在。
+- Python retirement 需单独批准；当前保留 Python 路径仅用于 oracle、回归和迁移校验。
 - 每次处理只落盘 `*_处理后.xlsx`，不再额外生成 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`。
 - 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台；`--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。

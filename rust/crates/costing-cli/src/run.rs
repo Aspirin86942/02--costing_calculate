@@ -238,6 +238,31 @@ mod tests {
     }
 
     #[test]
+    fn run_returns_error_when_workbook_output_cannot_be_created() {
+        let input = unique_temp_path(&std::env::temp_dir(), "run-output-error-input", "xlsx");
+        let blocked_parent =
+            unique_temp_path(&std::env::temp_dir(), "run-output-error-parent", "tmp");
+        let output = blocked_parent.join("out.xlsx");
+        write_minimal_input_workbook(&input);
+        std::fs::write(&blocked_parent, "not a directory").unwrap();
+
+        let args = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: input.clone(),
+            output: Some(output.clone()),
+            month_start: None,
+            month_end: None,
+            check_only: false,
+            benchmark: false,
+        };
+
+        assert!(run(args).is_err());
+        assert!(!output.exists());
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(blocked_parent);
+    }
+
+    #[test]
     fn run_rejects_non_strict_month_range() {
         let path = unique_temp_path(&std::env::temp_dir(), "invalid-month", "xlsx");
         std::fs::write(&path, "placeholder").unwrap();

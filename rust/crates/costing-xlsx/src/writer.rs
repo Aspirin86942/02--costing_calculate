@@ -6,17 +6,17 @@ use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksh
 
 use crate::reader::CostingXlsxError;
 
-const PRODUCT_DIMENSION_SHEET: &str = "成本分析产品维度";
+const DEFAULT_SHEET_NAMES: [&str; 3] = [
+    "成本计算单总表",
+    "成本计算单数量聚合维度",
+    "成本分析工单维度",
+];
 
 pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), CostingXlsxError> {
+    validate_default_sheet_contract(payload)?;
+
     let mut workbook = Workbook::new();
     for sheet in &payload.sheet_models {
-        if sheet.sheet_name == PRODUCT_DIMENSION_SHEET {
-            return Err(CostingXlsxError::Message(format!(
-                "{PRODUCT_DIMENSION_SHEET} 不属于 Rust 默认 workbook 契约"
-            )));
-        }
-
         let worksheet = workbook.add_worksheet();
         worksheet
             .set_name(&sheet.sheet_name)
@@ -59,6 +59,23 @@ pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), Cost
     workbook
         .save(path)
         .map_err(|error| CostingXlsxError::Message(error.to_string()))
+}
+
+fn validate_default_sheet_contract(payload: &WorkbookPayload) -> Result<(), CostingXlsxError> {
+    let actual = payload
+        .sheet_models
+        .iter()
+        .map(|sheet| sheet.sheet_name.as_str())
+        .collect::<Vec<_>>();
+    if actual.as_slice() == DEFAULT_SHEET_NAMES.as_slice() {
+        return Ok(());
+    }
+
+    Err(CostingXlsxError::Message(format!(
+        "Rust 默认 workbook 只允许按顺序输出: {}; 实际: {}",
+        DEFAULT_SHEET_NAMES.join(", "),
+        actual.join(", ")
+    )))
 }
 
 fn write_header_row(
@@ -231,6 +248,22 @@ mod tests {
         let error = write_workbook(&output, &payload).unwrap_err();
 
         assert!(error.to_string().contains("成本分析产品维度"));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn rejects_extra_non_default_sheet() {
+        let output = unique_temp_path("extra-sheet");
+        let payload = payload(vec![
+            sheet("成本计算单总表"),
+            sheet("成本计算单数量聚合维度"),
+            sheet("成本分析工单维度"),
+            sheet("调试输出"),
+        ]);
+
+        let error = write_workbook(&output, &payload).unwrap_err();
+
+        assert!(error.to_string().contains("默认 workbook"));
         assert!(!output.exists());
     }
 }

@@ -3,6 +3,7 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Rust CLI 主实现仓库，保留 Python 作为迁移期 oracle/legacy 路径：
+- `rust/`: Cargo workspace，包含 `costing-cli`、`costing-core` 和 `costing-xlsx` crates
 - `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
 - `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
 - `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）
@@ -22,7 +23,7 @@
 - `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark`: GB Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
 - `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark`: SK Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
 - `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
-- `cargo fmt --all --check`: Rust 格式检查
+- `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查
 - `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖
 - `uv run python main.py gb`: 执行 GB Python legacy/oracle/regression 管线
 - `uv run python main.py sk`: 执行 SK Python legacy/oracle/regression 管线

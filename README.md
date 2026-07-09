@@ -10,16 +10,14 @@
 - 字段名提取和标准化
 
 ## 安装
-```bash
-uv sync
-```
+Rust CLI 使用 `rust/rust-toolchain.toml` 指定的 stable toolchain。
 
-如需开发依赖：
+仅在运行 Python oracle/regression 时安装其开发依赖：
 ```bash
 uv sync --extra dev
 ```
 
-本文默认开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
+Python oracle/regression 的开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
 
 ## 使用
 Rust CLI 是当前默认/主入口：
@@ -123,7 +121,7 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
 ## 测试
 ```bash
 # Rust CLI checks
-cargo fmt --all --check
+cargo fmt --manifest-path rust/Cargo.toml --all --check
 cargo test --manifest-path rust/Cargo.toml
 
 # Python oracle/regression 依赖

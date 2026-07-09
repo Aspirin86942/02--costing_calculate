@@ -4,7 +4,7 @@
 
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
-- 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
+- 默认输出 3 张业务工作表，覆盖成本总表、数量聚合和工单维度异常
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 字段名提取和标准化
@@ -35,11 +35,10 @@ conda run -n costing311 python main.py sk --check-only --benchmark
 ```
 
 ## 输出说明
-每个处理后的工作簿默认按顺序输出以下 4 张 Sheet：
+每个处理后的工作簿默认按顺序输出以下 3 张 Sheet：
 - `成本计算单总表`
 - `成本计算单数量聚合维度`
 - `成本分析工单维度`
-- `成本分析产品维度`
 
 - 每次处理只在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
 - 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
@@ -62,9 +61,6 @@ conda run -n costing311 python main.py sk --check-only --benchmark
   - 规则：仅对大于 0 的单位成本计算对数与 Modified Z-score，阈值为 `2.5/3.5`
   - `委外加工费` 与 `软件费用`（仅 `sk`）只展示金额和单位成本，不输出 `log`、`Modified Z-score` 和异常标记，也不参与异常等级和异常主要来源判定
   - 解释字段：`异常明细解释`，仅列出达到 `关注` 或 `高度可疑` 的成本项；每项包含当前值、当前log、基准值、基准log、log偏离、相对偏离、score、有效工单数、原始MAD、有效MAD。`有效工单数` 是同一产品、同一生产类型异常池、同一成本指标下实际参与该项评分的有效工单行数，不是完工数量合计。
-- 产品维度摘要页：`成本分析产品维度`，保留按产品分块的紧凑布局，不再输出 `四、按单个产品异常值分析` 标题
-  - 字段：总成本、完工数量、单位成本、直接材料/人工/制造费用的成本、单位成本、贡献率
-  - 不再执行 IQR 检测，仅输出月度摘要数据
 
 ## Excel 样式
 - 蓝黄风格：段标题黄底、表头浅蓝、总计行加深蓝
@@ -81,7 +77,7 @@ conda run -n costing311 python main.py sk --check-only --benchmark
   - `contracts.py` - 共享数据结构
   - `fact_builder.py` - fact 构建与 Decimal 工具
   - `qty_enricher.py` - 数量页补强与报表产物编排
-  - `table_rendering.py` - 产品维度摘要页渲染
+  - `table_rendering.py` - 产品维度 legacy/helper 渲染逻辑（不属于默认 workbook 输出）
   - `anomaly.py` / `scoring.py` / `summary.py` / `quality.py` / `errors.py` - 工单异常、评分工具、质量摘要、error_log 契约
 - `src/etl/` - ETL 处理模块
   - `costing_etl.py` - 单个工作簿 ETL 主流程

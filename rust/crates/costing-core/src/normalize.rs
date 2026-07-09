@@ -7,6 +7,7 @@ use crate::pipeline::PipelineConfig;
 const PERIOD_COLUMN: &str = "年期";
 const MONTH_COLUMN: &str = "月份";
 const COST_CENTER_COLUMN: &str = "成本中心名称";
+const CHILD_MATERIAL_COLUMN: &str = "子项物料编码";
 const COST_ITEM_COLUMN: &str = "成本项目名称";
 const FILLED_COST_ITEM_COLUMN: &str = "Filled_成本项目";
 const INTEGRATED_WORKSHOP_NAME: &str = "集成车间";
@@ -26,7 +27,7 @@ const FILL_COLUMNS: &[&str] = &[
     "单据类型",
 ];
 const VENDOR_COLUMNS: &[&str] = &["供应商编码", "供应商名称"];
-const KEY_COLUMN_CANDIDATES: &[&str] = &[MONTH_COLUMN, "产品编码", "工单编号", "工单行号"];
+const KEY_COLUMNS: &[&str] = &[MONTH_COLUMN, "产品编码", "工单编号", "工单行号"];
 
 pub fn build_month_range(
     month_start: Option<&str>,
@@ -53,6 +54,7 @@ pub fn normalize_workbook(
     };
 
     let mut columns = flatten_headers(&raw.header_rows);
+    normalize_key_column_names(&mut columns);
     let mut rows = rows_to_maps(&columns, raw.rows);
 
     rows.retain(|row| !is_total_row(row));
@@ -65,9 +67,8 @@ pub fn normalize_workbook(
         rows.retain(|row| month_in_range(row, range));
     }
 
-    let key_columns = KEY_COLUMN_CANDIDATES
+    let key_columns = KEY_COLUMNS
         .iter()
-        .filter(|column| columns.iter().any(|existing| existing == **column))
         .map(|column| (*column).to_string())
         .collect();
 
@@ -112,6 +113,39 @@ fn clean_header_token(value: &str) -> String {
     } else {
         token
     }
+}
+
+fn normalize_key_column_names(columns: &mut [String]) {
+    let rename_map = infer_rename_map(columns);
+    for column in columns.iter_mut() {
+        if let Some(target) = rename_map.get(column.as_str()) {
+            *column = target.clone();
+        }
+    }
+}
+
+fn infer_rename_map(columns: &[String]) -> BTreeMap<String, String> {
+    let mut rename_map = BTreeMap::new();
+
+    if !columns.iter().any(|column| column == CHILD_MATERIAL_COLUMN) {
+        if let Some(candidate) = columns
+            .iter()
+            .find(|column| column.contains("物料编码") || column.contains("子件"))
+        {
+            rename_map.insert(candidate.clone(), CHILD_MATERIAL_COLUMN.to_string());
+        }
+    }
+
+    if !columns.iter().any(|column| column == COST_ITEM_COLUMN) {
+        if let Some(candidate) = columns
+            .iter()
+            .find(|column| column.contains("成本项目") || column.contains("费用项目"))
+        {
+            rename_map.insert(candidate.clone(), COST_ITEM_COLUMN.to_string());
+        }
+    }
+
+    rename_map
 }
 
 fn rows_to_maps(columns: &[String], rows: Vec<Vec<CellValue>>) -> Vec<TableRow> {
@@ -197,14 +231,19 @@ fn insert_month_column(columns: &mut Vec<String>, rows: &mut [TableRow]) {
 }
 
 fn insert_filled_cost_item_column(columns: &mut Vec<String>, rows: &mut [TableRow]) {
-    if !columns.iter().any(|column| column == COST_ITEM_COLUMN) {
-        return;
-    }
     if !columns
         .iter()
         .any(|column| column == FILLED_COST_ITEM_COLUMN)
     {
         columns.push(FILLED_COST_ITEM_COLUMN.to_string());
+    }
+
+    if !columns.iter().any(|column| column == COST_ITEM_COLUMN) {
+        for row in rows.iter_mut() {
+            row.values
+                .insert(FILLED_COST_ITEM_COLUMN.to_string(), CellValue::Blank);
+        }
+        return;
     }
 
     let mut last_cost_item: Option<CellValue> = None;
@@ -484,6 +523,96 @@ mod tests {
         assert_eq!(
             flatten_headers(&headers),
             vec!["成本项目名称".to_string(), "供应商编码".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalizes_alias_columns_like_python_infer_rename_map() {
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let raw = RawWorkbook {
+            sheet_name: "成本计算单".to_string(),
+            header_rows: [
+                vec![
+                    "年期".to_string(),
+                    "物料编码".to_string(),
+                    "费用项目".to_string(),
+                    "工单编号".to_string(),
+                ],
+                vec![
+                    "".to_string(),
+                    "".to_string(),
+                    "".to_string(),
+                    "".to_string(),
+                ],
+            ],
+            rows: vec![vec![
+                CellValue::Text("2025年01期".to_string()),
+                CellValue::Text("MAT-1".to_string()),
+                CellValue::Text("制造费用".to_string()),
+                CellValue::Text("WO-1".to_string()),
+            ]],
+        };
+
+        let normalized = normalize_workbook(raw, &config, None).unwrap();
+
+        assert!(normalized
+            .columns
+            .iter()
+            .any(|column| column == "子项物料编码"));
+        assert!(normalized
+            .columns
+            .iter()
+            .any(|column| column == "成本项目名称"));
+        assert_eq!(
+            normalized.rows[0].values["子项物料编码"],
+            CellValue::Text("MAT-1".to_string())
+        );
+        assert_eq!(
+            normalized.rows[0].values["成本项目名称"],
+            CellValue::Text("制造费用".to_string())
+        );
+    }
+
+    #[test]
+    fn always_adds_blank_filled_cost_item_when_cost_item_column_missing() {
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let raw = RawWorkbook {
+            sheet_name: "成本计算单".to_string(),
+            header_rows: [
+                vec!["年期".to_string(), "工单编号".to_string()],
+                vec!["".to_string(), "".to_string()],
+            ],
+            rows: vec![vec![
+                CellValue::Text("2025年01期".to_string()),
+                CellValue::Text("WO-1".to_string()),
+            ]],
+        };
+
+        let normalized = normalize_workbook(raw, &config, None).unwrap();
+
+        assert!(normalized
+            .columns
+            .iter()
+            .any(|column| column == FILLED_COST_ITEM_COLUMN));
+        assert_eq!(
+            normalized.rows[0].values[FILLED_COST_ITEM_COLUMN],
+            CellValue::Blank
+        );
+    }
+
+    #[test]
+    fn key_columns_match_python_contract_even_if_some_columns_are_missing() {
+        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
+
+        assert_eq!(
+            normalized.key_columns,
+            vec![
+                "月份".to_string(),
+                "产品编码".to_string(),
+                "工单编号".to_string(),
+                "工单行号".to_string()
+            ]
         );
     }
 

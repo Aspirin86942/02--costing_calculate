@@ -23,7 +23,11 @@ from src.analytics.contracts import (
     SheetModel,
     WorkbookPayload,
 )
-from src.analytics.presentation_builder import build_sheet_models, dataframe_to_sheet_model
+from src.analytics.presentation_builder import (
+    build_product_anomaly_sheet_model,
+    build_sheet_models,
+    dataframe_to_sheet_model,
+)
 from src.analytics.qty_enricher import build_report_artifacts
 from src.config.pipelines import GB_PIPELINE
 from src.etl.costing_etl import CostingWorkbookETL
@@ -768,23 +772,19 @@ def test_sheet_model_fast_metadata_keeps_rows_factory_in_sync() -> None:
 def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_model.xlsx'
     writer = CostingWorkbookWriter()
-    sheet_models = build_sheet_models(
-        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
-        qty_sheet_df=pd.DataFrame(
-            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+    sheet_models = (
+        build_product_anomaly_sheet_model(
+            [
+                ProductAnomalySection(
+                    product_code='P001',
+                    product_name='产品A',
+                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                    amount_columns=['总成本'],
+                    outlier_cells=set(),
+                )
+            ]
         ),
-        fact_bundle=None,
-        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
-        product_anomaly_sections=[
-            ProductAnomalySection(
-                product_code='P001',
-                product_name='产品A',
-                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
-                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                amount_columns=['总成本'],
-                outlier_cells=set(),
-            )
-        ],
     )
 
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)
@@ -798,6 +798,25 @@ def test_workbook_writer_sheet_model_preserves_product_anomaly_legacy_layout(tmp
     assert worksheet['A3'].value == '月份'
     assert worksheet['A4'].value == '2025年01期'
     assert worksheet.freeze_panes == 'A4'
+
+
+def test_build_product_anomaly_sheet_model_preserves_legacy_rows() -> None:
+    model = build_product_anomaly_sheet_model(
+        [
+            ProductAnomalySection(
+                product_code='P001',
+                product_name='产品A',
+                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                amount_columns=['总成本'],
+                outlier_cells=set(),
+            )
+        ]
+    )
+
+    assert model.sheet_name == '成本分析产品维度'
+    assert model.freeze_panes == 'A4'
+    assert list(model.rows_factory())[0][:2] == ('P001', '产品A')
 
 
 def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract() -> None:
@@ -832,33 +851,29 @@ def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contrac
 def test_workbook_writer_sheet_model_renders_product_anomaly_scope_split_layout_for_gb(tmp_path: Path) -> None:
     output_path = tmp_path / 'product_anomaly_scope_split_model.xlsx'
     writer = CostingWorkbookWriter()
-    sheet_models = build_sheet_models(
-        detail_df=pd.DataFrame([{'月份': '2025年01期', '产品编码': 'P001'}]),
-        qty_sheet_df=pd.DataFrame(
-            [{'月份': '2025年01期', '产品编码': 'P001', '本期完工数量': 10.0, '本期完工金额': 100.0}]
+    sheet_models = (
+        build_product_anomaly_sheet_model(
+            [
+                ProductAnomalySection(
+                    product_code='P001',
+                    product_name='产品A',
+                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
+                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                    amount_columns=['总成本'],
+                    outlier_cells=set(),
+                    section_label='全部',
+                ),
+                ProductAnomalySection(
+                    product_code='P001',
+                    product_name='产品A',
+                    data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
+                    column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
+                    amount_columns=['总成本'],
+                    outlier_cells=set(),
+                    section_label='正常生产',
+                ),
+            ]
         ),
-        fact_bundle=None,
-        work_order_sheet=FlatSheet(data=pd.DataFrame([{'月份': '2025年01期'}]), column_types={'月份': 'text'}),
-        product_anomaly_sections=[
-            ProductAnomalySection(
-                product_code='P001',
-                product_name='产品A',
-                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 100.0, '完工数量': 10.0, '单位成本': 10.0}]),
-                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                amount_columns=['总成本'],
-                outlier_cells=set(),
-                section_label='全部',
-            ),
-            ProductAnomalySection(
-                product_code='P001',
-                product_name='产品A',
-                data=pd.DataFrame([{'月份': '2025年01期', '总成本': 80.0, '完工数量': 8.0, '单位成本': 10.0}]),
-                column_types={'月份': 'text', '总成本': 'amount', '完工数量': 'qty', '单位成本': 'price'},
-                amount_columns=['总成本'],
-                outlier_cells=set(),
-                section_label='正常生产',
-            ),
-        ],
     )
 
     writer.write_workbook_from_models(output_path, sheet_models=sheet_models)

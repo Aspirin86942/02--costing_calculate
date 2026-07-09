@@ -168,6 +168,24 @@ def build_sheet_models(
     )
 
 
+def build_product_anomaly_sheet_model(product_anomaly_sections: list[ProductAnomalySection]) -> SheetModel:
+    """构建 legacy 产品维度 SheetModel，调用方需显式选择该非默认 sheet。"""
+    (
+        product_anomaly_frame,
+        product_anomaly_column_types,
+        has_scoped_product_anomaly_section,
+    ) = _build_product_anomaly_frame(product_anomaly_sections)
+    product_anomaly_number_formats = _build_number_formats(product_anomaly_column_types)
+    return dataframe_to_sheet_model(
+        sheet_name='成本分析产品维度',
+        frame=product_anomaly_frame,
+        column_types=product_anomaly_column_types,
+        number_formats=product_anomaly_number_formats,
+        freeze_panes='A5' if has_scoped_product_anomaly_section else 'A4',
+        fixed_width=15.0,
+    )
+
+
 def _build_product_anomaly_frame(
     sections: list[ProductAnomalySection],
 ) -> tuple[pl.DataFrame, dict[str, str], bool]:

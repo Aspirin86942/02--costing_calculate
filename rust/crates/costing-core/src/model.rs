@@ -50,6 +50,23 @@ pub struct SplitResult {
     pub qty_rows: Vec<TableRow>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ErrorIssue {
+    pub row_id: String,
+    pub issue_type: String,
+    pub field_name: String,
+    pub reason: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FactBundle {
+    pub detail_fact: Vec<TableRow>,
+    pub qty_fact: Vec<TableRow>,
+    pub work_order_fact: Vec<TableRow>,
+    pub error_issues: Vec<ErrorIssue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MonthRange {
     pub start: Option<String>,

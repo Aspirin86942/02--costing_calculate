@@ -1,4 +1,6 @@
+use costing_core::fact::{build_fact_bundle, build_qty_sheet_rows};
 use costing_core::normalize::{build_month_range, normalize_workbook};
+use costing_core::quality::build_quality_metrics;
 use costing_core::split::split_detail_and_qty;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{reader::read_raw_workbook, snapshot::build_reader_snapshot};
@@ -13,12 +15,18 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     let snapshot = build_reader_snapshot(&raw);
     let normalized = normalize_workbook(raw, &pipeline, month_range)?;
     let split = split_detail_and_qty(normalized)?;
+    let bundle = build_fact_bundle(split, &pipeline)?;
+    let qty_sheet_rows = build_qty_sheet_rows(&bundle, &pipeline);
+    let quality_metrics = build_quality_metrics(&bundle);
     let output_written = !args.check_only;
     let mut timings = StageTimings::default();
     timings.insert("ingest", 0.0);
     timings.insert("reader_rows", snapshot.row_count as f64);
-    timings.insert("detail_rows", split.detail_rows.len() as f64);
-    timings.insert("qty_rows", split.qty_rows.len() as f64);
+    timings.insert("detail_rows", bundle.detail_fact.len() as f64);
+    timings.insert("qty_rows", bundle.qty_fact.len() as f64);
+    timings.insert("work_order_rows", bundle.work_order_fact.len() as f64);
+    timings.insert("qty_sheet_rows", qty_sheet_rows.len() as f64);
+    timings.insert("quality_metric_count", quality_metrics.len() as f64);
 
     Ok(RunSummary {
         status: "succeeded".to_string(),
@@ -26,7 +34,7 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         output_written,
         workbook_path: args.output.map(|path| path.display().to_string()),
         sheet_count: 0,
-        error_log_count: 0,
+        error_log_count: bundle.error_issues.len(),
         stage_timings: timings,
     })
 }

@@ -51,6 +51,11 @@ pub fn decimal_ln(value: Decimal) -> Option<f64> {
     value.to_f64().filter(|number| *number > 0.0).map(f64::ln)
 }
 
+pub fn resolve_effective_log_mad(mad: Option<Decimal>) -> Option<f64> {
+    mad.and_then(|value| value.to_f64())
+        .map(|value| value.max(0.005_f64.ln_1p()))
+}
+
 fn decimal_abs(value: Decimal) -> Decimal {
     if value < Decimal::ZERO {
         -value
@@ -126,5 +131,16 @@ mod tests {
         assert_eq!(decimal_ln(Decimal::ZERO), None);
         assert_eq!(decimal_ln(Decimal::new(-1, 0)), None);
         assert_eq!(decimal_ln(Decimal::new(1, 0)), Some(0.0));
+    }
+
+    #[test]
+    fn resolve_effective_log_mad_applies_minimum_dispersion() {
+        let minimum = resolve_effective_log_mad(Some(Decimal::ZERO)).unwrap();
+
+        assert!(minimum > 0.0);
+        assert_eq!(
+            resolve_effective_log_mad(Some(Decimal::new(123, 2))),
+            Some(1.23)
+        );
     }
 }

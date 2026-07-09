@@ -1,0 +1,809 @@
+use std::collections::BTreeMap;
+
+use rust_decimal::Decimal;
+
+use crate::model::{CellValue, FactBundle, SheetModel, TableRow};
+use crate::pipeline::PipelineConfig;
+use crate::scoring::{
+    decimal_ln, grade_score, resolve_effective_log_mad, weighted_mad, weighted_median,
+};
+
+const ZERO: Decimal = Decimal::ZERO;
+const NORMAL_SCOPE: &str = "正常生产";
+const REWORK_SCOPE: &str = "返工生产";
+const UNKNOWN_SCOPE: &str = "未归类";
+
+const BASE_WORK_ORDER_COLUMNS: &[&str] = &[
+    "月份",
+    "成本中心",
+    "产品编码",
+    "产品名称",
+    "规格型号",
+    "工单编号",
+    "工单行",
+    "生产类型",
+    "基本单位",
+    "本期完工数量",
+    "总完工成本",
+    "直接材料合计完工金额",
+    "直接人工合计完工金额",
+    "制造费用合计完工金额",
+    "制造费用_其他合计完工金额",
+    "制造费用_人工合计完工金额",
+    "制造费用_机物料及低耗合计完工金额",
+    "制造费用_折旧合计完工金额",
+    "制造费用_水电费合计完工金额",
+    "总单位完工成本",
+    "直接材料单位完工成本",
+    "直接人工单位完工成本",
+    "制造费用单位完工成本",
+    "制造费用_其他单位完工成本",
+    "制造费用_人工单位完工成本",
+    "制造费用_机物料及低耗单位完工成本",
+    "制造费用_折旧单位完工成本",
+    "制造费用_水电费单位完工成本",
+    "是否可参与分析",
+    "异常等级",
+    "异常主要来源",
+    "异常明细解释",
+    "复核原因",
+];
+
+#[derive(Clone, Copy)]
+struct Metric {
+    key: &'static str,
+    display_name: &'static str,
+    source_label: &'static str,
+    explanation_label: &'static str,
+}
+
+const ANOMALY_METRICS: &[Metric] = &[
+    Metric {
+        key: "total_unit_cost",
+        display_name: "总单位完工成本",
+        source_label: "总成本异常",
+        explanation_label: "总成本",
+    },
+    Metric {
+        key: "dm_unit_cost",
+        display_name: "直接材料单位完工成本",
+        source_label: "材料异常",
+        explanation_label: "直接材料",
+    },
+    Metric {
+        key: "dl_unit_cost",
+        display_name: "直接人工单位完工成本",
+        source_label: "人工异常",
+        explanation_label: "直接人工",
+    },
+    Metric {
+        key: "moh_unit_cost",
+        display_name: "制造费用单位完工成本",
+        source_label: "制造费用异常",
+        explanation_label: "制造费用",
+    },
+    Metric {
+        key: "moh_other_unit_cost",
+        display_name: "制造费用_其他单位完工成本",
+        source_label: "其他异常",
+        explanation_label: "制造费用_其他",
+    },
+    Metric {
+        key: "moh_labor_unit_cost",
+        display_name: "制造费用_人工单位完工成本",
+        source_label: "制造费用人工异常",
+        explanation_label: "制造费用_人工",
+    },
+    Metric {
+        key: "moh_consumables_unit_cost",
+        display_name: "制造费用_机物料及低耗单位完工成本",
+        source_label: "机物料及低耗异常",
+        explanation_label: "制造费用_机物料及低耗",
+    },
+    Metric {
+        key: "moh_depreciation_unit_cost",
+        display_name: "制造费用_折旧单位完工成本",
+        source_label: "折旧异常",
+        explanation_label: "制造费用_折旧",
+    },
+    Metric {
+        key: "moh_utilities_unit_cost",
+        display_name: "制造费用_水电费单位完工成本",
+        source_label: "水电费异常",
+        explanation_label: "制造费用_水电费",
+    },
+];
+
+#[derive(Default)]
+struct MetricAudit {
+    flag: String,
+    score: Option<f64>,
+    current_log: Option<f64>,
+    center_log: Option<f64>,
+    raw_mad: Option<f64>,
+    effective_mad: Option<f64>,
+    sample_size: usize,
+}
+
+struct AnomalyRow {
+    source: TableRow,
+    numbers: BTreeMap<String, Decimal>,
+    production_scope: String,
+    can_analyze: bool,
+    reasons: Vec<String>,
+    audits: BTreeMap<&'static str, MetricAudit>,
+    anomaly_level: String,
+    anomaly_source: String,
+    detail_explanation: String,
+}
+
+pub fn build_work_order_anomaly_sheet(bundle: &FactBundle, config: &PipelineConfig) -> SheetModel {
+    let columns = work_order_columns(config);
+    let mut rows = bundle
+        .work_order_fact
+        .iter()
+        .map(|row| build_anomaly_row(row, config))
+        .collect::<Vec<_>>();
+    score_rows(&mut rows);
+
+    SheetModel {
+        sheet_name: "成本分析工单维度".to_string(),
+        rows: rows
+            .iter()
+            .map(|row| {
+                columns
+                    .iter()
+                    .map(|column| map_work_order_value(row, column, config))
+                    .collect()
+            })
+            .collect(),
+        column_types: build_column_types(&columns),
+        number_formats: build_number_formats(&columns),
+        columns,
+        freeze_panes: Some("A2".to_string()),
+        auto_filter: true,
+        fixed_width: Some(15.0),
+    }
+}
+
+fn work_order_columns(config: &PipelineConfig) -> Vec<String> {
+    let mut columns = BASE_WORK_ORDER_COLUMNS
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    for item in config.standalone_cost_items {
+        let meta = standalone_meta(item);
+        insert_before(&mut columns, "总单位完工成本", meta.amount_column);
+        insert_before(&mut columns, "是否可参与分析", meta.unit_column);
+    }
+    columns
+}
+
+fn insert_before(columns: &mut Vec<String>, marker: &str, value: &str) {
+    if columns.iter().any(|column| column == value) {
+        return;
+    }
+    let index = columns
+        .iter()
+        .position(|column| column == marker)
+        .unwrap_or(columns.len());
+    columns.insert(index, value.to_string());
+}
+
+fn build_anomaly_row(row: &TableRow, config: &PipelineConfig) -> AnomalyRow {
+    let completed_qty = decimal(row, "completed_qty").unwrap_or(ZERO);
+    let completed_total = decimal(row, "completed_amount_total").unwrap_or(ZERO);
+    let mut numbers = BTreeMap::from([
+        ("completed_qty".to_string(), completed_qty),
+        ("completed_amount_total".to_string(), completed_total),
+        (
+            "dm_amount".to_string(),
+            decimal(row, "dm_amount").unwrap_or(ZERO),
+        ),
+        (
+            "dl_amount".to_string(),
+            decimal(row, "dl_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_amount".to_string(),
+            decimal(row, "moh_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_other_amount".to_string(),
+            decimal(row, "moh_other_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_labor_amount".to_string(),
+            decimal(row, "moh_labor_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_consumables_amount".to_string(),
+            decimal(row, "moh_consumables_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_depreciation_amount".to_string(),
+            decimal(row, "moh_depreciation_amount").unwrap_or(ZERO),
+        ),
+        (
+            "moh_utilities_amount".to_string(),
+            decimal(row, "moh_utilities_amount").unwrap_or(ZERO),
+        ),
+    ]);
+
+    insert_unit_costs(&mut numbers, completed_qty);
+    for item in config.standalone_cost_items {
+        let meta = standalone_meta(item);
+        let amount = decimal(row, meta.amount_key).unwrap_or(ZERO);
+        numbers.insert(meta.amount_key.to_string(), amount);
+        if let Some(unit_cost) = safe_divide(amount, completed_qty) {
+            numbers.insert(meta.unit_key.to_string(), unit_cost);
+        }
+    }
+
+    let production_scope = map_doc_type_to_scope(&text_any(row, &["doc_type", "单据类型"]));
+    let mut reasons = Vec::new();
+    if production_scope == UNKNOWN_SCOPE {
+        reasons.push("单据类型未归类，不参与正常生产/返工生产异常池".to_string());
+    }
+    let total_unit_cost = numbers.get("total_unit_cost").copied().unwrap_or(ZERO);
+    let can_analyze = completed_qty > ZERO
+        && total_unit_cost > ZERO
+        && matches!(production_scope.as_str(), NORMAL_SCOPE | REWORK_SCOPE);
+
+    AnomalyRow {
+        source: row.clone(),
+        numbers,
+        production_scope,
+        can_analyze,
+        reasons,
+        audits: BTreeMap::new(),
+        anomaly_level: "正常".to_string(),
+        anomaly_source: String::new(),
+        detail_explanation: String::new(),
+    }
+}
+
+fn insert_unit_costs(numbers: &mut BTreeMap<String, Decimal>, completed_qty: Decimal) {
+    let amount_to_unit = [
+        ("completed_amount_total", "total_unit_cost"),
+        ("dm_amount", "dm_unit_cost"),
+        ("dl_amount", "dl_unit_cost"),
+        ("moh_amount", "moh_unit_cost"),
+        ("moh_other_amount", "moh_other_unit_cost"),
+        ("moh_labor_amount", "moh_labor_unit_cost"),
+        ("moh_consumables_amount", "moh_consumables_unit_cost"),
+        ("moh_depreciation_amount", "moh_depreciation_unit_cost"),
+        ("moh_utilities_amount", "moh_utilities_unit_cost"),
+    ];
+    for (amount_key, unit_key) in amount_to_unit {
+        if let Some(unit_cost) = safe_divide(
+            numbers.get(amount_key).copied().unwrap_or(ZERO),
+            completed_qty,
+        ) {
+            numbers.insert(unit_key.to_string(), unit_cost);
+        }
+    }
+}
+
+fn score_rows(rows: &mut [AnomalyRow]) {
+    for metric in ANOMALY_METRICS {
+        append_non_positive_reasons(rows, *metric);
+        let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, row) in rows.iter().enumerate() {
+            if !row.can_analyze || !positive_number(row, metric.key) {
+                continue;
+            }
+            groups.entry(group_key(row)).or_default().push(index);
+        }
+
+        for indexes in groups.values() {
+            let valid = indexes
+                .iter()
+                .filter_map(|index| {
+                    let value = rows[*index].numbers.get(metric.key).copied()?;
+                    let weight = rows[*index].numbers.get("completed_qty").copied()?;
+                    let log_value = decimal_ln(value)?;
+                    decimal_from_f64(log_value)
+                        .map(|log_decimal| (*index, log_value, log_decimal, weight))
+                })
+                .collect::<Vec<_>>();
+            if valid.len() < 3 {
+                continue;
+            }
+
+            let weighted_values = valid
+                .iter()
+                .map(|(_, _, log_decimal, weight)| (*log_decimal, *weight))
+                .collect::<Vec<_>>();
+            let Some(center_decimal) = weighted_median(&weighted_values) else {
+                continue;
+            };
+            let Some(raw_mad_decimal) = weighted_mad(&weighted_values, center_decimal) else {
+                continue;
+            };
+            let Some(center_log) = decimal_to_f64(center_decimal) else {
+                continue;
+            };
+            let Some(raw_mad) = decimal_to_f64(raw_mad_decimal) else {
+                continue;
+            };
+            let Some(effective_mad) = resolve_effective_log_mad(Some(raw_mad_decimal)) else {
+                continue;
+            };
+
+            for (index, current_log, _, _) in valid {
+                let score = 0.6745 * (current_log - center_log) / effective_mad;
+                let flag = grade_score(decimal_from_f64(score)).to_string();
+                rows[index].audits.insert(
+                    metric.key,
+                    MetricAudit {
+                        flag,
+                        score: Some(score),
+                        current_log: Some(current_log),
+                        center_log: Some(center_log),
+                        raw_mad: Some(raw_mad),
+                        effective_mad: Some(effective_mad),
+                        sample_size: indexes.len(),
+                    },
+                );
+            }
+        }
+    }
+
+    for row in rows {
+        finalize_row_anomaly(row);
+    }
+}
+
+fn append_non_positive_reasons(rows: &mut [AnomalyRow], metric: Metric) {
+    for row in rows {
+        if !positive_number(row, metric.key) {
+            row.reasons
+                .push(format!("{}小于等于0或为空", metric.display_name));
+        }
+    }
+}
+
+fn finalize_row_anomaly(row: &mut AnomalyRow) {
+    let mut severity_rank = 0;
+    let mut highest_score = -1.0;
+    let mut highest_source = String::new();
+    let mut overall_level = "正常".to_string();
+
+    for metric in ANOMALY_METRICS {
+        let audit = row.audits.entry(metric.key).or_default();
+        let rank = severity_rank_for(&audit.flag);
+        let score_abs = audit.score.map(f64::abs).unwrap_or(-1.0);
+        if rank > severity_rank || (rank == severity_rank && score_abs > highest_score) {
+            severity_rank = rank;
+            highest_score = score_abs;
+            overall_level = audit.flag.clone();
+            highest_source = metric.source_label.to_string();
+        } else if rank == severity_rank
+            && rank > 0
+            && (score_abs - highest_score).abs() < f64::EPSILON
+            && !highest_source.is_empty()
+            && highest_source != metric.source_label
+            && highest_source != "总成本异常"
+            && metric.source_label != "总成本异常"
+        {
+            highest_source = "多项同时异常".to_string();
+        }
+    }
+
+    if severity_rank <= 0 {
+        highest_source.clear();
+    }
+    if row.production_scope == UNKNOWN_SCOPE {
+        overall_level.clear();
+        highest_source.clear();
+    }
+
+    row.anomaly_level = overall_level;
+    row.anomaly_source = highest_source;
+    row.detail_explanation = build_detail_explanation(row);
+}
+
+fn build_detail_explanation(row: &AnomalyRow) -> String {
+    let mut parts = Vec::new();
+    for metric in ANOMALY_METRICS {
+        let Some(audit) = row.audits.get(metric.key) else {
+            continue;
+        };
+        if !matches!(audit.flag.as_str(), "关注" | "高度可疑") {
+            continue;
+        }
+        let current_value = row.numbers.get(metric.key).copied().unwrap_or(ZERO);
+        let score = audit.score.unwrap_or(0.0);
+        let current_log = audit.current_log.unwrap_or(0.0);
+        let center_log = audit.center_log.unwrap_or(0.0);
+        let raw_mad = audit.raw_mad.unwrap_or(0.0);
+        let effective_mad = audit.effective_mad.unwrap_or(0.0);
+        parts.push(format!(
+            "{}: {}, 当前值={}, 当前log={:.4}, 基准log={:.4}, score={:.2}, 有效工单数={}, 原始MAD={:.4}, 有效MAD={:.4}",
+            metric.explanation_label,
+            audit.flag,
+            current_value.normalize(),
+            current_log,
+            center_log,
+            score,
+            audit.sample_size,
+            raw_mad,
+            effective_mad
+        ));
+    }
+    parts.join("; ")
+}
+
+fn map_work_order_value(row: &AnomalyRow, column: &str, config: &PipelineConfig) -> CellValue {
+    match column {
+        "月份" => value_any(&row.source, &["period_display", "月份", "年期"]),
+        "成本中心" => value_any(&row.source, &["cost_center", "成本中心名称"]),
+        "产品编码" => value_any(&row.source, &["product_code", "产品编码"]),
+        "产品名称" => value_any(&row.source, &["product_name", "产品名称"]),
+        "规格型号" => value_any(&row.source, &["spec", "规格型号"]),
+        "工单编号" => value_any(&row.source, &["order_no", "工单编号"]),
+        "工单行" => value_any(&row.source, &["order_line", "工单行号"]),
+        "生产类型" => CellValue::Text(row.production_scope.clone()),
+        "基本单位" => value_any(&row.source, &["unit", "基本单位"]),
+        "本期完工数量" => decimal_value(row, "completed_qty"),
+        "总完工成本" => decimal_value(row, "completed_amount_total"),
+        "直接材料合计完工金额" => decimal_value(row, "dm_amount"),
+        "直接人工合计完工金额" => decimal_value(row, "dl_amount"),
+        "制造费用合计完工金额" => decimal_value(row, "moh_amount"),
+        "制造费用_其他合计完工金额" => decimal_value(row, "moh_other_amount"),
+        "制造费用_人工合计完工金额" => decimal_value(row, "moh_labor_amount"),
+        "制造费用_机物料及低耗合计完工金额" => {
+            decimal_value(row, "moh_consumables_amount")
+        }
+        "制造费用_折旧合计完工金额" => decimal_value(row, "moh_depreciation_amount"),
+        "制造费用_水电费合计完工金额" => decimal_value(row, "moh_utilities_amount"),
+        "总单位完工成本" => decimal_value(row, "total_unit_cost"),
+        "直接材料单位完工成本" => decimal_value(row, "dm_unit_cost"),
+        "直接人工单位完工成本" => decimal_value(row, "dl_unit_cost"),
+        "制造费用单位完工成本" => decimal_value(row, "moh_unit_cost"),
+        "制造费用_其他单位完工成本" => decimal_value(row, "moh_other_unit_cost"),
+        "制造费用_人工单位完工成本" => decimal_value(row, "moh_labor_unit_cost"),
+        "制造费用_机物料及低耗单位完工成本" => {
+            decimal_value(row, "moh_consumables_unit_cost")
+        }
+        "制造费用_折旧单位完工成本" => decimal_value(row, "moh_depreciation_unit_cost"),
+        "制造费用_水电费单位完工成本" => decimal_value(row, "moh_utilities_unit_cost"),
+        "是否可参与分析" => {
+            CellValue::Text(if row.can_analyze { "是" } else { "否" }.to_string())
+        }
+        "异常等级" => CellValue::Text(row.anomaly_level.clone()),
+        "异常主要来源" => CellValue::Text(row.anomaly_source.clone()),
+        "异常明细解释" => CellValue::Text(row.detail_explanation.clone()),
+        "复核原因" => CellValue::Text(row.reasons.join("; ")),
+        other => standalone_display_value(row, other, config),
+    }
+}
+
+fn standalone_display_value(row: &AnomalyRow, column: &str, config: &PipelineConfig) -> CellValue {
+    for item in config.standalone_cost_items {
+        let meta = standalone_meta(item);
+        if column == meta.amount_column {
+            return decimal_value(row, meta.amount_key);
+        }
+        if column == meta.unit_column {
+            return decimal_value(row, meta.unit_key);
+        }
+    }
+    CellValue::Blank
+}
+
+fn build_column_types(columns: &[String]) -> BTreeMap<String, String> {
+    columns
+        .iter()
+        .map(|column| {
+            let metric_type = if column == "本期完工数量" {
+                "qty"
+            } else if column.contains("单位完工成本") {
+                "price"
+            } else if column.contains("金额") || column.contains("成本") {
+                "amount"
+            } else {
+                "text"
+            };
+            (column.clone(), metric_type.to_string())
+        })
+        .collect()
+}
+
+fn build_number_formats(columns: &[String]) -> BTreeMap<String, String> {
+    build_column_types(columns)
+        .into_iter()
+        .filter_map(|(column, metric_type)| {
+            if matches!(metric_type.as_str(), "amount" | "price" | "qty") {
+                Some((column, "#,##0.00".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn group_key(row: &AnomalyRow) -> String {
+    format!(
+        "{}|{}|{}",
+        text_any(&row.source, &["product_code", "产品编码"]),
+        text_any(&row.source, &["product_name", "产品名称"]),
+        row.production_scope
+    )
+}
+
+fn positive_number(row: &AnomalyRow, key: &str) -> bool {
+    row.numbers
+        .get(key)
+        .map(|value| *value > ZERO)
+        .unwrap_or(false)
+}
+
+fn decimal_value(row: &AnomalyRow, key: &str) -> CellValue {
+    row.numbers
+        .get(key)
+        .copied()
+        .map(CellValue::Decimal)
+        .unwrap_or(CellValue::Blank)
+}
+
+fn value_any(row: &TableRow, keys: &[&str]) -> CellValue {
+    keys.iter()
+        .find_map(|key| row.values.get(*key).cloned())
+        .unwrap_or(CellValue::Blank)
+}
+
+fn text_any(row: &TableRow, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| row.values.get(*key).map(cell_to_text))
+        .unwrap_or_default()
+}
+
+fn decimal(row: &TableRow, key: &str) -> Option<Decimal> {
+    row.values.get(key).and_then(cell_to_decimal)
+}
+
+fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
+    match value {
+        CellValue::Decimal(value) => Some(*value),
+        CellValue::Text(value) => value.trim().parse().ok(),
+        CellValue::Blank | CellValue::DateLike(_) => None,
+    }
+}
+
+fn cell_to_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Blank => String::new(),
+        CellValue::Text(value) | CellValue::DateLike(value) => value.clone(),
+        CellValue::Decimal(value) => value.normalize().to_string(),
+    }
+}
+
+fn safe_divide(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
+    if denominator == ZERO {
+        None
+    } else {
+        Some(numerator / denominator)
+    }
+}
+
+fn decimal_from_f64(value: f64) -> Option<Decimal> {
+    if value.is_finite() {
+        format!("{value:.17}").parse().ok()
+    } else {
+        None
+    }
+}
+
+fn decimal_to_f64(value: Decimal) -> Option<f64> {
+    value.to_string().parse().ok()
+}
+
+fn severity_rank_for(value: &str) -> i32 {
+    match value {
+        "高度可疑" => 2,
+        "关注" => 1,
+        "正常" => 0,
+        _ => -1,
+    }
+}
+
+fn map_doc_type_to_scope(value: &str) -> String {
+    match value.trim() {
+        "汇报入库-普通生产" | "直接入库-普通生产" => NORMAL_SCOPE.to_string(),
+        "汇报入库-返工生产" => REWORK_SCOPE.to_string(),
+        _ => UNKNOWN_SCOPE.to_string(),
+    }
+}
+
+struct StandaloneMeta {
+    amount_key: &'static str,
+    unit_key: &'static str,
+    amount_column: &'static str,
+    unit_column: &'static str,
+}
+
+fn standalone_meta(item: &str) -> StandaloneMeta {
+    match item.trim() {
+        "软件费用" => StandaloneMeta {
+            amount_key: "software_amount",
+            unit_key: "software_unit_cost",
+            amount_column: "软件费用合计完工金额",
+            unit_column: "软件费用单位完工成本",
+        },
+        _ => StandaloneMeta {
+            amount_key: "outsource_amount",
+            unit_key: "outsource_unit_cost",
+            amount_column: "委外加工费合计完工金额",
+            unit_column: "委外加工费单位完工成本",
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rust_decimal::Decimal;
+
+    use crate::model::{CellValue, ErrorIssue, FactBundle, TableRow};
+    use crate::pipeline::{PipelineConfig, PipelineName};
+
+    use super::*;
+
+    fn row(
+        order_no: &str,
+        unit_cost: i64,
+        doc_type: &str,
+        extra: &[(&str, CellValue)],
+    ) -> TableRow {
+        let mut values = BTreeMap::from([
+            (
+                "月份".to_string(),
+                CellValue::Text("2025年01期".to_string()),
+            ),
+            ("产品编码".to_string(), CellValue::Text("P1".to_string())),
+            ("产品名称".to_string(), CellValue::Text("产品".to_string())),
+            (
+                "工单编号".to_string(),
+                CellValue::Text(order_no.to_string()),
+            ),
+            ("工单行号".to_string(), CellValue::Text("1".to_string())),
+            (
+                "单据类型".to_string(),
+                CellValue::Text(doc_type.to_string()),
+            ),
+            (
+                "completed_qty".to_string(),
+                CellValue::Decimal(Decimal::new(1, 0)),
+            ),
+            (
+                "completed_amount_total".to_string(),
+                CellValue::Decimal(Decimal::new(unit_cost, 0)),
+            ),
+            (
+                "dm_amount".to_string(),
+                CellValue::Decimal(Decimal::new(unit_cost, 0)),
+            ),
+            ("dl_amount".to_string(), CellValue::Decimal(Decimal::ZERO)),
+            ("moh_amount".to_string(), CellValue::Decimal(Decimal::ZERO)),
+        ]);
+        for (key, value) in extra {
+            values.insert((*key).to_string(), value.clone());
+        }
+        TableRow { values }
+    }
+
+    fn bundle(rows: Vec<TableRow>) -> FactBundle {
+        FactBundle {
+            detail_fact: vec![],
+            qty_fact: vec![],
+            work_order_fact: rows,
+            error_issues: Vec::<ErrorIssue>::new(),
+        }
+    }
+
+    fn column_index(sheet: &SheetModel, column: &str) -> usize {
+        sheet
+            .columns
+            .iter()
+            .position(|value| value == column)
+            .unwrap()
+    }
+
+    #[test]
+    fn work_order_sheet_contains_required_audit_columns() {
+        let sheet = build_work_order_anomaly_sheet(
+            &bundle(vec![row("WO1", 100, "汇报入库-普通生产", &[])]),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        );
+
+        assert_eq!(sheet.sheet_name, "成本分析工单维度");
+        assert!(sheet.columns.contains(&"异常等级".to_string()));
+        assert!(sheet.columns.contains(&"异常主要来源".to_string()));
+        assert!(sheet.columns.contains(&"异常明细解释".to_string()));
+        assert!(sheet.columns.contains(&"复核原因".to_string()));
+        assert_eq!(sheet.freeze_panes, Some("A2".to_string()));
+        assert!(sheet.auto_filter);
+        assert_eq!(sheet.fixed_width, Some(15.0));
+    }
+
+    #[test]
+    fn grades_attention_and_suspicious_by_product_scope() {
+        let sheet = build_work_order_anomaly_sheet(
+            &bundle(vec![
+                row("WO100", 100, "汇报入库-普通生产", &[]),
+                row("WO101", 101, "汇报入库-普通生产", &[]),
+                row("WO102", 102, "汇报入库-普通生产", &[]),
+                row("WO103", 103, "汇报入库-普通生产", &[]),
+                row("WO106", 106, "汇报入库-普通生产", &[]),
+                row("WO115", 115, "汇报入库-普通生产", &[]),
+                row("WO130", 130, "汇报入库-普通生产", &[]),
+            ]),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        );
+        let level_idx = column_index(&sheet, "异常等级");
+        let source_idx = column_index(&sheet, "异常主要来源");
+        let detail_idx = column_index(&sheet, "异常明细解释");
+
+        assert_eq!(
+            sheet.rows[5][level_idx],
+            CellValue::Text("关注".to_string())
+        );
+        assert_eq!(
+            sheet.rows[6][level_idx],
+            CellValue::Text("高度可疑".to_string())
+        );
+        assert_eq!(
+            sheet.rows[6][source_idx],
+            CellValue::Text("总成本异常".to_string())
+        );
+        let CellValue::Text(detail) = &sheet.rows[6][detail_idx] else {
+            panic!("detail explanation should be text");
+        };
+        assert!(detail.contains("总成本:"));
+        assert!(detail.contains("score="));
+    }
+
+    #[test]
+    fn unknown_doc_type_is_not_analyzable() {
+        let sheet = build_work_order_anomaly_sheet(
+            &bundle(vec![row("WO1", 100, "其他入库", &[])]),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        );
+        let can_analyze_idx = column_index(&sheet, "是否可参与分析");
+        let level_idx = column_index(&sheet, "异常等级");
+        let reason_idx = column_index(&sheet, "复核原因");
+
+        assert_eq!(
+            sheet.rows[0][can_analyze_idx],
+            CellValue::Text("否".to_string())
+        );
+        assert_eq!(sheet.rows[0][level_idx], CellValue::Text(String::new()));
+        let CellValue::Text(reason) = &sheet.rows[0][reason_idx] else {
+            panic!("reason should be text");
+        };
+        assert!(reason.contains("单据类型未归类"));
+    }
+
+    #[test]
+    fn sk_standalone_software_columns_are_visible_without_anomaly_flags() {
+        let sheet = build_work_order_anomaly_sheet(
+            &bundle(vec![row(
+                "WO1",
+                100,
+                "汇报入库-普通生产",
+                &[("software_amount", CellValue::Decimal(Decimal::new(5, 0)))],
+            )]),
+            &PipelineConfig::for_name(PipelineName::Sk),
+        );
+
+        assert!(sheet.columns.contains(&"软件费用合计完工金额".to_string()));
+        assert!(sheet.columns.contains(&"软件费用单位完工成本".to_string()));
+        assert!(!sheet.columns.contains(&"软件费用异常标记".to_string()));
+        assert!(!sheet
+            .columns
+            .contains(&"Modified Z-score_软件费用".to_string()));
+    }
+}

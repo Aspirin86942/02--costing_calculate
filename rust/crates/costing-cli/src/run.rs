@@ -4,7 +4,9 @@ use costing_core::presentation::build_workbook_payload;
 use costing_core::quality::build_quality_metrics;
 use costing_core::split::split_detail_and_qty;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
-use costing_xlsx::{reader::read_raw_workbook, snapshot::build_reader_snapshot};
+use costing_xlsx::{
+    reader::read_raw_workbook, snapshot::build_reader_snapshot, writer::write_workbook,
+};
 
 use crate::args::CliArgs;
 
@@ -21,7 +23,6 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     let bundle = build_fact_bundle(split, &pipeline)?;
     let qty_sheet_rows = build_qty_sheet_rows(&bundle, &pipeline);
     let quality_metrics = build_quality_metrics(&bundle);
-    let output_written = !args.check_only;
     let mut timings = StageTimings::default();
     timings.insert("ingest", 0.0);
     timings.insert("reader_rows", snapshot.row_count as f64);
@@ -31,6 +32,14 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     timings.insert("qty_sheet_rows", qty_sheet_rows.len() as f64);
     timings.insert("quality_metric_count", quality_metrics.len() as f64);
     let payload = build_workbook_payload(bundle, &pipeline, timings.clone())?;
+    let workbook_path = args.output.as_ref().map(|path| path.display().to_string());
+    if !args.check_only {
+        let output = args
+            .output
+            .as_ref()
+            .expect("validate_cli_request requires --output for non check-only runs");
+        write_workbook(output, &payload)?;
+    }
     let error_log_preview = payload
         .error_log
         .iter()
@@ -41,8 +50,8 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     Ok(RunSummary {
         status: "succeeded".to_string(),
         pipeline: pipeline.name.as_str().to_string(),
-        output_written,
-        workbook_path: args.output.map(|path| path.display().to_string()),
+        output_written: !args.check_only,
+        workbook_path,
         sheet_count: payload.sheet_models.len(),
         error_log_count: payload.error_log_count,
         error_log_preview_truncated: payload.error_log.len() > ERROR_LOG_PREVIEW_LIMIT,
@@ -171,42 +180,7 @@ mod tests {
     #[test]
     fn run_populates_reader_rows_from_input_workbook() {
         let path = unique_temp_path(&std::env::temp_dir(), "run-reader", "xlsx");
-        let mut workbook = Workbook::new();
-        let sheet = workbook.add_worksheet();
-        sheet.set_name("成本计算单").unwrap();
-        sheet.write_string(0, 0, "年期").unwrap();
-        sheet.write_string(0, 1, "产品编码").unwrap();
-        sheet.write_string(0, 2, "产品名称").unwrap();
-        sheet.write_string(0, 3, "工单编号").unwrap();
-        sheet.write_string(0, 4, "工单行号").unwrap();
-        sheet.write_string(0, 5, "本期完工数量").unwrap();
-        sheet.write_string(0, 6, "本期完工金额").unwrap();
-        sheet.write_string(0, 7, "日期").unwrap();
-        sheet.write_string(1, 0, "").unwrap();
-        sheet.write_string(1, 1, "").unwrap();
-        sheet.write_string(1, 2, "").unwrap();
-        sheet.write_string(1, 3, "").unwrap();
-        sheet.write_string(1, 4, "").unwrap();
-        sheet.write_string(1, 5, "").unwrap();
-        sheet.write_string(1, 6, "").unwrap();
-        sheet.write_string(1, 7, "").unwrap();
-        sheet.write_string(2, 0, "2025年01期").unwrap();
-        sheet.write_string(2, 1, "P1").unwrap();
-        sheet.write_string(2, 2, "产品").unwrap();
-        sheet.write_string(2, 3, "WO-1").unwrap();
-        sheet.write_string(2, 4, "1").unwrap();
-        sheet.write_number(2, 5, 1).unwrap();
-        sheet.write_number(2, 6, 10).unwrap();
-        let date_format = Format::new().set_num_format("yyyy-mm-dd");
-        sheet
-            .write_datetime_with_format(
-                2,
-                7,
-                ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
-                &date_format,
-            )
-            .unwrap();
-        workbook.save(&path).unwrap();
+        write_minimal_input_workbook(&path);
 
         let args = CliArgs {
             pipeline: PipelineName::Gb,
@@ -237,6 +211,30 @@ mod tests {
         }
         assert!(!summary.output_written);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn run_writes_workbook_for_non_check_only_runs() {
+        let input = unique_temp_path(&std::env::temp_dir(), "run-writes-input", "xlsx");
+        let output = unique_temp_path(&std::env::temp_dir(), "run-writes-output", "xlsx");
+        write_minimal_input_workbook(&input);
+
+        let args = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: input.clone(),
+            output: Some(output.clone()),
+            month_start: None,
+            month_end: None,
+            check_only: false,
+            benchmark: false,
+        };
+        let summary = run(args).unwrap();
+
+        assert!(summary.output_written);
+        assert_eq!(summary.workbook_path, Some(output.display().to_string()));
+        assert!(output.exists());
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
     }
 
     #[test]
@@ -323,5 +321,44 @@ mod tests {
                 now
             ))
             .with_extension(ext)
+    }
+
+    fn write_minimal_input_workbook(path: &std::path::Path) {
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("成本计算单").unwrap();
+        sheet.write_string(0, 0, "年期").unwrap();
+        sheet.write_string(0, 1, "产品编码").unwrap();
+        sheet.write_string(0, 2, "产品名称").unwrap();
+        sheet.write_string(0, 3, "工单编号").unwrap();
+        sheet.write_string(0, 4, "工单行号").unwrap();
+        sheet.write_string(0, 5, "本期完工数量").unwrap();
+        sheet.write_string(0, 6, "本期完工金额").unwrap();
+        sheet.write_string(0, 7, "日期").unwrap();
+        sheet.write_string(1, 0, "").unwrap();
+        sheet.write_string(1, 1, "").unwrap();
+        sheet.write_string(1, 2, "").unwrap();
+        sheet.write_string(1, 3, "").unwrap();
+        sheet.write_string(1, 4, "").unwrap();
+        sheet.write_string(1, 5, "").unwrap();
+        sheet.write_string(1, 6, "").unwrap();
+        sheet.write_string(1, 7, "").unwrap();
+        sheet.write_string(2, 0, "2025年01期").unwrap();
+        sheet.write_string(2, 1, "P1").unwrap();
+        sheet.write_string(2, 2, "产品").unwrap();
+        sheet.write_string(2, 3, "WO-1").unwrap();
+        sheet.write_string(2, 4, "1").unwrap();
+        sheet.write_number(2, 5, 1).unwrap();
+        sheet.write_number(2, 6, 10).unwrap();
+        let date_format = Format::new().set_num_format("yyyy-mm-dd");
+        sheet
+            .write_datetime_with_format(
+                2,
+                7,
+                ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
+                &date_format,
+            )
+            .unwrap();
+        workbook.save(path).unwrap();
     }
 }

@@ -1,10 +1,13 @@
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
+use costing_xlsx::{reader::read_raw_workbook, snapshot::build_reader_snapshot};
 
 use crate::args::CliArgs;
 
 pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     validate_cli_request(&args)?;
     let pipeline = PipelineConfig::for_name(args.pipeline);
+    let raw = read_raw_workbook(&args.input)?;
+    let snapshot = build_reader_snapshot(&raw);
     let output_written = !args.check_only;
     Ok(RunSummary {
         status: "succeeded".to_string(),
@@ -13,7 +16,12 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         workbook_path: args.output.map(|path| path.display().to_string()),
         sheet_count: 0,
         error_log_count: 0,
-        stage_timings: StageTimings::default(),
+        stage_timings: {
+            let mut timings = StageTimings::default();
+            timings.insert("ingest", 0.0);
+            timings.insert("reader_rows", snapshot.row_count as f64);
+            timings
+        },
     })
 }
 

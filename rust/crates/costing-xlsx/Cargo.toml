@@ -1,0 +1,15 @@
+[package]
+name = "costing-xlsx"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+calamine.workspace = true
+costing-core = { path = "../costing-core" }
+rust_decimal.workspace = true
+rust_xlsxwriter.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+rust_xlsxwriter.workspace = true

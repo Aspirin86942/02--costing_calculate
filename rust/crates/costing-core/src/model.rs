@@ -25,6 +25,22 @@ pub struct SheetModel {
     pub fixed_width: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RawWorkbook {
+    pub sheet_name: String,
+    pub header_rows: [Vec<String>; 2],
+    pub rows: Vec<Vec<CellValue>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReaderSnapshot {
+    pub sheet_name: String,
+    pub row_count: usize,
+    pub column_count: usize,
+    pub headers: Vec<String>,
+    pub null_counts: BTreeMap<String, usize>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct StageTimings {
     pub stages: BTreeMap<String, f64>,

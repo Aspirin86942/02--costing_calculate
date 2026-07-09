@@ -7,4 +7,5 @@ edition.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 costing-core = { path = "../costing-core" }
+costing-xlsx = { path = "../costing-xlsx" }
 serde_json.workspace = true

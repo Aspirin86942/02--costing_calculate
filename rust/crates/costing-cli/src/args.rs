@@ -7,9 +7,15 @@ use costing_core::PipelineName;
 #[command(name = "costing-calculate", about = "成本核算 ETL Rust CLI")]
 pub struct CliArgs {
     pub pipeline: PipelineName,
-    #[arg(long)]
-    pub input: PathBuf,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "输入 workbook；省略时自动查找 data/raw/<pipeline>/<pipeline>-*.xlsx"
+    )]
+    pub input: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "输出 workbook；非 check-only 省略时写入 data/processed/<pipeline>/*_处理后.xlsx"
+    )]
     pub output: Option<PathBuf>,
     #[arg(long)]
     pub month_start: Option<String>,

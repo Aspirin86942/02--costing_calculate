@@ -25,10 +25,19 @@ Python oracle/regression 的开发、测试命令使用项目 `.venv`，由 `uv`
 Rust CLI 是当前默认/主入口：
 
 ```powershell
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
+```
+
+从仓库根目录运行并省略 `--input` 时，CLI 会扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`。
+
+以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义输入、输出路径时，仍可显式指定：
+
+```powershell
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
 ```
 
 Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：
@@ -54,14 +63,15 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
 `成本分析产品维度` 不属于 Rust 新系统输出契约。
 
 ## 输出说明
-Rust CLI 默认拒绝覆盖已存在的 `--output`，并禁止输入、输出指向同一文件。
+Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件。
 
 每个处理后的工作簿默认按顺序输出以下 3 张 Sheet：
 - `成本计算单总表`
 - `成本计算单数量聚合维度`
 - `成本分析工单维度`
 
-- 示例默认将 `*_处理后.xlsx` 写入 `data/processed/<pipeline>/`；实际输出位置由 `--output` 指定
+- 非 `--check-only` 模式省略 `--output` 时，默认写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
+- 显式传入 `--output` 时使用指定路径
 - 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台
 - `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件

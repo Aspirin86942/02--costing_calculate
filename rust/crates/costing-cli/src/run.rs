@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use costing_core::fact::build_fact_bundle;
+use costing_core::model::MonthRange;
 use costing_core::normalize::{build_month_range, normalize_workbook};
 use costing_core::presentation::build_workbook_payload;
 use costing_core::split::split_detail_and_qty;
@@ -16,16 +17,35 @@ use costing_xlsx::{
 
 use crate::args::CliArgs;
 
-pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
-    validate_cli_request(&args)?;
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedCliPaths {
+    input: PathBuf,
+    output: Option<PathBuf>,
+}
+
+pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
+    let base_dir = std::env::current_dir().map_err(|error| {
+        CostingError::io(
+            ErrorCode::InvalidInput,
+            format!("无法获取当前工作目录: {error}"),
+            PathBuf::from("."),
+        )
+    })?;
+    let paths = resolve_cli_paths(&args, &base_dir, month_range.as_ref())?;
+    args.input = Some(paths.input);
+    args.output = paths.output;
+    validate_cli_request(&args)?;
     let month_filter_requested = month_range.is_some();
     let pipeline = PipelineConfig::for_name(args.pipeline);
     let mut timings = StageTimings::default();
     let total_started = args.benchmark.then(Instant::now);
+    let input = args
+        .input
+        .as_ref()
+        .expect("resolve_cli_paths always supplies an input path");
     let (raw, snapshot) = measure(&mut timings, "ingest", || {
-        let raw = read_raw_workbook(&args.input)
-            .map_err(|error| map_xlsx_read_error(&args.input, error))?;
+        let raw = read_raw_workbook(input).map_err(|error| map_xlsx_read_error(input, error))?;
         let snapshot = build_reader_snapshot(&raw);
         Ok::<_, CostingError>((raw, snapshot))
     })?;
@@ -73,7 +93,7 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
         let output = args
             .output
             .as_ref()
-            .expect("validate_cli_request requires --output for non check-only runs");
+            .expect("resolve_cli_paths supplies output for non check-only runs");
         measure(&mut timings, "export", || {
             write_workbook(output, &payload).map_err(|error| map_xlsx_write_error(output, error))
         })?;
@@ -101,25 +121,150 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     })
 }
 
+fn resolve_cli_paths(
+    args: &CliArgs,
+    base_dir: &Path,
+    month_range: Option<&MonthRange>,
+) -> Result<ResolvedCliPaths, CostingError> {
+    let pipeline = args.pipeline.as_str();
+    let input = match &args.input {
+        Some(input) => input.clone(),
+        None => discover_default_input(base_dir, pipeline)?,
+    };
+    let output = match (&args.output, args.check_only) {
+        (Some(output), _) => Some(output.clone()),
+        (None, true) => None,
+        (None, false) => Some(default_output_path(
+            base_dir,
+            pipeline,
+            &input,
+            month_range,
+        )?),
+    };
+    Ok(ResolvedCliPaths { input, output })
+}
+
+fn discover_default_input(base_dir: &Path, pipeline: &str) -> Result<PathBuf, CostingError> {
+    let raw_dir = base_dir.join("data").join("raw").join(pipeline);
+    let entries = std::fs::read_dir(&raw_dir).map_err(|error| {
+        let code = if error.kind() == std::io::ErrorKind::NotFound {
+            ErrorCode::FileNotFound
+        } else {
+            ErrorCode::FileNotReadable
+        };
+        CostingError::io(
+            code,
+            format!("无法读取默认输入目录 {}: {error}", raw_dir.display()),
+            raw_dir.clone(),
+        )
+    })?;
+    let expected_prefix = format!("{pipeline}-");
+    let mut candidates = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CostingError::io(
+                ErrorCode::FileNotReadable,
+                format!("读取默认输入目录项失败: {error}"),
+                raw_dir.clone(),
+            )
+        })?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let normalized_name = file_name.to_string_lossy().to_ascii_lowercase();
+        if !normalized_name.starts_with(&expected_prefix) || !normalized_name.ends_with(".xlsx") {
+            continue;
+        }
+        let metadata = entry.metadata().map_err(|error| {
+            CostingError::io(
+                ErrorCode::FileNotReadable,
+                format!("读取默认输入文件元数据失败 {}: {error}", path.display()),
+                path.clone(),
+            )
+        })?;
+        if !metadata.is_file() {
+            continue;
+        }
+        candidates.push(path);
+    }
+    candidates.sort();
+    match candidates.as_slice() {
+        [input] => Ok(input.clone()),
+        [] => Err(CostingError::io(
+            ErrorCode::FileNotFound,
+            format!(
+                "未在默认输入目录 {} 找到 {pipeline}-*.xlsx",
+                raw_dir.display()
+            ),
+            raw_dir,
+        )),
+        _ => {
+            let candidate_text = candidates
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(CostingError::invalid_input(format!(
+                "检测到多个 {pipeline} 输入文件，请使用 --input 明确指定: {candidate_text}"
+            )))
+        }
+    }
+}
+
+fn default_output_path(
+    base_dir: &Path,
+    pipeline: &str,
+    input: &Path,
+    month_range: Option<&MonthRange>,
+) -> Result<PathBuf, CostingError> {
+    let stem = input
+        .file_stem()
+        .ok_or_else(|| CostingError::invalid_input("输入文件名缺少有效主文件名"))?;
+    let mut file_name = stem.to_os_string();
+    file_name.push("_处理后");
+    if let Some(suffix) = month_output_suffix(month_range) {
+        file_name.push("_");
+        file_name.push(suffix);
+    }
+    file_name.push(".xlsx");
+    Ok(base_dir
+        .join("data")
+        .join("processed")
+        .join(pipeline)
+        .join(file_name))
+}
+
+fn month_output_suffix(month_range: Option<&MonthRange>) -> Option<String> {
+    let month_range = month_range?;
+    match (&month_range.start, &month_range.end) {
+        (Some(start), Some(end)) => Some(format!("{start}_{end}")),
+        (Some(start), None) => Some(format!("from_{start}")),
+        (None, Some(end)) => Some(format!("to_{end}")),
+        (None, None) => None,
+    }
+}
+
 pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
-    if !args.input.exists() {
+    let input = args
+        .input
+        .as_ref()
+        .ok_or_else(|| CostingError::invalid_input("缺少输入文件路径"))?;
+    if !input.exists() {
         return Err(CostingError::Io {
             code: ErrorCode::FileNotFound,
-            message: format!("输入文件不存在: {}", args.input.display()),
-            path: args.input.clone(),
+            message: format!("输入文件不存在: {}", input.display()),
+            path: input.clone(),
             retryable: false,
         });
     }
-    if !args.input.is_file() {
+    if !input.is_file() {
         return Err(CostingError::Io {
             code: ErrorCode::InvalidInput,
-            message: format!("输入路径不是文件: {}", args.input.display()),
-            path: args.input.clone(),
+            message: format!("输入路径不是文件: {}", input.display()),
+            path: input.clone(),
             retryable: false,
         });
     }
-    if args
-        .input
+    if input
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
@@ -129,7 +274,7 @@ pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
         return Err(CostingError::Io {
             code: ErrorCode::UnsupportedFileType,
             message: "输入文件必须是 .xlsx 格式".to_string(),
-            path: args.input.clone(),
+            path: input.clone(),
             retryable: false,
         });
     }
@@ -140,7 +285,7 @@ pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
     }
     if !args.check_only {
         let output = args.output.as_ref().expect("checked output above");
-        if paths_resolve_to_same_file(&args.input, output) {
+        if paths_resolve_to_same_file(input, output) {
             return Err(CostingError::invalid_input(
                 "输入文件与输出文件不能是同一文件",
             ));
@@ -167,9 +312,10 @@ fn paths_resolve_to_same_file(input: &Path, output: &Path) -> bool {
 }
 
 fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
-    let code = match error {
+    let code = match &error {
         CostingXlsxError::Calamine(_) => ErrorCode::FileNotReadable,
         CostingXlsxError::Message(_) => ErrorCode::InvalidInput,
+        CostingXlsxError::OutputExists(_) => ErrorCode::InvalidInput,
     };
     CostingError::io(
         code,
@@ -179,11 +325,18 @@ fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
 }
 
 fn map_xlsx_write_error(path: &Path, error: CostingXlsxError) -> CostingError {
-    CostingError::io(
-        ErrorCode::OutputNotWritable,
-        format!("写出 workbook 失败: {error}"),
-        path.to_path_buf(),
-    )
+    match error {
+        CostingXlsxError::OutputExists(existing_path) => CostingError::io(
+            ErrorCode::OutputExists,
+            format!("输出 workbook 已存在: {}", existing_path.display()),
+            existing_path,
+        ),
+        error => CostingError::io(
+            ErrorCode::OutputNotWritable,
+            format!("写出 workbook 失败: {error}"),
+            path.to_path_buf(),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -201,7 +354,7 @@ mod tests {
     fn args(input: &str) -> CliArgs {
         CliArgs {
             pipeline: PipelineName::Gb,
-            input: PathBuf::from(input),
+            input: Some(PathBuf::from(input)),
             output: Some(PathBuf::from("out.xlsx")),
             month_start: None,
             month_end: None,
@@ -233,7 +386,7 @@ mod tests {
         std::fs::write(&path, "placeholder").unwrap();
         let request = CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: None,
             month_end: None,
@@ -245,12 +398,90 @@ mod tests {
     }
 
     #[test]
+    fn resolves_default_input_and_output_paths() {
+        let root = unique_temp_path(&std::env::temp_dir(), "auto-paths", "dir");
+        let raw_dir = root.join("data/raw/gb");
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        let input = raw_dir.join("gb-sample.xlsx");
+        std::fs::write(&input, "placeholder").unwrap();
+        let request = CliArgs {
+            pipeline: PipelineName::Gb,
+            input: None,
+            output: None,
+            month_start: None,
+            month_end: None,
+            check_only: false,
+            benchmark: false,
+        };
+
+        let paths = resolve_cli_paths(&request, &root, None).unwrap();
+
+        assert_eq!(paths.input, input);
+        assert_eq!(
+            paths.output,
+            Some(root.join("data/processed/gb/gb-sample_处理后.xlsx"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_output_path_includes_month_filter_suffix() {
+        let root = unique_temp_path(&std::env::temp_dir(), "auto-month-output", "dir");
+        let raw_dir = root.join("data/raw/sk");
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        let input = raw_dir.join("sk-sample.xlsx");
+        std::fs::write(&input, "placeholder").unwrap();
+        let request = CliArgs {
+            pipeline: PipelineName::Sk,
+            input: None,
+            output: None,
+            month_start: Some("2026-01".to_string()),
+            month_end: Some("2026-03".to_string()),
+            check_only: false,
+            benchmark: false,
+        };
+        let month_range = MonthRange {
+            start: Some("2026-01".to_string()),
+            end: Some("2026-03".to_string()),
+        };
+
+        let paths = resolve_cli_paths(&request, &root, Some(&month_range)).unwrap();
+
+        assert_eq!(
+            paths.output,
+            Some(root.join("data/processed/sk/sk-sample_处理后_2026-01_2026-03.xlsx"))
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn month_output_suffix_supports_open_ranges() {
+        let from_month = MonthRange {
+            start: Some("2026-01".to_string()),
+            end: None,
+        };
+        let to_month = MonthRange {
+            start: None,
+            end: Some("2026-03".to_string()),
+        };
+
+        assert_eq!(
+            month_output_suffix(Some(&from_month)).as_deref(),
+            Some("from_2026-01")
+        );
+        assert_eq!(
+            month_output_suffix(Some(&to_month)).as_deref(),
+            Some("to_2026-03")
+        );
+    }
+
+    #[test]
     fn requires_output_for_non_check_only_runs() {
         let path = unique_temp_path(&std::env::temp_dir(), "missing-output", "xlsx");
         std::fs::write(&path, "placeholder").unwrap();
         let request = CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: None,
             month_end: None,
@@ -282,6 +513,16 @@ mod tests {
     }
 
     #[test]
+    fn maps_writer_output_race_to_output_exists_error_code() {
+        let output = PathBuf::from("late-existing-output.xlsx");
+
+        let error = map_xlsx_write_error(&output, CostingXlsxError::OutputExists(output.clone()));
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert!(!error.retryable());
+    }
+
+    #[test]
     fn rejects_input_and_output_that_resolve_to_same_file() {
         let input = unique_temp_path(&std::env::temp_dir(), "same-input-output", "xlsx");
         std::fs::write(&input, "input").unwrap();
@@ -303,7 +544,7 @@ mod tests {
 
         let args = CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: None,
             month_end: None,
@@ -338,7 +579,7 @@ mod tests {
 
         let args = CliArgs {
             pipeline: PipelineName::Gb,
-            input: input.clone(),
+            input: Some(input.clone()),
             output: Some(output.clone()),
             month_start: None,
             month_end: None,
@@ -362,7 +603,7 @@ mod tests {
 
         let summary = run(CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: None,
             month_end: None,
@@ -386,7 +627,7 @@ mod tests {
 
         let args = CliArgs {
             pipeline: PipelineName::Gb,
-            input: input.clone(),
+            input: Some(input.clone()),
             output: Some(output.clone()),
             month_start: None,
             month_end: None,
@@ -407,7 +648,7 @@ mod tests {
         std::fs::write(&path, "placeholder").unwrap();
         let args = CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: Some("2025年01期".to_string()),
             month_end: None,
@@ -462,7 +703,7 @@ mod tests {
 
         let args = CliArgs {
             pipeline: PipelineName::Gb,
-            input: path.clone(),
+            input: Some(path.clone()),
             output: None,
             month_start: Some("2025-02".to_string()),
             month_end: Some("2025-02".to_string()),

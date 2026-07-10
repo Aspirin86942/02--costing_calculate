@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use calamine::{open_workbook_auto, Data, Reader};
 use costing_core::model::{CellValue, RawWorkbook};
@@ -11,6 +11,8 @@ const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编
 pub enum CostingXlsxError {
     #[error("{0}")]
     Message(String),
+    #[error("output workbook already exists: {0}")]
+    OutputExists(PathBuf),
     #[error("xlsx read error: {0}")]
     Calamine(#[from] calamine::Error),
 }

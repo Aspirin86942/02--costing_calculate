@@ -1,3 +1,4 @@
+use std::fs::OpenOptions;
 use std::path::Path;
 
 use costing_core::model::{CellValue, WorkbookPayload};
@@ -67,9 +68,28 @@ pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), Cost
         std::fs::create_dir_all(parent)
             .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
     }
-    workbook
-        .save(path)
-        .map_err(|error| CostingXlsxError::Message(error.to_string()))
+    // 在真正写出时原子创建目标文件，避免前置 exists 检查与保存之间的并发覆盖竞态。
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                CostingXlsxError::OutputExists(path.to_path_buf())
+            } else {
+                CostingXlsxError::Message(error.to_string())
+            }
+        })?;
+    if let Err(error) = workbook.save_to_writer(file) {
+        let cleanup_error = std::fs::remove_file(path).err();
+        let cleanup_detail = cleanup_error
+            .map(|cleanup_error| format!("; 清理未完成输出失败: {cleanup_error}"))
+            .unwrap_or_default();
+        return Err(CostingXlsxError::Message(format!(
+            "{error}{cleanup_detail}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_default_sheet_contract(payload: &WorkbookPayload) -> Result<(), CostingXlsxError> {
@@ -198,6 +218,7 @@ fn parse_freeze_panes(token: &str) -> Result<(u32, u16), CostingXlsxError> {
 mod tests {
     use std::collections::BTreeMap;
     use std::process;
+    use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use calamine::{open_workbook_auto, Reader};
@@ -274,6 +295,63 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn refuses_to_replace_existing_output() {
+        let output = unique_temp_path("existing-output");
+        let original = b"existing workbook bytes";
+        std::fs::write(&output, original).unwrap();
+        let payload = payload(vec![
+            sheet("成本计算单总表"),
+            sheet("成本计算单数量聚合维度"),
+            sheet("成本分析工单维度"),
+        ]);
+
+        let error = write_workbook(&output, &payload).unwrap_err();
+
+        assert!(matches!(
+            error,
+            CostingXlsxError::OutputExists(ref path) if path == &output
+        ));
+        assert_eq!(std::fs::read(&output).unwrap(), original);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn concurrent_writers_allow_only_one_output() {
+        let output = Arc::new(unique_temp_path("concurrent-output"));
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = (0..2)
+            .map(|_| {
+                let output = Arc::clone(&output);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    let payload = payload(vec![
+                        sheet("成本计算单总表"),
+                        sheet("成本计算单数量聚合维度"),
+                        sheet("成本分析工单维度"),
+                    ]);
+                    barrier.wait();
+                    match write_workbook(&output, &payload) {
+                        Ok(()) => "written",
+                        Err(CostingXlsxError::OutputExists(_)) => "exists",
+                        Err(error) => panic!("unexpected writer error: {error}"),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let mut outcomes = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        outcomes.sort_unstable();
+
+        assert_eq!(outcomes, ["exists", "written"]);
+        let workbook = open_workbook_auto(output.as_ref()).unwrap();
+        assert_eq!(workbook.sheet_names().len(), 3);
+        let _ = std::fs::remove_file(output.as_ref());
     }
 
     #[test]

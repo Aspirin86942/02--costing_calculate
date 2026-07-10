@@ -52,6 +52,8 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
 `成本分析产品维度` 不属于 Rust 新系统输出契约。
 
 ## 输出说明
+Rust CLI 默认拒绝覆盖已存在的 `--output`，并禁止输入、输出指向同一文件。
+
 每个处理后的工作簿默认按顺序输出以下 3 张 Sheet：
 - `成本计算单总表`
 - `成本计算单数量聚合维度`
@@ -80,12 +82,12 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
   - 解释字段：`异常明细解释`，仅列出达到 `关注` 或 `高度可疑` 的成本项；每项包含当前值、当前log、基准值、基准log、log偏离、相对偏离、score、有效工单数、原始MAD、有效MAD。`有效工单数` 是同一产品、同一生产类型异常池、同一成本指标下实际参与该项评分的有效工单行数，不是完工数量合计。
 
 ## Excel 样式
-- 蓝黄风格：段标题黄底、表头浅蓝、总计行加深蓝
-- 冻结窗格按 sheet 类型分别设置，真实契约以 `tests/contracts/` baseline 为准
+- 3 张默认平铺表使用浅蓝表头、表头细边框和固定列宽
+- 默认冻结 `A2`，真实契约以 `tests/contracts/` baseline 为准
 - 开启筛选
 - 数字格式：
   - 金额：`#,##0.00`
-  - 数量：`#,##0`
+  - 数量：`#,##0.00`
   - 单价：`#,##0.00`
 - 不使用合并单元格
 
@@ -102,7 +104,7 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
   - `pipeline.py` - ETL 阶段编排
   - `stages/` - 读取、列识别、清洗、拆分
   - `utils.py` - 工具函数
-- `main.py` - 仓库根目录统一入口
+- `main.py` - Python legacy/oracle/regression 入口
 - `src/excel/` - Excel 写出与样式模块
   - `styles.py` / `fast_writer.py` / `workbook_writer.py`
 - `src/services/` - CLI 应用服务层与结果对象

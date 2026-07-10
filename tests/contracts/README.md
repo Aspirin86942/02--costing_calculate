@@ -53,3 +53,5 @@ Required checks:
 - `tests/test_full_rust_cli_benchmark.py`
 
 验证器会拒绝任何包含 `成本分析产品维度` 的 Rust workbook。
+
+样本缺失导致的 `skip` 只表示环境未提供证据，不等于 GB/SK oracle 或 benchmark 已通过；完整切换证据要求两个管线都实际执行。

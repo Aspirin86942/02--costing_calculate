@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 核心功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
-- 输出 4 张业务工作表，覆盖成本总表、数量聚合、工单维度异常和产品维度摘要
+- 默认输出 3 张业务工作表，覆盖成本总表、数量聚合和工单维度异常
 - 字段名提取和标准化
 - 提供 `--check-only` 预检模式与 `--benchmark` 性能入口，支持先跑分析链路再决定是否落盘
 
@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 模块依赖规则 (Module Dependency Rules)
 
-**严格分层**，由 `tests/architecture/test_import_rules.py` 强制：
+Python legacy/oracle 代码仍保持严格分层，并由 `tests/architecture/test_import_rules.py` 强制：
 - `analytics` 不得导入 `etl` 或 `excel`
 - `excel` 不得导入 `etl`
 - `etl/stages/*` 不得导入 `excel`
@@ -25,16 +25,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 数据流 (Data Flow)
 
 ```
-原始 Excel -> reader.load_raw_workbook()
-          -> 列名标准化 (clean_column_name)
-          -> 列推断/重命名 (infer_rename_map)
-          -> 删除合计行 (remove_total_rows)
-          -> 规则填充 (forward_fill_with_rules)
-          -> 拆分为 detail/qty (split_detail_and_qty_sheets)
-          -> 构建分析 fact 表 (build_report_artifacts)
-          -> 构建 workbook payload (build_workbook_payload)
-          -> 写出 Excel (CostingWorkbookWriter)
+原始 Excel -> costing-xlsx::reader
+          -> costing-core::normalize
+          -> costing-core::split
+          -> costing-core::fact
+          -> costing-core::anomaly / quality / presentation
+          -> costing-xlsx::writer
 ```
+
+`src/` 下的 Python 数据流仅作为 legacy/oracle/regression 路径保留。
 
 ### 数据契约 (Data Contracts)
 
@@ -44,13 +43,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **期间格式**：`年期` 列统一格式化为 `YYYY 年 MM 期`
 
-**产品白名单**：`ANALYSIS_PRODUCT_WHITELIST` 定义了目标产品池，按 `产品编码 + 产品名称` 精确匹配；它只影响异常分析与产品维度摘要，不过滤总表和数量聚合维度
+**产品白名单**：按 `产品编码 + 产品名称` 精确匹配；它只影响 `成本分析工单维度`，不过滤总表和数量聚合维度，分析页按白名单顺序展示
 
-**输出 Sheet**：默认按顺序输出 4 张表
+**输出 Sheet**：Rust 默认按顺序输出 3 张表
 - `成本计算单总表`
 - `成本计算单数量聚合维度`
 - `成本分析工单维度`
-- `成本分析产品维度`
+
+`成本分析产品维度` 不属于 Rust 输出契约；Python legacy helper 的退场另行审批。
 
 **工作簿外输出**：正常运行只落盘 `*_处理后.xlsx`；质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时输出到控制台，`--check-only` 只做预检，不写 workbook 或任何外部摘要文件
 
@@ -58,19 +58,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 依赖 (Dependencies)
 
-- **Python**: 3.11+
-- **核心包**：`pandas>=2.0.0`, `openpyxl>=3.1.0`, `numpy>=1.24.0`, `beautifulsoup4>=4.12.0`
+- **Rust**：使用 `rust/rust-toolchain.toml` 指定的 stable toolchain
+- **Python oracle/regression**：3.11+，由 `uv` 管理项目 `.venv`
 
 ## 常用命令 (Common Commands)
 
 ```bash
-# 安装
-uv sync
+# 构建/运行当前主入口
+cargo build --manifest-path rust/Cargo.toml
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
 
-# 安装开发依赖
+# Rust 预检 + benchmark
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
+cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
+
+# Rust 测试/格式
+cargo test --manifest-path rust/Cargo.toml
+cargo fmt --manifest-path rust/Cargo.toml --all --check
+
+# Python legacy/oracle/regression 依赖
 uv sync --extra dev
 
-# 运行 ETL
+# Python legacy/oracle/regression
 uv run python main.py gb
 uv run python main.py sk
 
@@ -97,7 +107,6 @@ uv run python -m ruff format src tests --check
 
 ## 当前实现要点
 
-- `main.py` 已支持 `--check-only` 和 `--benchmark`。
-- `src/analytics/scoring.py` 已接管加权中位数、加权 MAD、有效 MAD 兜底和异常分级，`anomaly.py` 只负责异常页组装与兼容导出。
-- `src/analytics/summary.py` 保留质量摘要 payload / JSON 工具函数，但正常 CLI 输出不再落盘 sidecar。
-- `src/excel/sheet_writers.py` 已删除，写出路径统一走 `fast_writer.py`。
+- Rust CLI 是 GB/SK 默认主入口，直接读取原始 `.xlsx`，并只写固定 3-sheet workbook。
+- `rust/crates/costing-core` 承担 Decimal fact、质量指标和 Modified Z-score；`costing-xlsx` 负责直接读写 workbook。
+- `main.py` 与 `src/` 仅保留为 Python legacy/oracle/regression 路径；Python retirement 需要单独批准。

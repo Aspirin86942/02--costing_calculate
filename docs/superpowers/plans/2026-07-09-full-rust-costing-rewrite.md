@@ -3357,7 +3357,7 @@ uv run python -m ruff format src tests --check
 Expected:
 
 - All Rust tests pass.
-- GB and SK oracle tests pass or skip only when the corresponding raw sample is absent.
+- GB and SK oracle tests must actually pass for final cutover evidence; a missing sample is `BLOCKED_ENVIRONMENT`, and a `skip` is not validation evidence.
 - GB and SK benchmark verdicts are `VALIDATED` when raw samples exist.
 - Existing Python regression suite remains green.
 
@@ -3456,7 +3456,7 @@ Modify the usage section in `README.md` to include:
 ```markdown
 ## Rust CLI
 
-Rust CLI is the target primary entrypoint after full GB/SK validation:
+Rust CLI is the current primary entrypoint after full GB/SK validation:
 
 ```powershell
 cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx

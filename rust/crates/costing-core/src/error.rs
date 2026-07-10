@@ -69,6 +69,13 @@ impl CostingError {
         }
     }
 
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::Internal {
+            code: ErrorCode::InternalError,
+            message: message.into(),
+        }
+    }
+
     pub fn io(code: ErrorCode, message: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         Self::Io {
             code,

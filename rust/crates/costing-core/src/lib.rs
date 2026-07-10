@@ -9,6 +9,7 @@ pub mod quality;
 pub mod scoring;
 pub mod sheet_contract;
 pub mod split;
+mod table;
 pub mod timing;
 
 pub use error::{CostingError, ErrorCode};

@@ -1,12 +1,79 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
+from src.services.costing_service import CostingRunRequest, CostingRunResult, ServiceStatus
+from tests.rust_oracle import oracle_runner
 from tests.rust_oracle.oracle_runner import (
     OracleRunSummary,
     assert_runtime_contract_matches,
     parse_rust_run_summary,
 )
+
+
+def test_cargo_target_directory_comes_from_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    target_directory = tmp_path / 'custom-target'
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs['encoding'] == 'utf-8'
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=f'{{"target_directory": {target_directory.as_posix()!r}}}'.replace("'", '"'),
+            stderr='',
+        )
+
+    monkeypatch.setattr(oracle_runner.subprocess, 'run', fake_run)
+
+    actual = oracle_runner._cargo_target_directory('cargo', tmp_path, tmp_path / 'Cargo.toml')
+
+    assert actual == target_directory
+
+
+def test_run_python_oracle_reuses_normal_runner_request_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    configured_product_order = (('P-CONFIG', '配置产品'),)
+    captured_request: CostingRunRequest | None = None
+
+    def fake_build_request(**kwargs: object) -> CostingRunRequest:
+        return CostingRunRequest(
+            pipeline='gb',
+            input_path=kwargs['input_file'],
+            output_dir=tmp_path / 'runner-default',
+            product_order=configured_product_order,
+            benchmark=True,
+            overwrite_confirmed=True,
+        )
+
+    def fake_run_costing_request(request: CostingRunRequest) -> CostingRunResult:
+        nonlocal captured_request
+        captured_request = request
+        generated = tmp_path / 'generated.xlsx'
+        generated.write_bytes(b'oracle')
+        return CostingRunResult(
+            status=ServiceStatus.SUCCEEDED,
+            message='ok',
+            workbook_path=generated,
+        )
+
+    monkeypatch.setattr(oracle_runner, '_build_request', fake_build_request)
+    monkeypatch.setattr(oracle_runner, 'run_costing_request', fake_run_costing_request)
+
+    output = tmp_path / 'python-oracle.xlsx'
+    oracle_runner.run_python_oracle('gb', tmp_path / 'input.xlsx', output)
+
+    assert captured_request is not None
+    assert captured_request.product_order == configured_product_order
+    assert captured_request.output_dir == tmp_path
+    assert output.read_bytes() == b'oracle'
 
 
 def test_parse_rust_run_summary_reads_runtime_contract() -> None:

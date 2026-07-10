@@ -5,8 +5,19 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tests.rust_oracle.oracle_runner import build_rust_cli_release, run_python_oracle, run_rust_cli_release
+from tests.rust_oracle.oracle_runner import (
+    assert_runtime_contract_matches,
+    build_rust_cli_release,
+    run_python_oracle,
+    run_rust_cli_release,
+)
 from tests.rust_oracle.workbook_compare import compare_workbooks
+
+
+@dataclass(frozen=True)
+class ValidationFailure:
+    verdict: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -16,13 +27,13 @@ class BenchmarkResult:
     rust_median_seconds: float
     validation_passed: bool
     verdict: str
+    validation_failures: tuple[ValidationFailure, ...] = ()
 
 
 def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, repeats: int = 3) -> BenchmarkResult:
     python_seconds: list[float] = []
     rust_seconds: list[float] = []
-    validation_passed = True
-    validation_errors: list[str] = []
+    validation_failures: list[ValidationFailure] = []
     rust_executable = build_rust_cli_release()
 
     for idx in range(repeats):
@@ -30,22 +41,47 @@ def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, 
         rust_output = tmp_path / f'rust-{pipeline}-{idx}.xlsx'
 
         start = time.perf_counter()
-        run_python_oracle(pipeline, input_path, python_output)
+        python_summary = run_python_oracle(pipeline, input_path, python_output)
         python_seconds.append(time.perf_counter() - start)
 
         start = time.perf_counter()
-        run_rust_cli_release(rust_executable, pipeline, input_path, rust_output)
+        rust_summary = run_rust_cli_release(rust_executable, pipeline, input_path, rust_output)
         rust_seconds.append(time.perf_counter() - start)
 
+        try:
+            assert_runtime_contract_matches(python_summary, rust_summary)
+        except AssertionError as exc:
+            validation_failures.append(
+                ValidationFailure(
+                    verdict='ETL_MISMATCH',
+                    message=f'iteration {idx} runtime contract mismatch: {exc}',
+                )
+            )
+
         report = compare_workbooks(python_output, rust_output)
-        if not report['passed'] and not validation_errors:
-            validation_errors = [str(error) for error in report['errors']]
-        validation_passed = validation_passed and bool(report['passed'])
+        if not report['passed']:
+            workbook_errors = [str(error) for error in report['errors']]
+            validation_failures.append(
+                ValidationFailure(
+                    verdict=classify_validation_errors(workbook_errors),
+                    message=f'iteration {idx} workbook mismatch: {workbook_errors!r}',
+                )
+            )
 
     python_median = statistics.median(python_seconds)
     rust_median = statistics.median(rust_seconds)
-    verdict = classify_verdict(validation_passed, python_median, rust_median, validation_errors)
-    return BenchmarkResult(pipeline, python_median, rust_median, validation_passed, verdict)
+    validation_passed = not validation_failures
+    verdict = (
+        validation_failures[0].verdict if validation_failures else classify_verdict(True, python_median, rust_median)
+    )
+    return BenchmarkResult(
+        pipeline,
+        python_median,
+        rust_median,
+        validation_passed,
+        verdict,
+        tuple(validation_failures),
+    )
 
 
 def classify_verdict(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 from tests.rust_oracle.workbook_compare import compare_workbooks, values_equal
 
@@ -65,25 +66,51 @@ def test_compare_workbooks_detects_sheet_metadata_mismatch(tmp_path: Path) -> No
     assert 'auto filter mismatch Sheet: expected=A1:A1, actual=None' in report['errors']
 
 
+def test_compare_workbooks_detects_number_format_width_and_header_style_mismatch(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    _write_workbook(expected, 'Header', second_row_value=1, styled=True)
+    _write_workbook(actual, 'Header', second_row_value=1)
+
+    report = compare_workbooks(expected, actual)
+
+    assert not report['passed']
+    assert any(error.startswith('column widths mismatch Sheet') for error in report['errors'])
+    assert any(error.startswith('number formats mismatch Sheet') for error in report['errors'])
+    assert any(error.startswith('header styles mismatch Sheet') for error in report['errors'])
+
+
 def _write_workbook(
     path: Path,
     value: object,
     *,
     second_value: object | None = None,
+    second_row_value: object | None = None,
     extra_sheet: str | None = None,
     freeze_panes: str | None = None,
     auto_filter: str | None = None,
+    styled: bool = False,
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Sheet'
     sheet['A1'] = value
+    if second_row_value is not None:
+        sheet['A2'] = second_row_value
     if second_value is not None:
         sheet['B1'] = second_value
     if freeze_panes is not None:
         sheet.freeze_panes = freeze_panes
     if auto_filter is not None:
         sheet.auto_filter.ref = auto_filter
+    if styled:
+        sheet.column_dimensions['A'].width = 15
+        sheet['A1'].font = Font(bold=True)
+        sheet['A1'].fill = PatternFill(fill_type='solid', fgColor='D9E1F2')
+        sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
+        thin = Side(style='thin')
+        sheet['A1'].border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        sheet['A2'].number_format = '#,##0.00'
     if extra_sheet is not None:
         workbook.create_sheet(extra_sheet)
     workbook.save(path)

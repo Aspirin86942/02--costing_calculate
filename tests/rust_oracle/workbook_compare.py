@@ -12,6 +12,18 @@ from python_calamine import load_workbook
 FORBIDDEN_SHEETS = {'成本分析产品维度'}
 DECIMAL_TOLERANCE = Decimal('0.000001')
 MAX_ERRORS = 20
+MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+BUILTIN_NUMBER_FORMATS = {
+    0: 'General',
+    1: '0',
+    2: '0.00',
+    3: '#,##0',
+    4: '#,##0.00',
+    9: '0%',
+    10: '0.00%',
+    49: '@',
+}
 
 
 def compare_workbooks(expected_path: Path, actual_path: Path) -> dict[str, Any]:
@@ -51,6 +63,16 @@ def compare_workbooks(expected_path: Path, actual_path: Path) -> dict[str, Any]:
                 f'expected={expected_sheet_meta.get("auto_filter")}, '
                 f'actual={actual_sheet_meta.get("auto_filter")}'
             )
+        for metadata_key, label in (
+            ('column_widths', 'column widths'),
+            ('number_formats', 'number formats'),
+            ('header_styles', 'header styles'),
+            ('conditional_format_ranges', 'conditional format ranges'),
+        ):
+            expected_value = expected_sheet_meta.get(metadata_key)
+            actual_value = actual_sheet_meta.get(metadata_key)
+            if expected_value != actual_value:
+                errors.append(f'{label} mismatch {sheet_name}: expected={expected_value!r}, actual={actual_value!r}')
         row_pairs = zip_longest(expected_ws.iter_rows(), actual_ws.iter_rows())
         for row_number, (expected_row, actual_row) in enumerate(row_pairs, start=1):
             if expected_row is None or actual_row is None:
@@ -78,25 +100,157 @@ def pad_row(row: list[Any], width: int) -> tuple[Any, ...]:
     return (*row, *((None,) * (width - len(row))))
 
 
-def workbook_sheet_metadata(path: Path) -> dict[str, dict[str, str | None]]:
+def workbook_sheet_metadata(path: Path) -> dict[str, dict[str, Any]]:
     with ZipFile(path) as archive:
         workbook = ET.fromstring(archive.read('xl/workbook.xml'))  # noqa: S314 - local xlsx test artifact.
         rels = ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))  # noqa: S314 - local xlsx test artifact.
         rel_targets = {rel.attrib['Id']: rel.attrib['Target'].lstrip('/') for rel in rels}
-        metadata: dict[str, dict[str, str | None]] = {}
-        for sheet in workbook.findall('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet'):
+        style_catalog = _read_style_catalog(archive)
+        metadata: dict[str, dict[str, Any]] = {}
+        for sheet in workbook.findall(f'.//{{{MAIN_NS}}}sheet'):
             sheet_name = sheet.attrib['name']
-            rel_id = sheet.attrib['{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id']
+            rel_id = sheet.attrib[f'{{{REL_NS}}}id']
             target = rel_targets[rel_id]
             worksheet_path = target if target.startswith('xl/') else f'xl/{target}'
             worksheet = ET.fromstring(archive.read(worksheet_path))  # noqa: S314 - local xlsx test artifact.
-            pane = worksheet.find('.//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}pane')
-            auto_filter = worksheet.find('{http://schemas.openxmlformats.org/spreadsheetml/2006/main}autoFilter')
+            pane = worksheet.find(f'.//{{{MAIN_NS}}}pane')
+            auto_filter = worksheet.find(f'{{{MAIN_NS}}}autoFilter')
             metadata[sheet_name] = {
                 'freeze_panes': None if pane is None else pane.attrib.get('topLeftCell'),
                 'auto_filter': None if auto_filter is None else auto_filter.attrib.get('ref'),
+                'column_widths': _column_widths(worksheet),
+                'number_formats': _number_formats(worksheet, style_catalog),
+                'header_styles': _row_styles(worksheet, 1, style_catalog),
+                'conditional_format_ranges': sorted(
+                    node.attrib.get('sqref', '') for node in worksheet.findall(f'{{{MAIN_NS}}}conditionalFormatting')
+                ),
             }
         return metadata
+
+
+def _read_style_catalog(archive: ZipFile) -> list[tuple[Any, ...]]:
+    styles = ET.fromstring(archive.read('xl/styles.xml'))  # noqa: S314 - local xlsx test artifact.
+    custom_number_formats = {
+        int(node.attrib['numFmtId']): node.attrib['formatCode'] for node in styles.findall(f'.//{{{MAIN_NS}}}numFmt')
+    }
+    fonts = [_font_signature(node) for node in styles.findall(f'.//{{{MAIN_NS}}}fonts/{{{MAIN_NS}}}font')]
+    fills = [_fill_signature(node) for node in styles.findall(f'.//{{{MAIN_NS}}}fills/{{{MAIN_NS}}}fill')]
+    borders = [_border_signature(node) for node in styles.findall(f'.//{{{MAIN_NS}}}borders/{{{MAIN_NS}}}border')]
+    catalog: list[tuple[Any, ...]] = []
+    for cell_format in styles.findall(f'.//{{{MAIN_NS}}}cellXfs/{{{MAIN_NS}}}xf'):
+        number_format_id = int(cell_format.attrib.get('numFmtId', '0'))
+        alignment = cell_format.find(f'{{{MAIN_NS}}}alignment')
+        catalog.append(
+            (
+                custom_number_formats.get(
+                    number_format_id, BUILTIN_NUMBER_FORMATS.get(number_format_id, str(number_format_id))
+                ),
+                fonts[int(cell_format.attrib.get('fontId', '0'))],
+                fills[int(cell_format.attrib.get('fillId', '0'))],
+                borders[int(cell_format.attrib.get('borderId', '0'))],
+                None if alignment is None else alignment.attrib.get('horizontal'),
+                None if alignment is None else alignment.attrib.get('vertical'),
+            )
+        )
+    return catalog
+
+
+def _font_signature(font: ET.Element) -> tuple[bool, tuple[tuple[str, str], ...]]:
+    bold = font.find(f'{{{MAIN_NS}}}b') is not None
+    return bold, _color_signature(font.find(f'{{{MAIN_NS}}}color'))
+
+
+def _fill_signature(fill: ET.Element) -> tuple[Any, ...]:
+    pattern = fill.find(f'{{{MAIN_NS}}}patternFill')
+    if pattern is None:
+        return (None, (), ())
+    return (
+        pattern.attrib.get('patternType'),
+        _color_signature(pattern.find(f'{{{MAIN_NS}}}fgColor')),
+        _color_signature(pattern.find(f'{{{MAIN_NS}}}bgColor')),
+    )
+
+
+def _border_signature(border: ET.Element) -> tuple[str | None, ...]:
+    return tuple(
+        (
+            border.find(f'{{{MAIN_NS}}}{side}').attrib.get('style')
+            if border.find(f'{{{MAIN_NS}}}{side}') is not None
+            else None
+        )
+        for side in ('left', 'right', 'top', 'bottom')
+    )
+
+
+def _color_signature(color: ET.Element | None) -> tuple[tuple[str, str], ...]:
+    if color is None:
+        return ()
+    values = dict(color.attrib)
+    if 'rgb' in values:
+        values['rgb'] = values['rgb'][-6:].upper()
+    return tuple(sorted(values.items()))
+
+
+def _column_widths(worksheet: ET.Element) -> dict[int, float]:
+    widths: dict[int, float] = {}
+    for column in worksheet.findall(f'.//{{{MAIN_NS}}}cols/{{{MAIN_NS}}}col'):
+        width = round(float(column.attrib['width']), 4)
+        for column_index in range(int(column.attrib['min']), int(column.attrib['max']) + 1):
+            widths[column_index] = width
+    return widths
+
+
+def _column_styles(worksheet: ET.Element) -> dict[int, int]:
+    styles: dict[int, int] = {}
+    for column in worksheet.findall(f'.//{{{MAIN_NS}}}cols/{{{MAIN_NS}}}col'):
+        style_id = int(column.attrib.get('style', '0'))
+        for column_index in range(int(column.attrib['min']), int(column.attrib['max']) + 1):
+            styles[column_index] = style_id
+    return styles
+
+
+def _number_formats(worksheet: ET.Element, style_catalog: list[tuple[Any, ...]]) -> dict[int, str]:
+    formats = {
+        column_index: style_catalog[style_id][0]
+        for column_index, style_id in _column_styles(worksheet).items()
+        if style_catalog[style_id][0] != 'General'
+    }
+    row = worksheet.find(f'.//{{{MAIN_NS}}}row[@r="2"]')
+    if row is None:
+        return formats
+    for cell in row.findall(f'{{{MAIN_NS}}}c'):
+        column_index = _column_index(cell.attrib['r'])
+        style_id = int(cell.attrib.get('s', _column_styles(worksheet).get(column_index, 0)))
+        number_format = style_catalog[style_id][0]
+        if number_format != 'General':
+            formats[column_index] = number_format
+    return formats
+
+
+def _row_styles(
+    worksheet: ET.Element,
+    row_number: int,
+    style_catalog: list[tuple[Any, ...]],
+) -> dict[int, tuple[Any, ...]]:
+    row = worksheet.find(f'.//{{{MAIN_NS}}}row[@r="{row_number}"]')
+    if row is None:
+        return {}
+    column_styles = _column_styles(worksheet)
+    return {
+        _column_index(cell.attrib['r']): style_catalog[
+            int(cell.attrib.get('s', column_styles.get(_column_index(cell.attrib['r']), 0)))
+        ]
+        for cell in row.findall(f'{{{MAIN_NS}}}c')
+    }
+
+
+def _column_index(cell_reference: str) -> int:
+    result = 0
+    for character in cell_reference:
+        if not character.isalpha():
+            break
+        result = result * 26 + (ord(character.upper()) - ord('A') + 1)
+    return result
 
 
 def values_equal(expected: object, actual: object) -> bool:

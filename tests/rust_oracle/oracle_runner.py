@@ -4,11 +4,13 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from src.services.costing_service import CostingRunRequest, ServiceStatus, run_costing_request
+from src.config.pipelines import PIPELINES
+from src.etl.runner import _build_request
+from src.services.costing_service import ServiceStatus, run_costing_request
 from tests.rust_oracle.repo_paths import repo_root
 
 
@@ -20,12 +22,18 @@ class OracleRunSummary:
 
 
 def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> OracleRunSummary:
-    request = CostingRunRequest(
-        pipeline=pipeline,
-        input_path=input_path,
+    try:
+        pipeline_config = PIPELINES[pipeline]
+    except KeyError as exc:
+        raise AssertionError(f'unknown Python oracle pipeline: {pipeline!r}') from exc
+    request = replace(
+        _build_request(
+            config=pipeline_config,
+            input_file=input_path,
+            month_range=None,
+            benchmark=True,
+        ),
         output_dir=output_path.parent,
-        benchmark=True,
-        overwrite_confirmed=True,
     )
     result = run_costing_request(request)
     if result.status != ServiceStatus.SUCCEEDED:
@@ -49,6 +57,8 @@ def build_rust_cli_release() -> Path:
     if cargo is None:
         raise AssertionError('cargo executable not found')
     root = repo_root()
+    manifest_path = root / 'rust' / 'Cargo.toml'
+    target_directory = _cargo_target_directory(cargo, root, manifest_path)
 
     completed = subprocess.run(  # noqa: S603 - test harness invokes local Cargo with fixed arguments.
         [
@@ -57,23 +67,53 @@ def build_rust_cli_release() -> Path:
             '--quiet',
             '--release',
             '--manifest-path',
-            str(root / 'rust' / 'Cargo.toml'),
+            str(manifest_path),
             '-p',
             'costing-calculate',
         ],
         check=False,
         capture_output=True,
         cwd=root,
-        text=True,
+        encoding='utf-8',
+        errors='replace',
     )
     if completed.returncode != 0:
         raise AssertionError(f'rust release build failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}')
 
     executable_name = 'costing-calculate.exe' if os.name == 'nt' else 'costing-calculate'
-    executable = root / 'rust' / 'target' / 'release' / executable_name
+    executable = target_directory / 'release' / executable_name
     if not executable.exists():
         raise AssertionError(f'rust release executable missing: {executable}')
     return executable
+
+
+def _cargo_target_directory(cargo: str, root: Path, manifest_path: Path) -> Path:
+    completed = subprocess.run(  # noqa: S603 - test harness invokes local Cargo with fixed arguments.
+        [
+            cargo,
+            'metadata',
+            '--format-version',
+            '1',
+            '--no-deps',
+            '--manifest-path',
+            str(manifest_path),
+        ],
+        check=False,
+        capture_output=True,
+        cwd=root,
+        encoding='utf-8',
+        errors='replace',
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f'cargo metadata failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}')
+    try:
+        payload = json.loads(completed.stdout)
+        target_directory = payload['target_directory']
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise AssertionError(f'cargo metadata did not provide target_directory: {completed.stdout!r}') from exc
+    if not isinstance(target_directory, str) or not target_directory:
+        raise AssertionError('cargo metadata target_directory must be a non-empty string')
+    return Path(target_directory)
 
 
 def run_rust_cli_release(executable: Path, pipeline: str, input_path: Path, output_path: Path) -> OracleRunSummary:
@@ -90,7 +130,8 @@ def run_rust_cli_release(executable: Path, pipeline: str, input_path: Path, outp
         check=False,
         capture_output=True,
         cwd=repo_root(),
-        text=True,
+        encoding='utf-8',
+        errors='replace',
     )
     if completed.returncode != 0:
         raise AssertionError(f'rust release cli failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}')

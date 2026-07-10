@@ -584,13 +584,24 @@ CellValue / String clone 与分配路径
 uv run python -m pytest tests/test_rust_check_only_benchmark.py -q --basetemp .pytest-tmp/rust-check-only-benchmark
 ```
 
+Rust/Python 的门禁比较值统一命名为 `payload_total_seconds`，并使用同一计时边界：
+
+- 起点：CLI 参数解析、路径解析、输入校验和 pipeline 配置完成后，即将进入 ingest；
+- 终点：完整内存 `WorkbookPayload` 构建并返回后，任何运行摘要统计、export 或结果序列化开始前；
+- 排除：Cargo build、进程启动、CLI 参数解析、路径解析、export、日志/JSON/benchmark 文本等结果序列化；
+- 包含：ingest、normalize、split/fact、analysis、presentation，以及这些阶段之间为构建 payload 必需的内存工作。
+
+Rust 侧继续读取运行摘要中的 `stage_timings.total`，但实施时必须先收紧该字段的定义：计时器紧邻 ingest 之前启动，并在 `build_workbook_payload` 返回后立即停止和写入；非 payload 所需的 run-count/issue-count 汇总移到停止点之后。当前 `run.rs` 的停止点位于 run-count 计算及可选 export 之后，不能直接作为本门禁证据；调整后 `export` 仍作为独立 stage 记录，不计入 `total`。
+
+Python 生产代码当前只记录 `ingest / normalize / fact / analysis / presentation`，不存在 `stage_timings.total`。test-only helper 使用 `perf_counter` 在同一 payload 构建调用边界内单独测量并返回 `python_payload_total_seconds`；不得用阶段求和得到的 `payload_total_seconds` 代替，也不得假定或要求 Python 生产 payload 新增 `stage_timings.total`。helper 的配置准备在计时开始前完成，payload 返回后的状态应用、日志和结果序列化在计时停止后执行。
+
 执行协议：
 
 1. 每个 pipeline 固定同一个输入文件及其 SHA-256；
-2. Rust 和 Python 使用等价的 `--check-only --benchmark` 参数；
+2. Rust 使用 release executable 的 `--check-only --benchmark` 路径；Python test-only helper 使用相同 pipeline 配置和完整 check-only payload 工作量，两端都不写 workbook；
 3. Rust、Python 各预热 1 次；
 4. 正式执行 5 个成对 round；奇数 round 先 Rust 后 Python，偶数 round 先 Python 后 Rust，降低缓存和温度偏差；
-5. 解析各自 JSON/payload 内部的 `stage_timings.total`，不把 Cargo 编译或 launcher 时间混入；
+5. 每轮读取 Rust 内部 `stage_timings.total` 和 Python test-only helper 返回的 `python_payload_total_seconds`，按上述统一边界比较；
 6. 报告两端 median、min、max，并报告 Rust 各 stage 的 5 次中位数；
 7. 无并发成本任务，不使用单次最快值作为结论。
 
@@ -603,6 +614,8 @@ uv run python -m pytest tests/test_full_rust_cli_benchmark.py -q --basetemp .pyt
 ```
 
 GB、SK 均必须得到现有 `VALIDATED` verdict。文中“5 次正式运行”仅指新增的 check-only 时间门禁和下述 Peak Working Set 门禁。
+
+证据完整性也是硬门禁：GB 或 SK 样本缺失、样本解析失败、任一 pipeline 未形成 5 个有效成对 check-only round，或对应 pytest 结果为 `skipped` / 未收集，均不构成通过证据。GB、SK 必须分别具备有效五轮结果，且 full-pipeline harness 分别返回 `VALIDATED`，才允许宣称性能验收通过。
 
 ### Peak Working Set 采集协议
 
@@ -740,6 +753,7 @@ Workbook 使用语义比较而非 ZIP 二进制比较，至少校验：
 | SK check-only 性能 | Rust release median <= Python median |
 | GB full pipeline | 现有 `repeats=3` benchmark verdict 为 `VALIDATED` |
 | SK full pipeline | 现有 `repeats=3` benchmark verdict 为 `VALIDATED` |
+| 性能证据完整性 | GB、SK 各有 5 个有效成对 check-only round；样本缺失或 pytest skipped/未收集不得视为通过 |
 | GB/SK Peak Working Set | 各 5 次 baseline/current 成对运行；current 中位数不高于 baseline 的 105% |
 | 非目标 stage | 回退超过 5%时必须解释并复测 |
 | 文档 | README 与 AGENTS.md release 口径一致 |

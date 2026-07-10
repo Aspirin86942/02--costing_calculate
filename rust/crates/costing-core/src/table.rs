@@ -61,6 +61,16 @@ impl ColumnSchema {
         Ok(&self.names_by_id[slot])
     }
 
+    fn append(&mut self, name: String) -> ColumnId {
+        let id = ColumnId {
+            schema_id: self.schema_id,
+            slot: self.names_by_id.len(),
+        };
+        self.names_by_id.push(name.clone());
+        self.id_by_name.insert(name, id);
+        id
+    }
+
     pub(crate) fn display_order_for(
         &self,
         required_names: &[String],
@@ -129,6 +139,30 @@ impl IndexedRow {
         }
         Ok(id.slot)
     }
+
+    fn validate_shape(
+        &self,
+        expected_schema_id: SchemaId,
+        expected_width: usize,
+    ) -> Result<(), CostingError> {
+        if self.schema_id != expected_schema_id || self.cells.len() != expected_width {
+            return Err(CostingError::internal(
+                "IndexedRow shape does not match its table schema",
+            ));
+        }
+        Ok(())
+    }
+
+    fn push_validated_cell(&mut self, value: CellValue) {
+        // 只能由已完成全表 shape 校验的 IndexedTable 调用。
+        self.cells.push(value);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DerivedColumnPosition<'a> {
+    End,
+    AfterFirstSourceName(&'a str),
 }
 
 #[derive(Debug, Clone)]
@@ -173,8 +207,147 @@ impl IndexedTable {
         &self.rows
     }
 
+    pub(crate) fn try_update_rows<F>(&mut self, mut update: F) -> Result<(), CostingError>
+    where
+        F: FnMut(&mut IndexedRow) -> Result<(), CostingError>,
+    {
+        for row in &mut self.rows {
+            update(row)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_retain_rows<F>(&mut self, mut predicate: F) -> Result<(), CostingError>
+    where
+        F: FnMut(&IndexedRow) -> Result<bool, CostingError>,
+    {
+        let keep = self
+            .rows
+            .iter()
+            .map(&mut predicate)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut index = 0usize;
+        self.rows.retain(|_| {
+            let retain = keep[index];
+            index += 1;
+            retain
+        });
+        Ok(())
+    }
+
+    pub(crate) fn ensure_or_reuse_derived_column(
+        &mut self,
+        name: &str,
+        display_position: DerivedColumnPosition<'_>,
+        values: Vec<CellValue>,
+    ) -> Result<ColumnId, CostingError> {
+        if values.len() != self.rows.len() {
+            return Err(CostingError::invalid_input(format!(
+                "派生列 {name} 的值数量 {} 与行数 {} 不一致",
+                values.len(),
+                self.rows.len(),
+            )));
+        }
+        for row in &self.rows {
+            row.validate_shape(self.schema.schema_id, self.schema.len())?;
+        }
+
+        if let Some(id) = self.schema.optional(name) {
+            for (row, value) in self.rows.iter_mut().zip(values) {
+                row.replace(id, value)?;
+            }
+            return Ok(id);
+        }
+
+        let id = self.schema.append(name.to_string());
+        for (row, value) in self.rows.iter_mut().zip(values) {
+            row.push_validated_cell(value);
+        }
+        match display_position {
+            DerivedColumnPosition::End => self.source_display_order.push(id),
+            DerivedColumnPosition::AfterFirstSourceName(source_name) => {
+                let insert_at = self
+                    .source_display_order
+                    .iter()
+                    .position(|source_id| {
+                        matches!(
+                            self.schema.name(*source_id),
+                            Ok(name) if name == source_name
+                        )
+                    })
+                    .map_or(self.source_display_order.len(), |index| index + 1);
+                self.source_display_order.insert(insert_at, id);
+            }
+        }
+        Ok(id)
+    }
+
     pub(crate) fn into_parts(self) -> (ColumnSchema, Vec<ColumnId>, Vec<IndexedRow>) {
         (self.schema, self.source_display_order, self.rows)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProjectionMode {
+    Clone,
+    Take,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProjectionStep {
+    id: ColumnId,
+    mode: ProjectionMode,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ProjectionPlan {
+    expected_schema_id: SchemaId,
+    expected_width: usize,
+    steps: Vec<ProjectionStep>,
+}
+
+impl ProjectionPlan {
+    pub(crate) fn new(
+        schema: &ColumnSchema,
+        display_columns: &[ColumnId],
+    ) -> Result<Self, CostingError> {
+        let mut last_positions = HashMap::new();
+        for (index, id) in display_columns.iter().copied().enumerate() {
+            schema.validate_id(id)?;
+            last_positions.insert(id, index);
+        }
+        let steps = display_columns
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, id)| ProjectionStep {
+                id,
+                mode: if last_positions[&id] == index {
+                    ProjectionMode::Take
+                } else {
+                    ProjectionMode::Clone
+                },
+            })
+            .collect();
+        Ok(Self {
+            expected_schema_id: schema.schema_id,
+            expected_width: schema.len(),
+            steps,
+        })
+    }
+
+    pub(crate) fn project_row(&self, mut row: IndexedRow) -> Result<Vec<CellValue>, CostingError> {
+        row.validate_shape(self.expected_schema_id, self.expected_width)?;
+        for step in &self.steps {
+            row.validate_id(step.id)?;
+        }
+        self.steps
+            .iter()
+            .map(|step| match step.mode {
+                ProjectionMode::Clone => Ok(row.get(step.id)?.clone()),
+                ProjectionMode::Take => row.take(step.id),
+            })
+            .collect()
     }
 }
 
@@ -393,5 +566,344 @@ mod tests {
 
         assert_eq!(taken, CellValue::Text("A".to_string()));
         assert_eq!(table.rows[0].get(id).unwrap(), &CellValue::Blank);
+    }
+
+    #[test]
+    fn adding_derived_column_preserves_existing_column_ids() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string(), "产品名称".to_string()],
+            vec![vec![
+                CellValue::Text("P1".to_string()),
+                CellValue::Text("产品一".to_string()),
+            ]],
+        )
+        .unwrap();
+        let product_code = table.schema().require("产品编码").unwrap();
+        let product_name = table.schema().require("产品名称").unwrap();
+
+        let derived = table
+            .ensure_or_reuse_derived_column(
+                "月份",
+                DerivedColumnPosition::End,
+                vec![CellValue::Text("2026-07".to_string())],
+            )
+            .unwrap();
+
+        assert_eq!(table.schema().require("产品编码").unwrap(), product_code);
+        assert_eq!(table.schema().require("产品名称").unwrap(), product_name);
+        assert_eq!(derived.slot, 2);
+        assert_eq!(
+            table.rows()[0].get(product_code).unwrap(),
+            &CellValue::Text("P1".to_string())
+        );
+    }
+
+    #[test]
+    fn ensure_derived_column_updates_schema_rows_and_display_order_atomically() {
+        let mut table = IndexedTable::from_raw(
+            vec!["期间".to_string(), "产品编码".to_string()],
+            vec![
+                vec![
+                    CellValue::Text("2026-07".to_string()),
+                    CellValue::Text("P1".to_string()),
+                ],
+                vec![
+                    CellValue::Text("2026-08".to_string()),
+                    CellValue::Text("P2".to_string()),
+                ],
+            ],
+        )
+        .unwrap();
+
+        let month = table
+            .ensure_or_reuse_derived_column(
+                "月份",
+                DerivedColumnPosition::AfterFirstSourceName("期间"),
+                vec![
+                    CellValue::Text("2026-07".to_string()),
+                    CellValue::Text("2026-08".to_string()),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(table.schema().len(), 3);
+        assert_eq!(table.schema().require("月份").unwrap(), month);
+        assert_eq!(
+            table
+                .source_display_order
+                .iter()
+                .map(|id| id.slot)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
+        assert_eq!(
+            table
+                .rows()
+                .iter()
+                .map(|row| row.cells.len())
+                .collect::<Vec<_>>(),
+            vec![3, 3]
+        );
+        assert_eq!(
+            table.rows()[1].get(month).unwrap(),
+            &CellValue::Text("2026-08".to_string())
+        );
+    }
+
+    #[test]
+    fn ensure_derived_column_rejects_wrong_value_count_without_mutation() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string()],
+            vec![vec![CellValue::Text("P1".to_string())]],
+        )
+        .unwrap();
+        let before = table.clone();
+
+        let error = table
+            .ensure_or_reuse_derived_column("月份", DerivedColumnPosition::End, vec![])
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert_eq!(table, before);
+    }
+
+    #[test]
+    fn ensure_derived_column_reuses_last_duplicate_without_moving_display_order() {
+        let mut table = IndexedTable::from_raw(
+            vec![
+                "产品编码".to_string(),
+                "月份".to_string(),
+                "月份".to_string(),
+            ],
+            vec![vec![
+                CellValue::Text("P1".to_string()),
+                CellValue::Text("first".to_string()),
+                CellValue::Text("last".to_string()),
+            ]],
+        )
+        .unwrap();
+        let existing = table.schema().require("月份").unwrap();
+        let names_before = table.schema.names_by_id.clone();
+        let display_before = display_slots(&table.schema, &table.source_display_order).unwrap();
+
+        let reused = table
+            .ensure_or_reuse_derived_column(
+                "月份",
+                DerivedColumnPosition::AfterFirstSourceName("产品编码"),
+                vec![CellValue::Text("2026-07".to_string())],
+            )
+            .unwrap();
+
+        assert_eq!(reused, existing);
+        assert_eq!(table.schema.names_by_id, names_before);
+        assert_eq!(
+            display_slots(&table.schema, &table.source_display_order).unwrap(),
+            display_before
+        );
+        assert_eq!(
+            table.rows()[0].cells,
+            vec![
+                CellValue::Text("P1".to_string()),
+                CellValue::Text("first".to_string()),
+                CellValue::Text("2026-07".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ensure_derived_column_rejects_malformed_row_shape_without_mutation() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string(), "产品名称".to_string()],
+            vec![
+                vec![
+                    CellValue::Text("P1".to_string()),
+                    CellValue::Text("产品一".to_string()),
+                ],
+                vec![
+                    CellValue::Text("P2".to_string()),
+                    CellValue::Text("产品二".to_string()),
+                ],
+            ],
+        )
+        .unwrap();
+        table.rows[1].cells.pop();
+        let names_before = table.schema.names_by_id.clone();
+        let display_before = display_slots(&table.schema, &table.source_display_order).unwrap();
+        let cells_before = table
+            .rows
+            .iter()
+            .map(|row| row.cells.clone())
+            .collect::<Vec<_>>();
+        let row_lengths_before = table
+            .rows
+            .iter()
+            .map(|row| row.cells.len())
+            .collect::<Vec<_>>();
+
+        let error = table
+            .ensure_or_reuse_derived_column(
+                "月份",
+                DerivedColumnPosition::End,
+                vec![
+                    CellValue::Text("2026-07".to_string()),
+                    CellValue::Text("2026-08".to_string()),
+                ],
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InternalError);
+        assert_eq!(table.schema.names_by_id, names_before);
+        assert_eq!(
+            display_slots(&table.schema, &table.source_display_order).unwrap(),
+            display_before
+        );
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| row.cells.len())
+                .collect::<Vec<_>>(),
+            row_lengths_before
+        );
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| row.cells.clone())
+                .collect::<Vec<_>>(),
+            cells_before
+        );
+    }
+
+    #[test]
+    fn try_update_rows_changes_cells_without_changing_row_shape() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string()],
+            vec![
+                vec![CellValue::Text("P1".to_string())],
+                vec![CellValue::Text("P2".to_string())],
+            ],
+        )
+        .unwrap();
+        let product_code = table.schema().require("产品编码").unwrap();
+        let row_lengths_before = table
+            .rows()
+            .iter()
+            .map(|row| row.cells.len())
+            .collect::<Vec<_>>();
+
+        table
+            .try_update_rows(|row| {
+                row.replace(product_code, CellValue::Text("updated".to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            table
+                .rows()
+                .iter()
+                .map(|row| row.cells.len())
+                .collect::<Vec<_>>(),
+            row_lengths_before
+        );
+        assert_eq!(
+            table.rows()[0].get(product_code).unwrap(),
+            &CellValue::Text("updated".to_string())
+        );
+        assert_eq!(
+            table.rows()[1].get(product_code).unwrap(),
+            &CellValue::Text("updated".to_string())
+        );
+    }
+
+    #[test]
+    fn try_retain_rows_propagates_access_error_without_filtering() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string()],
+            vec![
+                vec![CellValue::Text("P1".to_string())],
+                vec![CellValue::Text("P2".to_string())],
+            ],
+        )
+        .unwrap();
+        let foreign_table = IndexedTable::from_raw(vec!["产品编码".to_string()], vec![]).unwrap();
+        let foreign_id = foreign_table.schema().require("产品编码").unwrap();
+        let rows_before = table.rows.clone();
+
+        let error = table
+            .try_retain_rows(|row| row.get(foreign_id).map(|_| true))
+            .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InternalError);
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| row.cells.as_slice())
+                .collect::<Vec<_>>(),
+            rows_before
+                .iter()
+                .map(|row| row.cells.as_slice())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn projection_plan_clones_duplicate_ids_until_last_occurrence() {
+        let table = IndexedTable::from_raw(
+            vec!["产品编码".to_string()],
+            vec![vec![CellValue::Text("P1".to_string())]],
+        )
+        .unwrap();
+        let id = table.schema().require("产品编码").unwrap();
+        let plan = ProjectionPlan::new(table.schema(), &[id, id]).unwrap();
+        let (_, _, mut rows) = table.into_parts();
+
+        let projected = plan.project_row(rows.pop().unwrap()).unwrap();
+
+        assert_eq!(
+            projected,
+            vec![
+                CellValue::Text("P1".to_string()),
+                CellValue::Text("P1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn projection_plan_rejects_foreign_row_even_when_empty() {
+        let table = IndexedTable::from_raw(vec!["产品编码".to_string()], vec![]).unwrap();
+        let plan = ProjectionPlan::new(table.schema(), &[]).unwrap();
+        let foreign_table = IndexedTable::from_raw(
+            vec!["产品编码".to_string()],
+            vec![vec![CellValue::Text("P1".to_string())]],
+        )
+        .unwrap();
+        let (_, _, mut foreign_rows) = foreign_table.into_parts();
+
+        let error = plan.project_row(foreign_rows.pop().unwrap()).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InternalError);
+    }
+
+    #[test]
+    fn projection_plan_rejects_malformed_row_shape_when_projecting_subset() {
+        let mut table = IndexedTable::from_raw(
+            vec!["产品编码".to_string(), "产品名称".to_string()],
+            vec![vec![
+                CellValue::Text("P1".to_string()),
+                CellValue::Text("产品一".to_string()),
+            ]],
+        )
+        .unwrap();
+        let product_code = table.schema().require("产品编码").unwrap();
+        let plan = ProjectionPlan::new(table.schema(), &[product_code]).unwrap();
+        let mut malformed_row = table.rows.pop().unwrap();
+        malformed_row.cells.pop();
+
+        let error = plan.project_row(malformed_row).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InternalError);
     }
 }

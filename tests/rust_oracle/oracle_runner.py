@@ -1,17 +1,38 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, replace
+import time
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from src.config.pipelines import PIPELINES
 from src.etl.runner import _build_request
+from src.services import costing_service
 from src.services.costing_service import ServiceStatus, run_costing_request
 from tests.rust_oracle.repo_paths import repo_root
+
+REQUIRED_RUST_PAYLOAD_STAGES = (
+    'ingest',
+    'normalize',
+    'split',
+    'fact',
+    'presentation',
+    'total',
+)
+REQUIRED_RUST_RUN_COUNTS = (
+    'reader_rows',
+    'detail_rows',
+    'qty_rows',
+    'qty_sheet_rows',
+    'quality_metric_count',
+    'work_order_rows',
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +40,15 @@ class OracleRunSummary:
     error_log_count: int
     issue_type_counts: dict[str, int]
     quality_metrics: dict[tuple[str, str], str]
+
+
+@dataclass(frozen=True)
+class TimedPayloadRun:
+    pipeline: str
+    payload_total_seconds: float
+    stage_timings: dict[str, float]
+    runtime_summary: OracleRunSummary
+    run_counts: dict[str, int] = field(default_factory=dict)
 
 
 def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> OracleRunSummary:
@@ -45,6 +75,62 @@ def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> Ora
         error_log_count=result.error_log_count,
         issue_type_counts=result.issue_type_counts,
         quality_metrics=_quality_metric_values(result.quality_metrics),
+    )
+
+
+def run_python_check_only_payload(pipeline: str, input_path: Path) -> TimedPayloadRun:
+    try:
+        pipeline_config = PIPELINES[pipeline]
+    except KeyError as exc:
+        raise AssertionError(f'unknown Python oracle pipeline: {pipeline!r}') from exc
+
+    request = _build_request(
+        config=pipeline_config,
+        input_file=input_path,
+        month_range=None,
+        benchmark=True,
+    )
+    prepared, validation_error = costing_service._prepare_request(
+        request,
+        validate_output_dir=False,
+    )
+    if validation_error is not None or prepared is None:
+        message = validation_error.message if validation_error is not None else 'missing prepared request'
+        raise AssertionError(f'python check-only input validation failed: {message}')
+
+    etl = costing_service._build_etl(request, prepared.month_range)
+    etl._reset_last_run_state()
+
+    started = time.perf_counter()
+    payload = etl.pipeline.build_workbook_payload(
+        input_path,
+        standalone_cost_items=etl.standalone_cost_items,
+        product_anomaly_scope_mode=etl.product_anomaly_scope_mode,
+        month_range=etl.month_range,
+        presentation_product_order=etl.product_order,
+        artifacts_transform=etl._filter_analysis_artifacts_by_whitelist,
+        progress_callback=None,
+    )
+    payload_total_seconds = time.perf_counter() - started
+    if not math.isfinite(payload_total_seconds) or payload_total_seconds < 0:
+        raise AssertionError(f'invalid Python payload total: {payload_total_seconds!r}')
+
+    issue_type_counts: dict[str, int] = {}
+    error_frame = payload.error_log_export
+    if not error_frame.empty and 'issue_type' in error_frame.columns:
+        issue_type_counts = {
+            str(issue_type): int(count) for issue_type, count in error_frame['issue_type'].value_counts().items()
+        }
+    runtime_summary = OracleRunSummary(
+        error_log_count=payload.error_log_count,
+        issue_type_counts=issue_type_counts,
+        quality_metrics=_quality_metric_values(payload.quality_metrics),
+    )
+    return TimedPayloadRun(
+        pipeline=pipeline,
+        payload_total_seconds=payload_total_seconds,
+        stage_timings={name: float(value) for name, value in payload.stage_timings.items()},
+        runtime_summary=runtime_summary,
     )
 
 
@@ -141,19 +227,205 @@ def run_rust_cli_release(executable: Path, pipeline: str, input_path: Path, outp
     return summary
 
 
-def parse_rust_run_summary(stdout: str) -> OracleRunSummary:
+def run_rust_cli_release_check_only(
+    executable: Path,
+    pipeline: str,
+    input_path: Path,
+) -> TimedPayloadRun:
+    completed = subprocess.run(  # noqa: S603 - fixed local executable and arguments.
+        [
+            str(executable),
+            pipeline,
+            '--input',
+            str(input_path.resolve()),
+            '--check-only',
+            '--benchmark',
+        ],
+        check=False,
+        capture_output=True,
+        cwd=repo_root(),
+        encoding='utf-8',
+        errors='replace',
+    )
+    if completed.returncode != 0:
+        raise AssertionError(f'rust check-only failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}')
+    result = parse_rust_check_only_run(completed.stdout)
+    if result.pipeline != pipeline:
+        raise AssertionError(f'Rust check-only reported pipeline {result.pipeline!r}, expected {pipeline!r}')
+    return result
+
+
+def capture_rust_normal_benchmark_evidence(
+    executable: Path,
+    pipeline: str,
+    input_path: Path,
+    output_path: Path,
+    evidence_path: Path,
+) -> None:
+    input_path = input_path.resolve()
+    executable = executable.resolve()
+    output_path = output_path.resolve()
+    evidence_path = evidence_path.resolve()
+    if evidence_path in (input_path, executable, output_path):
+        raise AssertionError(
+            f'normal benchmark evidence path must differ from input, executable, and output: {evidence_path}'
+        )
+    input_sha256 = _file_sha256(input_path)
+    binary_sha256 = _file_sha256(executable)
+    if output_path.exists():
+        raise AssertionError(f'normal benchmark output already exists: {output_path}')
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed local executable and arguments.
+            [
+                str(executable),
+                pipeline,
+                '--input',
+                str(input_path),
+                '--output',
+                str(output_path),
+                '--benchmark',
+            ],
+            check=False,
+            capture_output=True,
+            cwd=repo_root(),
+            encoding='utf-8',
+            errors='replace',
+        )
+        if completed.returncode != 0:
+            raise AssertionError(
+                f'Rust normal benchmark failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}'
+            )
+        payload = _load_rust_summary_payload(completed.stdout)
+        if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
+            raise AssertionError('Rust normal benchmark reported an invalid status or pipeline')
+        if payload.get('output_written') is not True or payload.get('sheet_count') != 3:
+            raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
+        if Path(str(payload.get('workbook_path'))).resolve() != output_path:
+            raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
+        _parse_rust_stage_timings(payload, require_export=True)
+        _parse_rust_run_counts(payload)
+        summary = _oracle_summary_from_rust_payload(payload)
+        if sum(summary.issue_type_counts.values()) != summary.error_log_count:
+            raise AssertionError('Rust normal benchmark issue counts do not sum to error_log_count')
+        if not output_path.is_file():
+            raise AssertionError('Rust normal benchmark did not create its workbook')
+        if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:
+            raise AssertionError('normal benchmark input or executable changed during capture')
+        payload['input_sha256'] = input_sha256
+        payload['rust_binary_sha256'] = binary_sha256
+        payload['working_directory'] = str(repo_root())
+        payload['command_arguments'] = [
+            pipeline,
+            '--input',
+            str(input_path),
+            '--output',
+            str(output_path),
+            '--benchmark',
+        ]
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
+def _load_rust_summary_payload(stdout: str) -> dict[str, Any]:
     try:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise AssertionError(f'Rust CLI stdout is not valid JSON: {exc}\nSTDOUT:\n{stdout}') from exc
     if not isinstance(payload, dict):
         raise AssertionError(f'Rust CLI stdout JSON must be an object, got {type(payload).__name__}')
+    return payload
 
+
+def _oracle_summary_from_rust_payload(payload: dict[str, Any]) -> OracleRunSummary:
     return OracleRunSummary(
         error_log_count=_required_int(payload, 'error_log_count'),
         issue_type_counts=_issue_type_counts(payload),
         quality_metrics=_quality_metric_values(_required_list(payload, 'quality_metrics')),
     )
+
+
+def parse_rust_run_summary(stdout: str) -> OracleRunSummary:
+    return _oracle_summary_from_rust_payload(_load_rust_summary_payload(stdout))
+
+
+def parse_rust_check_only_run(stdout: str) -> TimedPayloadRun:
+    payload = _load_rust_summary_payload(stdout)
+    if payload.get('status') != 'succeeded':
+        raise AssertionError("Rust check-only must report status='succeeded'")
+    pipeline = payload.get('pipeline')
+    if not isinstance(pipeline, str) or pipeline not in {'gb', 'sk'}:
+        raise AssertionError(f'invalid Rust check-only pipeline: {pipeline!r}')
+    if payload.get('sheet_count') != 3:
+        raise AssertionError('Rust check-only must build exactly three in-memory sheets')
+    if payload.get('output_written') is not False:
+        raise AssertionError('Rust check-only must report output_written=false')
+    if payload.get('workbook_path') is not None:
+        raise AssertionError('Rust check-only must not report a workbook path')
+
+    stage_timings = _parse_rust_stage_timings(payload, require_export=False)
+    total = stage_timings['total']
+    run_counts = _parse_rust_run_counts(payload)
+
+    return TimedPayloadRun(
+        pipeline=pipeline,
+        payload_total_seconds=total,
+        stage_timings=stage_timings,
+        runtime_summary=_oracle_summary_from_rust_payload(payload),
+        run_counts=run_counts,
+    )
+
+
+def _parse_rust_stage_timings(
+    payload: dict[str, Any],
+    *,
+    require_export: bool,
+) -> dict[str, float]:
+    timing_payload = payload.get('stage_timings')
+    if not isinstance(timing_payload, dict) or not isinstance(timing_payload.get('stages'), dict):
+        raise AssertionError("Rust field 'stage_timings.stages' must be an object")
+
+    parsed: dict[str, float] = {}
+    for name, raw_seconds in timing_payload['stages'].items():
+        if not isinstance(name, str):
+            raise AssertionError('Rust stage names must be strings')
+        if isinstance(raw_seconds, bool) or not isinstance(raw_seconds, (int, float)):
+            raise AssertionError(f'Rust stage {name!r} must be numeric')
+        seconds = float(raw_seconds)
+        if not math.isfinite(seconds) or seconds < 0:
+            raise AssertionError(f'Rust stage {name!r} must be finite and non-negative')
+        parsed[name] = seconds
+
+    missing = [name for name in REQUIRED_RUST_PAYLOAD_STAGES if name not in parsed]
+    if missing:
+        raise AssertionError(f'Rust payload stages missing: {missing!r}')
+    if require_export:
+        if 'export' not in parsed:
+            raise AssertionError('Rust normal benchmark must report export stage')
+    elif 'export' in parsed:
+        raise AssertionError('Rust check-only stage timings must not contain export')
+    return parsed
+
+
+def _parse_rust_run_counts(payload: dict[str, Any]) -> dict[str, int]:
+    raw = payload.get('run_counts')
+    if not isinstance(raw, dict):
+        raise AssertionError("Rust field 'run_counts' must be an object")
+    missing = [name for name in REQUIRED_RUST_RUN_COUNTS if name not in raw]
+    if missing:
+        raise AssertionError(f'Rust run counts missing: {missing!r}')
+    parsed: dict[str, int] = {}
+    for name, count in raw.items():
+        if not isinstance(name, str) or isinstance(count, bool) or not isinstance(count, int):
+            raise AssertionError('Rust run_counts must map strings to integers')
+        if count < 0:
+            raise AssertionError(f'Rust run count {name!r} must be non-negative')
+        parsed[name] = count
+    return parsed
 
 
 def assert_runtime_contract_matches(expected: OracleRunSummary, actual: OracleRunSummary) -> None:
@@ -227,3 +499,8 @@ def _quality_metric_values(metrics: Any) -> dict[tuple[str, str], str]:
             raise AssertionError(f'duplicate quality metric: {key!r}')
         values[key] = value
     return values
+
+
+def _file_sha256(path: Path) -> str:
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()

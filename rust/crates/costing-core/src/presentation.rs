@@ -37,6 +37,7 @@ pub fn build_workbook_payload(
     bundle: FactBundle,
     config: &PipelineConfig,
     timings: StageTimings,
+    month_filter_empty_result: bool,
 ) -> Result<WorkbookPayload, CostingError> {
     let detail_sheet = build_flat_sheet(
         "成本计算单总表",
@@ -57,7 +58,7 @@ pub fn build_workbook_payload(
 
     Ok(WorkbookPayload {
         sheet_models: sheets,
-        quality_metrics: build_quality_metrics(&bundle),
+        quality_metrics: build_quality_metrics(&bundle, month_filter_empty_result),
         error_log_count: error_log.len(),
         error_log,
         stage_timings: timings,
@@ -279,6 +280,7 @@ mod tests {
             bundle(),
             &PipelineConfig::for_name(PipelineName::Gb),
             StageTimings::default(),
+            false,
         )
         .unwrap();
         let names = payload
@@ -307,6 +309,7 @@ mod tests {
             bundle(),
             &PipelineConfig::for_name(PipelineName::Gb),
             timings,
+            false,
         )
         .unwrap();
 
@@ -326,6 +329,7 @@ mod tests {
             empty_bundle_with_schema(),
             &PipelineConfig::for_name(PipelineName::Gb),
             StageTimings::default(),
+            false,
         )
         .unwrap();
 
@@ -353,6 +357,7 @@ mod tests {
             bundle(),
             &PipelineConfig::for_name(PipelineName::Gb),
             StageTimings::default(),
+            false,
         )
         .unwrap();
         let detail = &payload.sheet_models[0];
@@ -381,6 +386,7 @@ mod tests {
             bundle_with_internal_schema_columns(),
             &PipelineConfig::for_name(PipelineName::Gb),
             StageTimings::default(),
+            false,
         )
         .unwrap();
 

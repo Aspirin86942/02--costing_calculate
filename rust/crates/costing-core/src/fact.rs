@@ -74,8 +74,18 @@ pub fn build_fact_bundle(
     split: SplitResult,
     config: &PipelineConfig,
 ) -> Result<FactBundle, CostingError> {
-    validate_required_columns(&split.detail_rows, REQUIRED_DETAIL_COLUMNS, "成本明细")?;
-    validate_required_columns(&split.qty_rows, REQUIRED_QTY_COLUMNS, "产品数量统计")?;
+    validate_required_columns(
+        &split.detail_columns,
+        &split.detail_rows,
+        REQUIRED_DETAIL_COLUMNS,
+        "成本明细",
+    )?;
+    validate_required_columns(
+        &split.qty_columns,
+        &split.qty_rows,
+        REQUIRED_QTY_COLUMNS,
+        "产品数量统计",
+    )?;
 
     let mut amount_by_key: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
     let mut qty_rows_by_key: BTreeMap<String, usize> = BTreeMap::new();
@@ -145,10 +155,12 @@ pub fn build_fact_bundle(
         *qty_rows_by_key.entry(key).or_default() += 1;
     }
 
-    for (key, count) in &qty_rows_by_key {
-        if *count > 1 {
+    for qty_row in &valid_qty_rows {
+        let key = work_order_key(qty_row);
+        let count = qty_rows_by_key[&key];
+        if count > 1 {
             error_issues.push(error_issue(
-                key.clone(),
+                key,
                 "DUPLICATE_WORK_ORDER_KEY",
                 "工单主键",
                 count.to_string(),
@@ -610,19 +622,26 @@ fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
 }
 
 fn validate_required_columns(
+    columns: &[String],
     rows: &[TableRow],
     required_columns: &[&str],
     dataset_name: &str,
 ) -> Result<(), CostingError> {
-    let missing = rows
+    let mut missing = required_columns
         .iter()
-        .flat_map(|row| {
-            required_columns
-                .iter()
-                .filter(|column| !row.values.contains_key(**column))
-                .copied()
-        })
+        .filter(|column| !columns.iter().any(|candidate| candidate == **column))
+        .copied()
         .collect::<BTreeSet<_>>();
+    missing.extend(
+        rows.iter()
+            .flat_map(|row| {
+                required_columns
+                    .iter()
+                    .filter(|column| !row.values.contains_key(**column))
+                    .copied()
+            })
+            .collect::<BTreeSet<_>>(),
+    );
 
     if missing.is_empty() {
         return Ok(());
@@ -1029,6 +1048,14 @@ mod tests {
         assert_eq!(bundle.qty_fact.len(), 2);
         assert_eq!(bundle.work_order_fact.len(), 1);
         assert_eq!(
+            bundle
+                .error_issues
+                .iter()
+                .filter(|issue| issue.issue_type == "DUPLICATE_WORK_ORDER_KEY")
+                .count(),
+            2
+        );
+        assert_eq!(
             bundle.work_order_fact[0].values["本期完工数量"],
             CellValue::Decimal(Decimal::new(1, 0))
         );
@@ -1065,6 +1092,24 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert!(error.message().contains("本期完工金额"));
+    }
+
+    #[test]
+    fn empty_rows_still_validate_required_schema_columns() {
+        let error = build_fact_bundle(
+            SplitResult {
+                detail_columns: vec!["产品编码".to_string()],
+                detail_rows: vec![],
+                qty_columns: vec!["产品编码".to_string()],
+                qty_rows: vec![],
+            },
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        assert!(error.message().contains("缺少必要字段"));
         assert!(error.message().contains("本期完工金额"));
     }
 

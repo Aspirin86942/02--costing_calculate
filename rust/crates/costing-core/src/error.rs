@@ -11,6 +11,7 @@ pub enum ErrorCode {
     FileNotReadable,
     UnsupportedFileType,
     OutputExists,
+    OutputNotWritable,
     ReaderMismatch,
     EtlMismatch,
     AnalysisMismatch,
@@ -64,6 +65,15 @@ impl CostingError {
         Self::User {
             code: ErrorCode::InvalidInput,
             message: message.into(),
+            retryable: false,
+        }
+    }
+
+    pub fn io(code: ErrorCode, message: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self::Io {
+            code,
+            message: message.into(),
+            path: path.into(),
             retryable: false,
         }
     }

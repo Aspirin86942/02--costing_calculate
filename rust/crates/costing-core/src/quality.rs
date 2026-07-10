@@ -4,7 +4,22 @@ use rust_decimal::Decimal;
 
 use crate::model::{CellValue, FactBundle, QualityMetric, TableRow};
 
-pub fn build_quality_metrics(bundle: &FactBundle) -> Vec<QualityMetric> {
+pub fn build_quality_metrics(
+    bundle: &FactBundle,
+    month_filter_empty_result: bool,
+) -> Vec<QualityMetric> {
+    let not_applicable_description = "月份过滤后无数据，指标不适用";
+    let null_rate_value = if month_filter_empty_result {
+        "N/A".to_string()
+    } else {
+        format_rate(null_rate(&bundle.qty_fact, "dm_amount"))
+    };
+    let coverage_value = if month_filter_empty_result {
+        "N/A".to_string()
+    } else {
+        format_rate(analyzable_rate(&bundle.work_order_fact))
+    };
+
     vec![
         QualityMetric {
             category: "行数勾稽".to_string(),
@@ -45,8 +60,12 @@ pub fn build_quality_metrics(bundle: &FactBundle) -> Vec<QualityMetric> {
         QualityMetric {
             category: "空值率".to_string(),
             metric: "直接材料金额缺失率".to_string(),
-            value: format_rate(null_rate(&bundle.qty_fact, "dm_amount")),
-            description: "派生金额字段空值率".to_string(),
+            value: null_rate_value,
+            description: if month_filter_empty_result {
+                not_applicable_description.to_string()
+            } else {
+                "派生金额字段空值率".to_string()
+            },
         },
         QualityMetric {
             category: "唯一性检查".to_string(),
@@ -63,8 +82,12 @@ pub fn build_quality_metrics(bundle: &FactBundle) -> Vec<QualityMetric> {
         QualityMetric {
             category: "分析覆盖率".to_string(),
             metric: "可参与分析占比".to_string(),
-            value: format_rate(analyzable_rate(&bundle.work_order_fact)),
-            description: "按完工数量、总单位成本和单据类型归类估算可分析工单占比".to_string(),
+            value: coverage_value,
+            description: if month_filter_empty_result {
+                not_applicable_description.to_string()
+            } else {
+                "按完工数量、总单位成本和单据类型归类估算可分析工单占比".to_string()
+            },
         },
     ]
 }
@@ -288,7 +311,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle);
+        let metrics = build_quality_metrics(&bundle, false);
         let metric_map = metrics
             .iter()
             .map(|metric| (metric.metric.as_str(), metric))
@@ -304,5 +327,33 @@ mod tests {
         assert_eq!(metric_map["工单主键重复行数"].category, "唯一性检查");
         assert_eq!(metric_map["可参与分析占比"].category, "分析覆盖率");
         assert_eq!(metric_map["可参与分析占比"].value, "50.00%");
+    }
+
+    #[test]
+    fn month_filter_empty_result_marks_rates_not_applicable() {
+        let bundle = FactBundle {
+            detail_columns: Vec::new(),
+            detail_fact: Vec::new(),
+            qty_columns: Vec::new(),
+            qty_input_row_count: 0,
+            filtered_invalid_qty_count: 0,
+            filtered_missing_total_amount_count: 0,
+            qty_fact: Vec::new(),
+            work_order_fact: Vec::new(),
+            error_issues: Vec::new(),
+        };
+
+        let metrics = build_quality_metrics(&bundle, true);
+        let metric_map = metrics
+            .iter()
+            .map(|metric| (metric.metric.as_str(), metric))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(metric_map["直接材料金额缺失率"].value, "N/A");
+        assert_eq!(metric_map["可参与分析占比"].value, "N/A");
+        assert_eq!(
+            metric_map["可参与分析占比"].description,
+            "月份过滤后无数据，指标不适用"
+        );
     }
 }

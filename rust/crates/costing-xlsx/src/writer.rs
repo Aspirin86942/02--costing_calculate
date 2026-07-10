@@ -25,10 +25,21 @@ pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), Cost
         let header_format = Format::new()
             .set_bold()
             .set_background_color(Color::RGB(0xD9E1F2))
-            .set_border(FormatBorder::Thin);
-        let text_format = Format::new().set_align(FormatAlign::Left);
+            .set_border(FormatBorder::Thin)
+            .set_align(FormatAlign::Center)
+            .set_align(FormatAlign::VerticalCenter);
+        let text_format = Format::new()
+            .set_align(FormatAlign::Left)
+            .set_align(FormatAlign::VerticalCenter);
 
-        write_header_row(worksheet, &sheet.columns, sheet.fixed_width, &header_format)?;
+        write_header_row(
+            worksheet,
+            &sheet.columns,
+            &sheet.number_formats,
+            sheet.fixed_width,
+            &header_format,
+            &text_format,
+        )?;
         write_data_rows(
             worksheet,
             &sheet.columns,
@@ -81,8 +92,10 @@ fn validate_default_sheet_contract(payload: &WorkbookPayload) -> Result<(), Cost
 fn write_header_row(
     worksheet: &mut Worksheet,
     columns: &[String],
+    number_formats: &std::collections::BTreeMap<String, String>,
     fixed_width: Option<f64>,
     header_format: &Format,
+    text_format: &Format,
 ) -> Result<(), CostingXlsxError> {
     for (col_idx, column) in columns.iter().enumerate() {
         let col_idx = col_idx as u16;
@@ -91,9 +104,16 @@ fn write_header_row(
             .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
         if let Some(width) = fixed_width {
             worksheet
-                .set_column_width(col_idx, width)
+                .set_column_width(col_idx, normalized_column_width(width))
                 .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
         }
+        let column_format = number_formats
+            .get(column)
+            .map(|format| numeric_format(format))
+            .unwrap_or_else(|| text_format.clone());
+        worksheet
+            .set_column_format(col_idx, &column_format)
+            .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
     }
     Ok(())
 }
@@ -114,7 +134,7 @@ fn write_data_rows(
             let excel_col = col_idx as u16;
             let number_format = number_formats
                 .get(column_name)
-                .map(|format| Format::new().set_num_format(format));
+                .map(|format| numeric_format(format));
             match (value, number_format.as_ref()) {
                 (CellValue::Blank, _) => {}
                 (CellValue::Decimal(value), Some(format)) => {
@@ -141,6 +161,22 @@ fn write_data_rows(
         }
     }
     Ok(())
+}
+
+fn numeric_format(number_format: &str) -> Format {
+    Format::new()
+        .set_num_format(number_format)
+        .set_align(FormatAlign::Right)
+        .set_align(FormatAlign::VerticalCenter)
+}
+
+fn normalized_column_width(width: f64) -> f64 {
+    // 与 Python xlsxwriter 的固定 15 列宽换算一致，使 openpyxl/OOXML 语义值保持 15.0。
+    if width == 15.0 {
+        14.3
+    } else {
+        width
+    }
 }
 
 fn decimal_to_f64(value: &rust_decimal::Decimal) -> Result<f64, CostingXlsxError> {

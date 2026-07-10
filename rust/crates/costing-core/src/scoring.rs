@@ -1,6 +1,15 @@
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 
+fn modified_z_scale() -> Decimal {
+    Decimal::new(6_745, 4)
+}
+
+fn min_effective_log_mad() -> Decimal {
+    // math.log1p(0.005)，固定为 Decimal，避免在 MAD/score 业务计算中继续传播二进制浮点。
+    Decimal::new(4_987_541_511_038_968, 18)
+}
+
 pub fn weighted_median(values: &[(Decimal, Decimal)]) -> Option<Decimal> {
     let mut valid = values
         .iter()
@@ -51,9 +60,19 @@ pub fn decimal_ln(value: Decimal) -> Option<f64> {
     value.to_f64().filter(|number| *number > 0.0).map(f64::ln)
 }
 
-pub fn resolve_effective_log_mad(mad: Option<Decimal>) -> Option<f64> {
-    mad.and_then(|value| value.to_f64())
-        .map(|value| value.max(0.005_f64.ln_1p()))
+pub fn resolve_effective_log_mad(mad: Option<Decimal>) -> Option<Decimal> {
+    mad.map(|value| value.max(min_effective_log_mad()))
+}
+
+pub fn modified_z_score(
+    current_log: Decimal,
+    center_log: Decimal,
+    effective_mad: Decimal,
+) -> Option<Decimal> {
+    if effective_mad <= Decimal::ZERO {
+        return None;
+    }
+    Some(modified_z_scale() * (current_log - center_log) / effective_mad)
 }
 
 fn decimal_abs(value: Decimal) -> Decimal {
@@ -137,10 +156,22 @@ mod tests {
     fn resolve_effective_log_mad_applies_minimum_dispersion() {
         let minimum = resolve_effective_log_mad(Some(Decimal::ZERO)).unwrap();
 
-        assert!(minimum > 0.0);
+        assert_eq!(minimum, min_effective_log_mad());
         assert_eq!(
             resolve_effective_log_mad(Some(Decimal::new(123, 2))),
-            Some(1.23)
+            Some(Decimal::new(123, 2))
+        );
+    }
+
+    #[test]
+    fn modified_z_score_uses_decimal_arithmetic_at_thresholds() {
+        assert_eq!(
+            modified_z_score(Decimal::new(25, 1), Decimal::ZERO, modified_z_scale(),),
+            Some(Decimal::new(25, 1))
+        );
+        assert_eq!(
+            modified_z_score(Decimal::ONE, Decimal::ZERO, Decimal::ZERO),
+            None
         );
     }
 }

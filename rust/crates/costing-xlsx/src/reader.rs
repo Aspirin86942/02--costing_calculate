@@ -29,7 +29,8 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
             "workbook must contain two header rows".to_string(),
         ));
     }
-    let header_start = find_header_start(&rows);
+    let header_start = find_header_start(&rows)
+        .ok_or_else(|| CostingXlsxError::Message("未找到可识别的成本计算单双层表头".to_string()))?;
     let max_width = rows
         .iter()
         .skip(header_start)
@@ -52,10 +53,9 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
     })
 }
 
-fn find_header_start(rows: &[Vec<Data>]) -> usize {
+fn find_header_start(rows: &[Vec<Data>]) -> Option<usize> {
     rows.windows(2)
         .position(|pair| is_header_pair(&pair[0], &pair[1]))
-        .unwrap_or(0)
 }
 
 fn is_header_pair(top: &[Data], bottom: &[Data]) -> bool {
@@ -156,8 +156,8 @@ mod tests {
 
         let primary = workbook.add_worksheet();
         primary.set_name("成本计算单").unwrap();
-        primary.write_string(0, 0, "项目").unwrap();
-        primary.write_string(0, 1, "金额").unwrap();
+        primary.write_string(0, 0, "年期").unwrap();
+        primary.write_string(0, 1, "产品编码").unwrap();
         primary.write_string(0, 2, "日期").unwrap();
         primary.write_string(1, 0, "").unwrap();
         primary.write_string(1, 1, "").unwrap();
@@ -191,7 +191,7 @@ mod tests {
         let raw = read_raw_workbook(&path).unwrap();
 
         assert_eq!(raw.sheet_name, "成本计算单");
-        assert_eq!(raw.header_rows[0], vec!["项目", "金额", "日期"]);
+        assert_eq!(raw.header_rows[0], vec!["年期", "产品编码", "日期"]);
         assert_eq!(raw.header_rows[1], vec!["", "", ""]);
         assert_eq!(raw.rows[0][0], CellValue::Text("首行".to_string()));
         assert_eq!(raw.rows[0][1], CellValue::Decimal(Decimal::new(1, 1)));
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(snapshot.sheet_name, "成本计算单");
         assert_eq!(snapshot.row_count, 2);
         assert_eq!(snapshot.column_count, 3);
-        assert_eq!(snapshot.headers, vec!["项目", "金额", "日期"]);
+        assert_eq!(snapshot.headers, vec!["年期", "产品编码", "日期"]);
         assert_eq!(snapshot.null_counts["日期"], 1);
         let _ = std::fs::remove_file(path);
     }
@@ -256,12 +256,15 @@ mod tests {
         worksheet.set_name("成本计算单").unwrap();
         worksheet.write_string(0, 0, "年期").unwrap();
         worksheet.write_string(0, 1, "产品名称").unwrap();
+        worksheet.write_string(0, 2, "产品编码").unwrap();
         worksheet.write_string(1, 0, "").unwrap();
         worksheet.write_string(1, 1, "").unwrap();
+        worksheet.write_string(1, 2, "").unwrap();
         worksheet.write_string(2, 0, "2025年7期").unwrap();
         worksheet
             .write_string(2, 1, " PCBA_BMS_SMPS电源小板")
             .unwrap();
+        worksheet.write_string(2, 2, "P1").unwrap();
         workbook.save(&path).unwrap();
 
         let raw = read_raw_workbook(&path).unwrap();
@@ -270,6 +273,23 @@ mod tests {
             raw.rows[0][1],
             CellValue::Text(" PCBA_BMS_SMPS电源小板".to_string())
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_workbook_without_recognizable_header_pair() {
+        let path = unique_temp_path("missing-header");
+        let mut workbook = Workbook::new();
+        let worksheet = workbook.add_worksheet();
+        worksheet.set_name("成本计算单").unwrap();
+        worksheet.write_string(0, 0, "任意标题").unwrap();
+        worksheet.write_string(1, 0, "任意副标题").unwrap();
+        worksheet.write_string(2, 0, "任意数据").unwrap();
+        workbook.save(&path).unwrap();
+
+        let error = read_raw_workbook(&path).unwrap_err();
+
+        assert!(error.to_string().contains("表头"));
         let _ = std::fs::remove_file(path);
     }
 }

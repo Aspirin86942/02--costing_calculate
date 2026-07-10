@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::time::Instant;
 
 use costing_core::fact::build_fact_bundle;
@@ -8,7 +9,9 @@ use costing_core::split::split_detail_and_qty;
 use costing_core::timing::measure;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{
-    reader::read_raw_workbook, snapshot::build_reader_snapshot, writer::write_workbook,
+    reader::{read_raw_workbook, CostingXlsxError},
+    snapshot::build_reader_snapshot,
+    writer::write_workbook,
 };
 
 use crate::args::CliArgs;
@@ -18,17 +21,20 @@ const ERROR_LOG_PREVIEW_LIMIT: usize = 20;
 pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     validate_cli_request(&args)?;
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
+    let month_filter_requested = month_range.is_some();
     let pipeline = PipelineConfig::for_name(args.pipeline);
     let mut timings = StageTimings::default();
     let total_started = args.benchmark.then(Instant::now);
     let (raw, snapshot) = measure(&mut timings, "ingest", || {
-        let raw = read_raw_workbook(&args.input)?;
+        let raw = read_raw_workbook(&args.input)
+            .map_err(|error| map_xlsx_read_error(&args.input, error))?;
         let snapshot = build_reader_snapshot(&raw);
-        Ok::<_, anyhow::Error>((raw, snapshot))
+        Ok::<_, CostingError>((raw, snapshot))
     })?;
     let normalized = measure(&mut timings, "normalize", || {
         Ok::<_, anyhow::Error>(normalize_workbook(raw, &pipeline, month_range)?)
     })?;
+    let month_filter_empty_result = month_filter_requested && normalized.rows.is_empty();
     let split = measure(&mut timings, "split", || {
         Ok::<_, anyhow::Error>(split_detail_and_qty(normalized)?)
     })?;
@@ -43,7 +49,12 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
     ]);
     let payload_timings = timings.clone();
     let payload = measure(&mut timings, "presentation", || {
-        build_workbook_payload(bundle, &pipeline, payload_timings)
+        build_workbook_payload(
+            bundle,
+            &pipeline,
+            payload_timings,
+            month_filter_empty_result,
+        )
     })?;
     run_counts.insert(
         "qty_sheet_rows".to_string(),
@@ -65,7 +76,9 @@ pub fn run(args: CliArgs) -> anyhow::Result<RunSummary> {
             .output
             .as_ref()
             .expect("validate_cli_request requires --output for non check-only runs");
-        measure(&mut timings, "export", || write_workbook(output, &payload))?;
+        measure(&mut timings, "export", || {
+            write_workbook(output, &payload).map_err(|error| map_xlsx_write_error(output, error))
+        })?;
     }
     if let Some(started) = total_started {
         timings.insert("total", started.elapsed().as_secs_f64());
@@ -136,7 +149,52 @@ pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
             "非 check-only 运行必须提供 --output",
         ));
     }
+    if !args.check_only {
+        let output = args.output.as_ref().expect("checked output above");
+        if paths_resolve_to_same_file(&args.input, output) {
+            return Err(CostingError::invalid_input(
+                "输入文件与输出文件不能是同一文件",
+            ));
+        }
+        if output.exists() {
+            return Err(CostingError::io(
+                ErrorCode::OutputExists,
+                format!("输出 workbook 已存在: {}", output.display()),
+                output.clone(),
+            ));
+        }
+    }
     Ok(())
+}
+
+fn paths_resolve_to_same_file(input: &Path, output: &Path) -> bool {
+    if !output.exists() {
+        return false;
+    }
+    match (input.canonicalize(), output.canonicalize()) {
+        (Ok(input), Ok(output)) => input == output,
+        _ => input == output,
+    }
+}
+
+fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
+    let code = match error {
+        CostingXlsxError::Calamine(_) => ErrorCode::FileNotReadable,
+        CostingXlsxError::Message(_) => ErrorCode::InvalidInput,
+    };
+    CostingError::io(
+        code,
+        format!("读取 workbook 失败: {error}"),
+        path.to_path_buf(),
+    )
+}
+
+fn map_xlsx_write_error(path: &Path, error: CostingXlsxError) -> CostingError {
+    CostingError::io(
+        ErrorCode::OutputNotWritable,
+        format!("写出 workbook 失败: {error}"),
+        path.to_path_buf(),
+    )
 }
 
 #[cfg(test)]
@@ -213,6 +271,40 @@ mod tests {
         let error = validate_cli_request(&request).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_existing_output_without_overwriting() {
+        let input = unique_temp_path(&std::env::temp_dir(), "existing-output-input", "xlsx");
+        let output = unique_temp_path(&std::env::temp_dir(), "existing-output", "xlsx");
+        std::fs::write(&input, "input").unwrap();
+        std::fs::write(&output, "existing").unwrap();
+        let request = CliArgs {
+            output: Some(output.clone()),
+            ..args(input.to_str().unwrap())
+        };
+
+        let error = validate_cli_request(&request).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert_eq!(std::fs::read_to_string(&output).unwrap(), "existing");
+        let _ = std::fs::remove_file(input);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn rejects_input_and_output_that_resolve_to_same_file() {
+        let input = unique_temp_path(&std::env::temp_dir(), "same-input-output", "xlsx");
+        std::fs::write(&input, "input").unwrap();
+        let request = CliArgs {
+            output: Some(input.clone()),
+            ..args(input.to_str().unwrap())
+        };
+
+        let error = validate_cli_request(&request).unwrap_err();
+
+        assert_eq!(error.code(), ErrorCode::InvalidInput);
+        let _ = std::fs::remove_file(input);
     }
 
     #[test]
@@ -318,7 +410,8 @@ mod tests {
             benchmark: false,
         };
 
-        assert!(run(args).is_err());
+        let error = run(args).unwrap_err().downcast::<CostingError>().unwrap();
+        assert_eq!(error.code(), ErrorCode::OutputNotWritable);
         assert!(!output.exists());
         let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_file(blocked_parent);
@@ -356,6 +449,7 @@ mod tests {
         sheet.write_string(0, 4, "工单行号").unwrap();
         sheet.write_string(0, 5, "本期完工数量").unwrap();
         sheet.write_string(0, 6, "本期完工金额").unwrap();
+        sheet.write_string(0, 7, "成本项目名称").unwrap();
         sheet.write_string(1, 0, "").unwrap();
         sheet.write_string(1, 1, "").unwrap();
         sheet.write_string(1, 2, "").unwrap();
@@ -363,6 +457,7 @@ mod tests {
         sheet.write_string(1, 4, "").unwrap();
         sheet.write_string(1, 5, "").unwrap();
         sheet.write_string(1, 6, "").unwrap();
+        sheet.write_string(1, 7, "").unwrap();
         sheet.write_string(2, 0, "2025年01期").unwrap();
         sheet.write_string(2, 1, "P1").unwrap();
         sheet.write_string(2, 2, "产品").unwrap();
@@ -370,6 +465,7 @@ mod tests {
         sheet.write_string(2, 4, "1").unwrap();
         sheet.write_number(2, 5, 1).unwrap();
         sheet.write_number(2, 6, 10).unwrap();
+        sheet.write_string(2, 7, "").unwrap();
         sheet.write_string(3, 0, "2025年02期").unwrap();
         sheet.write_string(3, 1, "P2").unwrap();
         sheet.write_string(3, 2, "产品").unwrap();
@@ -377,6 +473,7 @@ mod tests {
         sheet.write_string(3, 4, "1").unwrap();
         sheet.write_number(3, 5, 1).unwrap();
         sheet.write_number(3, 6, 10).unwrap();
+        sheet.write_string(3, 7, "").unwrap();
         workbook.save(&path).unwrap();
 
         let args = CliArgs {
@@ -461,7 +558,8 @@ mod tests {
         sheet.write_string(0, 4, "工单行号").unwrap();
         sheet.write_string(0, 5, "本期完工数量").unwrap();
         sheet.write_string(0, 6, "本期完工金额").unwrap();
-        sheet.write_string(0, 7, "日期").unwrap();
+        sheet.write_string(0, 7, "成本项目名称").unwrap();
+        sheet.write_string(0, 8, "日期").unwrap();
         sheet.write_string(1, 0, "").unwrap();
         sheet.write_string(1, 1, "").unwrap();
         sheet.write_string(1, 2, "").unwrap();
@@ -470,6 +568,7 @@ mod tests {
         sheet.write_string(1, 5, "").unwrap();
         sheet.write_string(1, 6, "").unwrap();
         sheet.write_string(1, 7, "").unwrap();
+        sheet.write_string(1, 8, "").unwrap();
         sheet.write_string(2, 0, "2025年01期").unwrap();
         sheet.write_string(2, 1, "P1").unwrap();
         sheet.write_string(2, 2, "产品").unwrap();
@@ -477,11 +576,12 @@ mod tests {
         sheet.write_string(2, 4, "1").unwrap();
         sheet.write_number(2, 5, 1).unwrap();
         sheet.write_number(2, 6, 10).unwrap();
+        sheet.write_string(2, 7, "").unwrap();
         let date_format = Format::new().set_num_format("yyyy-mm-dd");
         sheet
             .write_datetime_with_format(
                 2,
-                7,
+                8,
                 ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
                 &date_format,
             )

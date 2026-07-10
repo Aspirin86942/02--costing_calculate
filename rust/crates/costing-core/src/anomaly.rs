@@ -5,7 +5,8 @@ use rust_decimal::Decimal;
 use crate::model::{CellValue, FactBundle, SheetModel, TableRow};
 use crate::pipeline::PipelineConfig;
 use crate::scoring::{
-    decimal_ln, grade_score, resolve_effective_log_mad, weighted_mad, weighted_median,
+    decimal_ln, grade_score, modified_z_score, resolve_effective_log_mad, weighted_mad,
+    weighted_median,
 };
 
 const ZERO: Decimal = Decimal::ZERO;
@@ -117,11 +118,11 @@ const ANOMALY_METRICS: &[Metric] = &[
 #[derive(Default)]
 struct MetricAudit {
     flag: String,
-    score: Option<f64>,
-    current_log: Option<f64>,
-    center_log: Option<f64>,
-    raw_mad: Option<f64>,
-    effective_mad: Option<f64>,
+    score: Option<Decimal>,
+    current_log: Option<Decimal>,
+    center_log: Option<Decimal>,
+    raw_mad: Option<Decimal>,
+    effective_mad: Option<Decimal>,
     sample_size: usize,
 }
 
@@ -139,9 +140,8 @@ struct AnomalyRow {
 
 pub fn build_work_order_anomaly_sheet(bundle: &FactBundle, config: &PipelineConfig) -> SheetModel {
     let columns = work_order_columns(config);
-    let mut rows = bundle
-        .work_order_fact
-        .iter()
+    let mut rows = analysis_work_order_rows(bundle, config)
+        .into_iter()
         .map(|row| build_anomaly_row(row, config))
         .collect::<Vec<_>>();
     score_rows(&mut rows);
@@ -164,6 +164,33 @@ pub fn build_work_order_anomaly_sheet(bundle: &FactBundle, config: &PipelineConf
         auto_filter: true,
         fixed_width: Some(15.0),
     }
+}
+
+fn analysis_work_order_rows<'a>(
+    bundle: &'a FactBundle,
+    config: &PipelineConfig,
+) -> Vec<&'a TableRow> {
+    if config.product_order.is_empty() {
+        return bundle.work_order_fact.iter().collect();
+    }
+
+    let mut rows = bundle
+        .work_order_fact
+        .iter()
+        .filter_map(|row| {
+            let product_code = text_any(row, &["product_code", "产品编码"]);
+            let product_name = text_any(row, &["product_name", "产品名称"]);
+            // 产品编码可能复用，必须按编码和名称精确匹配，避免错误产品进入异常池。
+            config
+                .product_order
+                .iter()
+                .position(|(code, name)| *code == product_code && *name == product_name)
+                .map(|order_index| (order_index, row))
+        })
+        .collect::<Vec<_>>();
+    // 稳定排序保留同一产品的工单源顺序，同时确保产品块严格遵循白名单顺序。
+    rows.sort_by_key(|(order_index, _)| *order_index);
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
 fn work_order_columns(config: &PipelineConfig) -> Vec<String> {
@@ -321,7 +348,7 @@ fn score_rows(rows: &mut [AnomalyRow]) {
                     );
                     continue;
                 };
-                valid.push((*index, log_value, log_decimal, weight));
+                valid.push((*index, log_decimal, weight));
             }
             if valid.len() < 3 {
                 continue;
@@ -329,10 +356,10 @@ fn score_rows(rows: &mut [AnomalyRow]) {
 
             let weighted_values = valid
                 .iter()
-                .map(|(_, _, log_decimal, weight)| (*log_decimal, *weight))
+                .map(|(_, log_decimal, weight)| (*log_decimal, *weight))
                 .collect::<Vec<_>>();
             let Some(center_decimal) = weighted_median(&weighted_values) else {
-                for (index, _, _, _) in &valid {
+                for (index, _, _) in &valid {
                     push_score_reason(
                         &mut rows[*index],
                         *metric,
@@ -342,7 +369,7 @@ fn score_rows(rows: &mut [AnomalyRow]) {
                 continue;
             };
             let Some(raw_mad_decimal) = weighted_mad(&weighted_values, center_decimal) else {
-                for (index, _, _, _) in &valid {
+                for (index, _, _) in &valid {
                     push_score_reason(
                         &mut rows[*index],
                         *metric,
@@ -351,28 +378,8 @@ fn score_rows(rows: &mut [AnomalyRow]) {
                 }
                 continue;
             };
-            let Some(center_log) = decimal_to_f64(center_decimal) else {
-                for (index, _, _, _) in &valid {
-                    push_score_reason(
-                        &mut rows[*index],
-                        *metric,
-                        "异常池中心值无法转换，不参与 Modified Z-score",
-                    );
-                }
-                continue;
-            };
-            let Some(raw_mad) = decimal_to_f64(raw_mad_decimal) else {
-                for (index, _, _, _) in &valid {
-                    push_score_reason(
-                        &mut rows[*index],
-                        *metric,
-                        "异常池MAD无法转换，不参与 Modified Z-score",
-                    );
-                }
-                continue;
-            };
             let Some(effective_mad) = resolve_effective_log_mad(Some(raw_mad_decimal)) else {
-                for (index, _, _, _) in &valid {
+                for (index, _, _) in &valid {
                     push_score_reason(
                         &mut rows[*index],
                         *metric,
@@ -382,17 +389,25 @@ fn score_rows(rows: &mut [AnomalyRow]) {
                 continue;
             };
 
-            for (index, current_log, _, _) in valid {
-                let score = 0.6745 * (current_log - center_log) / effective_mad;
-                let flag = grade_score(decimal_from_f64(score)).to_string();
+            for (index, current_log, _) in valid {
+                let Some(score) = modified_z_score(current_log, center_decimal, effective_mad)
+                else {
+                    push_score_reason(
+                        &mut rows[index],
+                        *metric,
+                        "有效MAD小于等于0，不参与 Modified Z-score",
+                    );
+                    continue;
+                };
+                let flag = grade_score(Some(score)).to_string();
                 rows[index].audits.insert(
                     metric.key,
                     MetricAudit {
                         flag,
                         score: Some(score),
                         current_log: Some(current_log),
-                        center_log: Some(center_log),
-                        raw_mad: Some(raw_mad),
+                        center_log: Some(center_decimal),
+                        raw_mad: Some(raw_mad_decimal),
                         effective_mad: Some(effective_mad),
                         sample_size: indexes.len(),
                     },
@@ -422,22 +437,29 @@ fn append_non_positive_reasons(rows: &mut [AnomalyRow], metric: Metric) {
 
 fn finalize_row_anomaly(row: &mut AnomalyRow) {
     let mut severity_rank = 0;
-    let mut highest_score = -1.0;
+    let mut highest_score: Option<Decimal> = None;
     let mut highest_source = String::new();
     let mut overall_level = "正常".to_string();
 
     for metric in ANOMALY_METRICS {
         let audit = row.audits.entry(metric.key).or_default();
         let rank = severity_rank_for(&audit.flag);
-        let score_abs = audit.score.map(f64::abs).unwrap_or(-1.0);
-        if rank > severity_rank || (rank == severity_rank && score_abs > highest_score) {
+        let Some(score_abs) = audit.score.map(decimal_abs) else {
+            continue;
+        };
+        if rank > severity_rank
+            || (rank == severity_rank
+                && highest_score
+                    .map(|current| score_abs > current)
+                    .unwrap_or(true))
+        {
             severity_rank = rank;
-            highest_score = score_abs;
+            highest_score = Some(score_abs);
             overall_level = audit.flag.clone();
             highest_source = metric.source_label.to_string();
         } else if rank == severity_rank
             && rank > 0
-            && (score_abs - highest_score).abs() < f64::EPSILON
+            && highest_score == Some(score_abs)
             && !highest_source.is_empty()
             && highest_source != metric.source_label
             && highest_source != "总成本异常"
@@ -470,34 +492,35 @@ fn build_detail_explanation(row: &AnomalyRow) -> String {
             continue;
         }
         let current_value = row.numbers.get(metric.key).copied().unwrap_or(ZERO);
-        let score = audit.score.unwrap_or(0.0);
-        let current_log = audit.current_log.unwrap_or(0.0);
-        let center_log = audit.center_log.unwrap_or(0.0);
+        let score = audit.score.unwrap_or(ZERO);
+        let current_log = audit.current_log.unwrap_or(ZERO);
+        let center_log = audit.center_log.unwrap_or(ZERO);
         let log_delta = current_log - center_log;
-        let baseline_value = center_log.exp();
-        let relative_delta = log_delta.exp_m1();
-        let raw_mad = audit.raw_mad.unwrap_or(0.0);
-        let effective_mad = audit.effective_mad.unwrap_or(0.0);
+        let baseline_value = decimal_to_f64(center_log).map(f64::exp).unwrap_or(0.0);
+        let relative_delta = decimal_to_f64(log_delta).map(f64::exp_m1).unwrap_or(0.0);
+        let raw_mad = audit.raw_mad.unwrap_or(ZERO);
+        let effective_mad = audit.effective_mad.unwrap_or(ZERO);
         parts.push(format!(
-            "{}: {}, 当前值={}, 当前log={:.4}, 基准值={:.2}, 基准log={:.4}, log偏离={:.4}, 相对偏离={}, score={:.2}, 有效工单数={}, 原始MAD={:.4}, 有效MAD={:.4}",
+            "{}: {}, 当前值={}, 当前log={}, 基准值={:.2}, 基准log={}, log偏离={}, 相对偏离={}, score={}, 有效工单数={}, 原始MAD={}, 有效MAD={}",
             metric.explanation_label,
             audit.flag,
             format_decimal_fixed(current_value, 2),
-            current_log,
+            format_decimal_fixed(current_log, 4),
             baseline_value,
-            center_log,
-            log_delta,
+            format_decimal_fixed(center_log, 4),
+            format_decimal_fixed(log_delta, 4),
             format_percent(relative_delta),
-            score,
+            format_decimal_fixed(score, 2),
             audit.sample_size,
-            raw_mad,
-            effective_mad
+            format_decimal_fixed(raw_mad, 4),
+            format_decimal_fixed(effective_mad, 4)
         ));
     }
     parts.join("; ")
 }
 
 fn format_decimal_fixed(value: Decimal, digits: usize) -> String {
+    // 展示层沿用 Python f-string 的舍入口径；评分与阈值判断仍全部使用 Decimal。
     let number = decimal_to_f64(value).unwrap_or(0.0);
     format!("{number:.digits$}")
 }
@@ -568,7 +591,9 @@ fn build_column_types(columns: &[String]) -> BTreeMap<String, String> {
     columns
         .iter()
         .map(|column| {
-            let metric_type = if column == "本期完工数量" {
+            let metric_type = if column == "成本中心" {
+                "text"
+            } else if column == "本期完工数量" {
                 "qty"
             } else if column.contains("单位完工成本") {
                 "price"
@@ -671,6 +696,14 @@ fn decimal_to_f64(value: Decimal) -> Option<f64> {
     value.to_string().parse().ok()
 }
 
+fn decimal_abs(value: Decimal) -> Decimal {
+    if value < ZERO {
+        -value
+    } else {
+        value
+    }
+}
+
 fn severity_rank_for(value: &str) -> i32 {
     match value {
         "高度可疑" => 2,
@@ -723,6 +756,15 @@ mod tests {
     use crate::pipeline::{PipelineConfig, PipelineName};
 
     use super::*;
+
+    const TEST_PRODUCT_ORDER: &[(&str, &str)] = &[("P1", "产品"), ("P-NEAR-MAD", "近零MAD产品")];
+
+    fn test_config(name: PipelineName) -> PipelineConfig {
+        PipelineConfig {
+            product_order: TEST_PRODUCT_ORDER,
+            ..PipelineConfig::for_name(name)
+        }
+    }
 
     fn row(
         order_no: &str,
@@ -822,7 +864,7 @@ mod tests {
     fn work_order_sheet_contains_required_audit_columns() {
         let sheet = build_work_order_anomaly_sheet(
             &bundle(vec![row("WO1", 100, "汇报入库-普通生产", &[])]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &test_config(PipelineName::Gb),
         );
 
         assert_eq!(sheet.sheet_name, "成本分析工单维度");
@@ -833,6 +875,68 @@ mod tests {
         assert_eq!(sheet.freeze_panes, Some("A2".to_string()));
         assert!(sheet.auto_filter);
         assert_eq!(sheet.fixed_width, Some(15.0));
+        assert_eq!(sheet.column_types["成本中心"], "text");
+        assert!(!sheet.number_formats.contains_key("成本中心"));
+    }
+
+    #[test]
+    fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
+        const PRODUCT_ORDER: &[(&str, &str)] = &[("P2", "产品二"), ("P1", "产品一")];
+        let config = PipelineConfig {
+            product_order: PRODUCT_ORDER,
+            ..PipelineConfig::for_name(PipelineName::Gb)
+        };
+        let rows = vec![
+            row(
+                "WO-P1",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("产品编码", CellValue::Text("P1".to_string())),
+                    ("产品名称", CellValue::Text("产品一".to_string())),
+                ],
+            ),
+            row(
+                "WO-WRONG-NAME",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("产品编码", CellValue::Text("P1".to_string())),
+                    ("产品名称", CellValue::Text("名称不匹配".to_string())),
+                ],
+            ),
+            row(
+                "WO-P2",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("产品编码", CellValue::Text("P2".to_string())),
+                    ("产品名称", CellValue::Text("产品二".to_string())),
+                ],
+            ),
+            row(
+                "WO-NOT-LISTED",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("产品编码", CellValue::Text("P3".to_string())),
+                    ("产品名称", CellValue::Text("产品三".to_string())),
+                ],
+            ),
+        ];
+
+        let sheet = build_work_order_anomaly_sheet(&bundle(rows), &config);
+        let product_code_idx = column_index(&sheet, "产品编码");
+
+        assert_eq!(sheet.rows.len(), 2);
+        assert_eq!(
+            sheet.rows[0][product_code_idx],
+            CellValue::Text("P2".to_string())
+        );
+        assert_eq!(
+            sheet.rows[1][product_code_idx],
+            CellValue::Text("P1".to_string())
+        );
     }
 
     #[test]
@@ -847,7 +951,7 @@ mod tests {
                 row("WO115", 115, "汇报入库-普通生产", &[]),
                 row("WO130", 130, "汇报入库-普通生产", &[]),
             ]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &test_config(PipelineName::Gb),
         );
         let level_idx = column_index(&sheet, "异常等级");
         let source_idx = column_index(&sheet, "异常主要来源");
@@ -880,7 +984,7 @@ mod tests {
     fn unknown_doc_type_is_not_analyzable() {
         let sheet = build_work_order_anomaly_sheet(
             &bundle(vec![row("WO1", 100, "其他入库", &[])]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &test_config(PipelineName::Gb),
         );
         let can_analyze_idx = column_index(&sheet, "是否可参与分析");
         let level_idx = column_index(&sheet, "异常等级");
@@ -909,7 +1013,7 @@ mod tests {
                 "汇报入库-普通生产",
                 &[("software_amount", CellValue::Decimal(Decimal::new(5, 0)))],
             )]),
-            &PipelineConfig::for_name(PipelineName::Sk),
+            &test_config(PipelineName::Sk),
         );
 
         assert!(sheet.columns.contains(&"软件费用合计完工金额".to_string()));
@@ -931,7 +1035,7 @@ mod tests {
                 row("WO-R2", 210, "汇报入库-返工生产", &[]),
                 row("WO-R3", 500, "汇报入库-返工生产", &[]),
             ]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &test_config(PipelineName::Gb),
         );
         let level_idx = column_index(&sheet, "异常等级");
         let scope_idx = column_index(&sheet, "生产类型");
@@ -948,6 +1052,28 @@ mod tests {
             sheet.rows[5][scope_idx],
             CellValue::Text("返工生产".to_string())
         );
+    }
+
+    #[test]
+    fn equal_decimal_scores_mark_multiple_non_total_sources() {
+        let config = test_config(PipelineName::Gb);
+        let source = row("WO-TIE", 100, "汇报入库-普通生产", &[]);
+        let mut anomaly_row = build_anomaly_row(&source, &config);
+        for metric_key in ["dm_unit_cost", "dl_unit_cost"] {
+            anomaly_row.audits.insert(
+                metric_key,
+                MetricAudit {
+                    flag: "关注".to_string(),
+                    score: Some(Decimal::new(30, 1)),
+                    ..MetricAudit::default()
+                },
+            );
+        }
+
+        finalize_row_anomaly(&mut anomaly_row);
+
+        assert_eq!(anomaly_row.anomaly_level, "关注");
+        assert_eq!(anomaly_row.anomaly_source, "多项同时异常");
     }
 
     #[test]
@@ -995,7 +1121,7 @@ mod tests {
                     "汇报入库-返工生产",
                 ),
             ]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &test_config(PipelineName::Gb),
         );
         let level_idx = column_index(&sheet, "异常等级");
         let detail_idx = column_index(&sheet, "异常明细解释");

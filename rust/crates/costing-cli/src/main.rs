@@ -3,13 +3,32 @@ mod run;
 
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{error::ErrorKind, Parser};
 use costing_core::{model::ErrorSummary, CostingError, ErrorCode};
 
 use args::CliArgs;
 
 fn main() -> ExitCode {
-    let args = CliArgs::parse();
+    let args = match CliArgs::try_parse() {
+        Ok(args) => args,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            print!("{error}");
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            return emit_error(ErrorSummary {
+                status: "failed".to_string(),
+                code: ErrorCode::InvalidInput,
+                message: error.to_string(),
+                retryable: false,
+            });
+        }
+    };
     match run::run(args) {
         Ok(summary) => {
             println!(
@@ -33,11 +52,15 @@ fn main() -> ExitCode {
                     message: error.to_string(),
                     retryable: false,
                 });
-            eprintln!(
-                "{}",
-                serde_json::to_string_pretty(&error_summary).expect("serialize error summary")
-            );
-            ExitCode::FAILURE
+            emit_error(error_summary)
         }
     }
+}
+
+fn emit_error(error_summary: ErrorSummary) -> ExitCode {
+    eprintln!(
+        "{}",
+        serde_json::to_string_pretty(&error_summary).expect("serialize error summary")
+    );
+    ExitCode::FAILURE
 }

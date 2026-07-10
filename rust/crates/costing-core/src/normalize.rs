@@ -330,15 +330,16 @@ fn normalize_cli_month(
     };
 
     let trimmed = value.trim();
-    if trimmed.len() != 7 || &trimmed[4..5] != "-" {
+    let Some((year, month)) = trimmed.split_once('-') else {
         return Err(CostingError::invalid_input(format!(
             "{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"
         )));
-    }
-
-    let year = &trimmed[0..4];
-    let month = &trimmed[5..7];
-    if !year.chars().all(|ch| ch.is_ascii_digit()) || !month.chars().all(|ch| ch.is_ascii_digit()) {
+    };
+    if year.len() != 4
+        || month.len() != 2
+        || !year.chars().all(|ch| ch.is_ascii_digit())
+        || !month.chars().all(|ch| ch.is_ascii_digit())
+    {
         return Err(CostingError::invalid_input(format!(
             "{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"
         )));
@@ -692,6 +693,13 @@ mod tests {
     #[test]
     fn build_month_range_rejects_non_strict_cli_value() {
         let error = build_month_range(Some("2025年01期"), None).unwrap_err();
+        assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn build_month_range_rejects_non_ascii_value_without_panicking() {
+        // 7 个 UTF-8 字节且第 4 字节位于中文字符内部，可覆盖历史字节切片 panic。
+        let error = build_month_range(Some("123中a"), None).unwrap_err();
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
     }
 }

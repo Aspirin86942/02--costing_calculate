@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use crate::anomaly::build_work_order_anomaly_sheet;
 use crate::error::CostingError;
 use crate::fact::{build_qty_sheet_rows, qty_sheet_columns};
-use crate::model::{CellValue, FactBundle, SheetModel, StageTimings, TableRow, WorkbookPayload};
+use crate::model::{
+    CellValue, FactBundle, IndexedFactRow, SheetModel, StageTimings, WorkbookPayload,
+};
 use crate::pipeline::PipelineConfig;
 use crate::quality::build_quality_metrics;
-use crate::sheet_contract::detail_sheet_columns;
+use crate::table::{ColumnId, ColumnSchema, IndexedRow, ProjectionPlan};
 
 const PRODUCT_DIMENSION_SHEET: &str = "成本分析产品维度";
 const DETAIL_TWO_DECIMAL_COLUMNS: &[&str] = &["本期完工单位成本", "本期完工金额"];
@@ -39,30 +41,39 @@ pub fn build_workbook_payload(
     timings: StageTimings,
     month_filter_empty_result: bool,
 ) -> Result<WorkbookPayload, CostingError> {
-    let quality_metrics = build_quality_metrics(&bundle, month_filter_empty_result);
-    let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config);
-    let detail_columns = detail_sheet_columns(&bundle.detail_columns);
-    let qty_columns = qty_sheet_columns(&bundle.qty_columns, config);
+    let quality_metrics = build_quality_metrics(&bundle, month_filter_empty_result)?;
+    let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config)?;
+    let detail_columns = column_names(&bundle.schema, &bundle.detail_display_columns)?;
+    let qty_base_columns = column_names(&bundle.schema, &bundle.qty_display_columns)?;
+    let qty_columns = qty_sheet_columns(&qty_base_columns, config);
 
     let FactBundle {
-        detail_fact,
-        qty_fact,
+        schema,
+        detail_display_columns,
+        detail_rows,
+        qty_display_columns,
+        qty_rows,
         error_issues,
         ..
     } = bundle;
     let detail_sheet = build_flat_sheet(
         "成本计算单总表",
+        &schema,
+        &detail_display_columns,
         detail_columns,
-        detail_fact,
+        detail_rows,
         detail_number_format_columns,
-    );
-    let qty_rows = build_qty_sheet_rows(qty_fact, config);
-    let qty_sheet = build_flat_sheet(
+    )?;
+    let qty_rows = build_qty_sheet_rows(qty_rows, &schema, config)?;
+    let qty_sheet = build_qty_sheet(
         "成本计算单数量聚合维度",
+        &schema,
+        &qty_display_columns,
+        qty_base_columns.len(),
         qty_columns,
         qty_rows,
         qty_number_format_columns,
-    );
+    )?;
     let sheets = vec![detail_sheet, qty_sheet, work_order_sheet];
     ensure_no_product_dimension(&sheets)?;
     let error_log_count = error_issues.len();
@@ -78,20 +89,18 @@ pub fn build_workbook_payload(
 
 fn build_flat_sheet(
     sheet_name: &str,
+    schema: &ColumnSchema,
+    display_columns: &[ColumnId],
     columns: Vec<String>,
-    rows: Vec<TableRow>,
+    rows: Vec<IndexedRow>,
     number_format_columns: fn(&[String]) -> Vec<String>,
-) -> SheetModel {
+) -> Result<SheetModel, CostingError> {
+    let plan = ProjectionPlan::new(schema, display_columns)?;
     let sheet_rows = rows
         .into_iter()
-        .map(|mut row| {
-            columns
-                .iter()
-                .map(|column| row.values.remove(column).unwrap_or(CellValue::Blank))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    SheetModel {
+        .map(|row| plan.project_row(row))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(SheetModel {
         sheet_name: sheet_name.to_string(),
         column_types: build_column_types(&columns),
         number_formats: build_number_formats(&number_format_columns(&columns)),
@@ -100,7 +109,54 @@ fn build_flat_sheet(
         freeze_panes: Some("A2".to_string()),
         auto_filter: true,
         fixed_width: Some(15.0),
+    })
+}
+
+fn build_qty_sheet(
+    sheet_name: &str,
+    schema: &ColumnSchema,
+    display_columns: &[ColumnId],
+    base_column_count: usize,
+    columns: Vec<String>,
+    rows: Vec<IndexedFactRow>,
+    number_format_columns: fn(&[String]) -> Vec<String>,
+) -> Result<SheetModel, CostingError> {
+    let plan = ProjectionPlan::new(schema, display_columns)?;
+    let derived_columns = &columns[base_column_count..];
+    let mut sheet_rows = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        let mut derived = Vec::with_capacity(derived_columns.len());
+        for column in derived_columns {
+            derived.push(match row.take_named(schema, column)? {
+                Some(value) => value,
+                None => CellValue::Blank,
+            });
+        }
+        let (source, _) = row.into_parts();
+        let mut cells = plan.project_row(source)?;
+        cells.extend(derived);
+        sheet_rows.push(cells);
     }
+    Ok(SheetModel {
+        sheet_name: sheet_name.to_string(),
+        column_types: build_column_types(&columns),
+        number_formats: build_number_formats(&number_format_columns(&columns)),
+        columns,
+        rows: sheet_rows,
+        freeze_panes: Some("A2".to_string()),
+        auto_filter: true,
+        fixed_width: Some(15.0),
+    })
+}
+
+fn column_names(
+    schema: &ColumnSchema,
+    display_columns: &[ColumnId],
+) -> Result<Vec<String>, CostingError> {
+    display_columns
+        .iter()
+        .map(|id| schema.name(*id).map(str::to_string))
+        .collect()
 }
 
 fn build_column_types(columns: &[String]) -> BTreeMap<String, String> {
@@ -155,45 +211,108 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use crate::model::{CellValue, ErrorIssue, FactBundle, StageTimings, TableRow};
+    use crate::model::{CellValue, ErrorIssue, FactBundle, IndexedFactRow, StageTimings};
     use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::sheet_contract::{detail_sheet_columns, qty_sheet_base_columns};
+    use crate::table::IndexedTable;
 
     use super::*;
 
-    fn row(values: &[(&str, CellValue)]) -> TableRow {
-        TableRow {
-            values: values
-                .iter()
-                .map(|(key, value)| ((*key).to_string(), value.clone()))
-                .collect::<BTreeMap<_, _>>(),
+    type NamedTestRow = BTreeMap<String, CellValue>;
+
+    fn row(values: &[(&str, CellValue)]) -> NamedTestRow {
+        values
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect()
+    }
+
+    fn test_bundle(
+        columns: Vec<String>,
+        detail: Vec<NamedTestRow>,
+        qty: Vec<NamedTestRow>,
+        work_order: Vec<NamedTestRow>,
+        error_issues: Vec<ErrorIssue>,
+    ) -> FactBundle {
+        let detail_len = detail.len();
+        let qty_len = qty.len();
+        let named_rows = detail
+            .iter()
+            .chain(&qty)
+            .chain(&work_order)
+            .cloned()
+            .collect::<Vec<_>>();
+        let positional = named_rows
+            .iter()
+            .map(|named| {
+                columns
+                    .iter()
+                    .map(|column| named.get(column).cloned().unwrap_or(CellValue::Blank))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let table = IndexedTable::from_raw(columns.clone(), positional).unwrap();
+        let (schema, _, mut indexed_rows) = table.into_parts();
+        let qty_and_work = indexed_rows.split_off(detail_len);
+        let (qty_rows, work_order_rows) = qty_and_work.split_at(qty_len);
+        let to_fact = |source: crate::table::IndexedRow, named: &NamedTestRow| {
+            let mut fact = IndexedFactRow::new(source);
+            for (name, value) in named {
+                if schema.optional(name).is_none() {
+                    fact.insert_derived(name, value.clone());
+                }
+            }
+            fact
+        };
+        let qty_rows = qty_rows
+            .iter()
+            .cloned()
+            .zip(&qty)
+            .map(|(source, named)| to_fact(source, named))
+            .collect();
+        let work_order_rows = work_order_rows
+            .iter()
+            .cloned()
+            .zip(&work_order)
+            .map(|(source, named)| to_fact(source, named))
+            .collect();
+        let detail_names = detail_sheet_columns(&columns);
+        let qty_names = qty_sheet_base_columns(&columns);
+        FactBundle {
+            detail_display_columns: schema.display_order_for(&detail_names).unwrap(),
+            qty_display_columns: schema.display_order_for(&qty_names).unwrap(),
+            schema,
+            detail_rows: indexed_rows,
+            qty_input_row_count: qty_len,
+            filtered_invalid_qty_count: 0,
+            filtered_missing_total_amount_count: 0,
+            qty_rows,
+            work_order_rows,
+            duplicate_work_order_row_count: 0,
+            error_issues,
         }
     }
 
     fn bundle() -> FactBundle {
-        FactBundle {
-            detail_columns: vec![
+        test_bundle(
+            vec![
                 "月份".to_string(),
                 "成本中心名称".to_string(),
                 "成本项目名称".to_string(),
+                "产品编码".to_string(),
+                "产品名称".to_string(),
+                "工单编号".to_string(),
+                "工单行号".to_string(),
                 "本期完工金额".to_string(),
+                "本期完工数量".to_string(),
             ],
-            detail_fact: vec![row(&[
+            vec![row(&[
                 ("月份", CellValue::Text("2025年01期".to_string())),
                 ("成本中心名称", CellValue::Text("成型车间".to_string())),
                 ("成本项目名称", CellValue::Text("直接材料".to_string())),
                 ("本期完工金额", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
-            qty_columns: vec![
-                "月份".to_string(),
-                "成本中心名称".to_string(),
-                "成本项目名称".to_string(),
-                "本期完工数量".to_string(),
-                "本期完工金额".to_string(),
-            ],
-            qty_input_row_count: 1,
-            filtered_invalid_qty_count: 0,
-            filtered_missing_total_amount_count: 0,
-            qty_fact: vec![row(&[
+            vec![row(&[
                 ("月份", CellValue::Text("2025年01期".to_string())),
                 ("产品编码", CellValue::Text("P1".to_string())),
                 ("产品名称", CellValue::Text("产品".to_string())),
@@ -206,7 +325,7 @@ mod tests {
                 ),
                 ("dm_amount", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
-            work_order_fact: vec![row(&[
+            vec![row(&[
                 ("月份", CellValue::Text("2025年01期".to_string())),
                 ("产品编码", CellValue::Text("P1".to_string())),
                 ("产品名称", CellValue::Text("产品".to_string())),
@@ -220,7 +339,7 @@ mod tests {
                 ),
                 ("dm_amount", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
-            error_issues: vec![ErrorIssue {
+            vec![ErrorIssue {
                 row_id: "row-1".to_string(),
                 issue_type: "MISSING_AMOUNT".to_string(),
                 field_name: "本期完工金额".to_string(),
@@ -229,31 +348,23 @@ mod tests {
                 action: "filled zero".to_string(),
                 retryable: false,
             }],
-        }
+        )
     }
 
     fn empty_bundle_with_schema() -> FactBundle {
-        FactBundle {
-            detail_columns: vec![
+        test_bundle(
+            vec![
                 "月份".to_string(),
                 "成本中心名称".to_string(),
                 "成本项目名称".to_string(),
-                "本期完工金额".to_string(),
-            ],
-            detail_fact: Vec::new(),
-            qty_columns: vec![
-                "月份".to_string(),
-                "成本中心名称".to_string(),
                 "本期完工数量".to_string(),
                 "本期完工金额".to_string(),
             ],
-            qty_input_row_count: 0,
-            filtered_invalid_qty_count: 0,
-            filtered_missing_total_amount_count: 0,
-            qty_fact: Vec::new(),
-            work_order_fact: Vec::new(),
-            error_issues: Vec::new(),
-        }
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     fn bundle_with_internal_schema_columns() -> FactBundle {
@@ -272,17 +383,7 @@ mod tests {
             "本期完工数量".to_string(),
             "本期完工金额".to_string(),
         ];
-        FactBundle {
-            detail_columns: columns.clone(),
-            detail_fact: Vec::new(),
-            qty_columns: columns,
-            qty_input_row_count: 0,
-            filtered_invalid_qty_count: 0,
-            filtered_missing_total_amount_count: 0,
-            qty_fact: Vec::new(),
-            work_order_fact: Vec::new(),
-            error_issues: Vec::new(),
-        }
+        test_bundle(columns, Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
     #[test]
@@ -315,7 +416,7 @@ mod tests {
     fn payload_preserves_error_log_and_sheet_cells_when_consuming_bundle() {
         let source = bundle();
         let expected_error_log = source.error_issues.clone();
-        let expected_detail_rows = source.detail_fact.len();
+        let expected_detail_rows = source.detail_row_count();
 
         let payload = build_workbook_payload(
             source,
@@ -366,7 +467,13 @@ mod tests {
         let detail = &payload.sheet_models[0];
         assert_eq!(
             detail.columns,
-            vec!["月份", "成本中心名称", "成本项目名称", "本期完工金额"]
+            vec![
+                "月份",
+                "成本中心名称",
+                "成本项目名称",
+                "本期完工数量",
+                "本期完工金额"
+            ]
         );
         assert!(detail.rows.is_empty());
 

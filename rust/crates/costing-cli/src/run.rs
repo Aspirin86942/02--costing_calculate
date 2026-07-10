@@ -52,7 +52,7 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
     let normalized = measure(&mut timings, "normalize", || {
         Ok::<_, anyhow::Error>(normalize_workbook(raw, &pipeline, month_range)?)
     })?;
-    let month_filter_empty_result = month_filter_requested && normalized.rows.is_empty();
+    let month_filter_empty_result = month_filter_requested && normalized.is_empty();
     let split = measure(&mut timings, "split", || {
         Ok::<_, anyhow::Error>(split_detail_and_qty(normalized)?)
     })?;

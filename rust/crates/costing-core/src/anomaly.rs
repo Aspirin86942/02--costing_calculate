@@ -2,12 +2,14 @@ use std::collections::BTreeMap;
 
 use rust_decimal::Decimal;
 
-use crate::model::{CellValue, FactBundle, SheetModel, TableRow};
+use crate::error::CostingError;
+use crate::model::{CellValue, FactBundle, IndexedFactRow, SheetModel};
 use crate::pipeline::PipelineConfig;
 use crate::scoring::{
     decimal_ln, grade_score, modified_z_score, resolve_effective_log_mad, weighted_mad,
     weighted_median,
 };
+use crate::table::ColumnSchema;
 
 const ZERO: Decimal = Decimal::ZERO;
 const NORMAL_SCOPE: &str = "正常生产";
@@ -127,7 +129,7 @@ struct MetricAudit {
 }
 
 struct AnomalyRow<'a> {
-    source: &'a TableRow,
+    source: &'a IndexedFactRow,
     numbers: BTreeMap<String, Decimal>,
     production_scope: String,
     can_analyze: bool,
@@ -138,78 +140,79 @@ struct AnomalyRow<'a> {
     detail_explanation: String,
 }
 
-pub fn build_work_order_anomaly_sheet(bundle: &FactBundle, config: &PipelineConfig) -> SheetModel {
+pub fn build_work_order_anomaly_sheet(
+    bundle: &FactBundle,
+    config: &PipelineConfig,
+) -> Result<SheetModel, CostingError> {
     let columns = work_order_columns(config);
-    let mut rows = analysis_work_order_rows(bundle, config)
+    let mut rows = analysis_work_order_rows(bundle, config)?
         .into_iter()
-        .map(|row| build_anomaly_row(row, config))
-        .collect::<Vec<_>>();
-    score_rows(&mut rows);
+        .map(|row| build_anomaly_row(row, &bundle.schema, config))
+        .collect::<Result<Vec<_>, _>>()?;
+    score_rows(&mut rows, &bundle.schema)?;
 
-    SheetModel {
+    Ok(SheetModel {
         sheet_name: "成本分析工单维度".to_string(),
         rows: rows
             .iter()
             .map(|row| {
                 columns
                     .iter()
-                    .map(|column| map_work_order_value(row, column, config))
-                    .collect()
+                    .map(|column| map_work_order_value(row, &bundle.schema, column, config))
+                    .collect::<Result<Vec<_>, _>>()
             })
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()?,
         column_types: build_column_types(&columns),
         number_formats: build_number_formats(&columns),
         columns,
         freeze_panes: Some("A2".to_string()),
         auto_filter: true,
         fixed_width: Some(15.0),
-    }
+    })
 }
 
 fn analysis_work_order_rows<'a>(
     bundle: &'a FactBundle,
     config: &PipelineConfig,
-) -> Vec<&'a TableRow> {
+) -> Result<Vec<&'a IndexedFactRow>, CostingError> {
     if config.product_order.is_empty() {
-        return bundle.work_order_fact.iter().collect();
+        return Ok(bundle.work_order_rows.iter().collect());
     }
 
-    let mut rows = bundle
-        .work_order_fact
-        .iter()
-        .filter_map(|row| {
-            let product_code = text_any(row, &["product_code", "产品编码"]);
-            let product_name = text_any(row, &["product_name", "产品名称"]);
-            // 产品编码可能复用，必须按编码和名称精确匹配，避免错误产品进入异常池。
-            config
-                .product_order
-                .iter()
-                .position(|(code, name)| *code == product_code && *name == product_name)
-                .map(|order_index| (order_index, row))
-        })
-        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    for row in &bundle.work_order_rows {
+        let product_code = text_any(&bundle.schema, row, &["product_code", "产品编码"])?;
+        let product_name = text_any(&bundle.schema, row, &["product_name", "产品名称"])?;
+        // 产品编码可能复用，必须按编码和名称精确匹配，避免错误产品进入异常池。
+        if let Some(order_index) = config
+            .product_order
+            .iter()
+            .position(|(code, name)| *code == product_code && *name == product_name)
+        {
+            rows.push((
+                order_index,
+                text_any(&bundle.schema, row, &["period_display", "月份", "period"])?,
+                text_any(&bundle.schema, row, &["order_no", "工单编号"])?,
+                text_any(&bundle.schema, row, &["order_line", "工单行", "工单行号"])?,
+                row,
+            ));
+        }
+    }
     // Python 展示契约在白名单顺序内继续按月份、工单号和数值工单行排序。
-    rows.sort_by(|(left_order, left_row), (right_order, right_row)| {
-        left_order
-            .cmp(right_order)
-            .then_with(|| {
-                compare_text_field(left_row, right_row, &["period_display", "月份", "period"])
-            })
-            .then_with(|| compare_text_field(left_row, right_row, &["order_no", "工单编号"]))
-            .then_with(|| compare_order_line(left_row, right_row))
-    });
-    rows.into_iter().map(|(_, row)| row).collect()
+    rows.sort_by(
+        |(left_order, left_period, left_number, left_line, _),
+         (right_order, right_period, right_number, right_line, _)| {
+            left_order
+                .cmp(right_order)
+                .then_with(|| left_period.trim().cmp(right_period.trim()))
+                .then_with(|| left_number.trim().cmp(right_number.trim()))
+                .then_with(|| compare_order_line_text(left_line, right_line))
+        },
+    );
+    Ok(rows.into_iter().map(|(_, _, _, _, row)| row).collect())
 }
 
-fn compare_text_field(left: &TableRow, right: &TableRow, keys: &[&str]) -> std::cmp::Ordering {
-    text_any(left, keys)
-        .trim()
-        .cmp(text_any(right, keys).trim())
-}
-
-fn compare_order_line(left: &TableRow, right: &TableRow) -> std::cmp::Ordering {
-    let left_text = text_any(left, &["order_line", "工单行", "工单行号"]);
-    let right_text = text_any(right, &["order_line", "工单行", "工单行号"]);
+fn compare_order_line_text(left_text: &str, right_text: &str) -> std::cmp::Ordering {
     match (
         left_text.trim().parse::<Decimal>(),
         right_text.trim().parse::<Decimal>(),
@@ -245,57 +248,62 @@ fn insert_before(columns: &mut Vec<String>, marker: &str, value: &str) {
     columns.insert(index, value.to_string());
 }
 
-fn build_anomaly_row<'a>(row: &'a TableRow, config: &PipelineConfig) -> AnomalyRow<'a> {
-    let completed_qty = decimal(row, "completed_qty").unwrap_or(ZERO);
-    let completed_total = decimal(row, "completed_amount_total").unwrap_or(ZERO);
+fn build_anomaly_row<'a>(
+    row: &'a IndexedFactRow,
+    schema: &ColumnSchema,
+    config: &PipelineConfig,
+) -> Result<AnomalyRow<'a>, CostingError> {
+    let completed_qty = decimal(schema, row, "completed_qty")?.unwrap_or(ZERO);
+    let completed_total = decimal(schema, row, "completed_amount_total")?.unwrap_or(ZERO);
     let mut numbers = BTreeMap::from([
         ("completed_qty".to_string(), completed_qty),
         ("completed_amount_total".to_string(), completed_total),
         (
             "dm_amount".to_string(),
-            decimal(row, "dm_amount").unwrap_or(ZERO),
+            decimal(schema, row, "dm_amount")?.unwrap_or(ZERO),
         ),
         (
             "dl_amount".to_string(),
-            decimal(row, "dl_amount").unwrap_or(ZERO),
+            decimal(schema, row, "dl_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_amount".to_string(),
-            decimal(row, "moh_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_other_amount".to_string(),
-            decimal(row, "moh_other_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_other_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_labor_amount".to_string(),
-            decimal(row, "moh_labor_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_labor_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_consumables_amount".to_string(),
-            decimal(row, "moh_consumables_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_consumables_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_depreciation_amount".to_string(),
-            decimal(row, "moh_depreciation_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_depreciation_amount")?.unwrap_or(ZERO),
         ),
         (
             "moh_utilities_amount".to_string(),
-            decimal(row, "moh_utilities_amount").unwrap_or(ZERO),
+            decimal(schema, row, "moh_utilities_amount")?.unwrap_or(ZERO),
         ),
     ]);
 
     insert_unit_costs(&mut numbers, completed_qty);
     for item in config.standalone_cost_items {
         let meta = standalone_meta(item);
-        let amount = decimal(row, meta.amount_key).unwrap_or(ZERO);
+        let amount = decimal(schema, row, meta.amount_key)?.unwrap_or(ZERO);
         numbers.insert(meta.amount_key.to_string(), amount);
         if let Some(unit_cost) = safe_divide(amount, completed_qty) {
             numbers.insert(meta.unit_key.to_string(), unit_cost);
         }
     }
 
-    let production_scope = map_doc_type_to_scope(&text_any(row, &["doc_type", "单据类型"]));
+    let production_scope =
+        map_doc_type_to_scope(&text_any(schema, row, &["doc_type", "单据类型"])?);
     let mut reasons = Vec::new();
     if production_scope == UNKNOWN_SCOPE {
         reasons.push("单据类型未归类，不参与正常生产/返工生产异常池".to_string());
@@ -305,7 +313,7 @@ fn build_anomaly_row<'a>(row: &'a TableRow, config: &PipelineConfig) -> AnomalyR
         && total_unit_cost > ZERO
         && matches!(production_scope.as_str(), NORMAL_SCOPE | REWORK_SCOPE);
 
-    AnomalyRow {
+    Ok(AnomalyRow {
         source: row,
         numbers,
         production_scope,
@@ -315,7 +323,7 @@ fn build_anomaly_row<'a>(row: &'a TableRow, config: &PipelineConfig) -> AnomalyR
         anomaly_level: "正常".to_string(),
         anomaly_source: String::new(),
         detail_explanation: String::new(),
-    }
+    })
 }
 
 fn insert_unit_costs(numbers: &mut BTreeMap<String, Decimal>, completed_qty: Decimal) {
@@ -340,7 +348,7 @@ fn insert_unit_costs(numbers: &mut BTreeMap<String, Decimal>, completed_qty: Dec
     }
 }
 
-fn score_rows(rows: &mut [AnomalyRow<'_>]) {
+fn score_rows(rows: &mut [AnomalyRow<'_>], schema: &ColumnSchema) -> Result<(), CostingError> {
     for metric in ANOMALY_METRICS {
         append_non_positive_reasons(rows, *metric);
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -348,7 +356,10 @@ fn score_rows(rows: &mut [AnomalyRow<'_>]) {
             if !row.can_analyze || !positive_number(row, metric.key) {
                 continue;
             }
-            groups.entry(group_key(row)).or_default().push(index);
+            groups
+                .entry(group_key(row, schema)?)
+                .or_default()
+                .push(index);
         }
 
         for indexes in groups.values() {
@@ -447,6 +458,7 @@ fn score_rows(rows: &mut [AnomalyRow<'_>]) {
     for row in rows {
         finalize_row_anomaly(row);
     }
+    Ok(())
 }
 
 fn push_score_reason(row: &mut AnomalyRow<'_>, metric: Metric, reason: &str) {
@@ -557,17 +569,22 @@ fn format_percent(value: f64) -> String {
     format!("{:.2}%", value * 100.0)
 }
 
-fn map_work_order_value(row: &AnomalyRow<'_>, column: &str, config: &PipelineConfig) -> CellValue {
-    match column {
-        "月份" => value_any(&row.source, &["period_display", "月份", "年期"]),
-        "成本中心" => value_any(&row.source, &["cost_center", "成本中心名称"]),
-        "产品编码" => value_any(&row.source, &["product_code", "产品编码"]),
-        "产品名称" => value_any(&row.source, &["product_name", "产品名称"]),
-        "规格型号" => value_any(&row.source, &["spec", "规格型号"]),
-        "工单编号" => value_any(&row.source, &["order_no", "工单编号"]),
-        "工单行" => value_any(&row.source, &["order_line", "工单行号"]),
+fn map_work_order_value(
+    row: &AnomalyRow<'_>,
+    schema: &ColumnSchema,
+    column: &str,
+    config: &PipelineConfig,
+) -> Result<CellValue, CostingError> {
+    Ok(match column {
+        "月份" => value_any(schema, row.source, &["period_display", "月份", "年期"])?,
+        "成本中心" => value_any(schema, row.source, &["cost_center", "成本中心名称"])?,
+        "产品编码" => value_any(schema, row.source, &["product_code", "产品编码"])?,
+        "产品名称" => value_any(schema, row.source, &["product_name", "产品名称"])?,
+        "规格型号" => value_any(schema, row.source, &["spec", "规格型号"])?,
+        "工单编号" => value_any(schema, row.source, &["order_no", "工单编号"])?,
+        "工单行" => value_any(schema, row.source, &["order_line", "工单行号"])?,
         "生产类型" => CellValue::Text(row.production_scope.clone()),
-        "基本单位" => value_any(&row.source, &["unit", "基本单位"]),
+        "基本单位" => value_any(schema, row.source, &["unit", "基本单位"])?,
         "本期完工数量" => decimal_value(row, "completed_qty"),
         "总完工成本" => decimal_value(row, "completed_amount_total"),
         "直接材料合计完工金额" => decimal_value(row, "dm_amount"),
@@ -599,7 +616,7 @@ fn map_work_order_value(row: &AnomalyRow<'_>, column: &str, config: &PipelineCon
         "异常明细解释" => CellValue::Text(row.detail_explanation.clone()),
         "复核原因" => CellValue::Text(row.reasons.join(";")),
         other => standalone_display_value(row, other, config),
-    }
+    })
 }
 
 fn standalone_display_value(
@@ -652,13 +669,13 @@ fn build_number_formats(columns: &[String]) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn group_key(row: &AnomalyRow<'_>) -> String {
-    format!(
+fn group_key(row: &AnomalyRow<'_>, schema: &ColumnSchema) -> Result<String, CostingError> {
+    Ok(format!(
         "{}|{}|{}",
-        text_any(&row.source, &["product_code", "产品编码"]),
-        text_any(&row.source, &["product_name", "产品名称"]),
+        text_any(schema, row.source, &["product_code", "产品编码"])?,
+        text_any(schema, row.source, &["product_name", "产品名称"])?,
         row.production_scope
-    )
+    ))
 }
 
 fn positive_number(row: &AnomalyRow<'_>, key: &str) -> bool {
@@ -676,20 +693,38 @@ fn decimal_value(row: &AnomalyRow<'_>, key: &str) -> CellValue {
         .unwrap_or(CellValue::Blank)
 }
 
-fn value_any(row: &TableRow, keys: &[&str]) -> CellValue {
-    keys.iter()
-        .find_map(|key| row.values.get(*key).cloned())
-        .unwrap_or(CellValue::Blank)
+fn value_any(
+    schema: &ColumnSchema,
+    row: &IndexedFactRow,
+    keys: &[&str],
+) -> Result<CellValue, CostingError> {
+    for key in keys {
+        if let Some(value) = row.get_named(schema, key)? {
+            return Ok(value.clone());
+        }
+    }
+    Ok(CellValue::Blank)
 }
 
-fn text_any(row: &TableRow, keys: &[&str]) -> String {
-    keys.iter()
-        .find_map(|key| row.values.get(*key).map(cell_to_text))
-        .unwrap_or_default()
+fn text_any(
+    schema: &ColumnSchema,
+    row: &IndexedFactRow,
+    keys: &[&str],
+) -> Result<String, CostingError> {
+    for key in keys {
+        if let Some(value) = row.get_named(schema, key)? {
+            return Ok(cell_to_text(value));
+        }
+    }
+    Ok(String::new())
 }
 
-fn decimal(row: &TableRow, key: &str) -> Option<Decimal> {
-    row.values.get(key).and_then(cell_to_decimal)
+fn decimal(
+    schema: &ColumnSchema,
+    row: &IndexedFactRow,
+    key: &str,
+) -> Result<Option<Decimal>, CostingError> {
+    Ok(row.get_named(schema, key)?.and_then(cell_to_decimal))
 }
 
 fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
@@ -784,12 +819,14 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use crate::model::{CellValue, ErrorIssue, FactBundle, TableRow};
+    use crate::model::{CellValue, ErrorIssue, FactBundle, IndexedFactRow};
     use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::table::IndexedTable;
 
     use super::*;
 
     const TEST_PRODUCT_ORDER: &[(&str, &str)] = &[("P1", "产品"), ("P-NEAR-MAD", "近零MAD产品")];
+    type NamedTestRow = BTreeMap<String, CellValue>;
 
     fn test_config(name: PipelineName) -> PipelineConfig {
         PipelineConfig {
@@ -803,7 +840,7 @@ mod tests {
         unit_cost: i64,
         doc_type: &str,
         extra: &[(&str, CellValue)],
-    ) -> TableRow {
+    ) -> NamedTestRow {
         let mut values = BTreeMap::from([
             (
                 "月份".to_string(),
@@ -838,19 +875,38 @@ mod tests {
         for (key, value) in extra {
             values.insert((*key).to_string(), value.clone());
         }
-        TableRow { values }
+        values
     }
 
-    fn bundle(rows: Vec<TableRow>) -> FactBundle {
+    fn bundle(rows: Vec<NamedTestRow>) -> FactBundle {
+        let mut columns = Vec::new();
+        for column in rows.iter().flat_map(BTreeMap::keys) {
+            if !columns.contains(column) {
+                columns.push(column.clone());
+            }
+        }
+        let positional = rows
+            .into_iter()
+            .map(|mut named| {
+                columns
+                    .iter()
+                    .map(|column| named.remove(column).unwrap_or(CellValue::Blank))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let table = IndexedTable::from_raw(columns, positional).unwrap();
+        let (schema, display, rows) = table.into_parts();
         FactBundle {
-            detail_columns: Vec::new(),
-            detail_fact: vec![],
-            qty_columns: Vec::new(),
+            schema,
+            detail_display_columns: Vec::new(),
+            detail_rows: vec![],
+            qty_display_columns: display,
             qty_input_row_count: 0,
             filtered_invalid_qty_count: 0,
             filtered_missing_total_amount_count: 0,
-            qty_fact: vec![],
-            work_order_fact: rows,
+            qty_rows: vec![],
+            work_order_rows: rows.into_iter().map(IndexedFactRow::new).collect(),
+            duplicate_work_order_row_count: 0,
             error_issues: Vec::<ErrorIssue>::new(),
         }
     }
@@ -862,11 +918,11 @@ mod tests {
         qty: &str,
         unit_cost: &str,
         doc_type: &str,
-    ) -> TableRow {
+    ) -> NamedTestRow {
         let qty = Decimal::from_str(qty).unwrap();
         let unit_cost = Decimal::from_str(unit_cost).unwrap();
         let total_amount = qty * unit_cost;
-        let mut values = row(order_no, 1, doc_type, &[]).values;
+        let mut values = row(order_no, 1, doc_type, &[]);
         values.insert(
             "产品编码".to_string(),
             CellValue::Text(product_code.to_string()),
@@ -881,7 +937,7 @@ mod tests {
             CellValue::Decimal(total_amount),
         );
         values.insert("dm_amount".to_string(), CellValue::Decimal(total_amount));
-        TableRow { values }
+        values
     }
 
     fn column_index(sheet: &SheetModel, column: &str) -> usize {
@@ -897,7 +953,8 @@ mod tests {
         let sheet = build_work_order_anomaly_sheet(
             &bundle(vec![row("WO1", 100, "汇报入库-普通生产", &[])]),
             &test_config(PipelineName::Gb),
-        );
+        )
+        .unwrap();
 
         assert_eq!(sheet.sheet_name, "成本分析工单维度");
         assert!(sheet.columns.contains(&"异常等级".to_string()));
@@ -957,7 +1014,7 @@ mod tests {
             ),
         ];
 
-        let sheet = build_work_order_anomaly_sheet(&bundle(rows), &config);
+        let sheet = build_work_order_anomaly_sheet(&bundle(rows), &config).unwrap();
         let product_code_idx = column_index(&sheet, "产品编码");
 
         assert_eq!(sheet.rows.len(), 2);
@@ -1003,7 +1060,8 @@ mod tests {
             ),
         ];
 
-        let sheet = build_work_order_anomaly_sheet(&bundle(rows), &test_config(PipelineName::Gb));
+        let sheet =
+            build_work_order_anomaly_sheet(&bundle(rows), &test_config(PipelineName::Gb)).unwrap();
         let month_index = column_index(&sheet, "月份");
         let order_index = column_index(&sheet, "工单编号");
         let order_line_index = column_index(&sheet, "工单行");
@@ -1051,7 +1109,8 @@ mod tests {
                 row("WO130", 130, "汇报入库-普通生产", &[]),
             ]),
             &test_config(PipelineName::Gb),
-        );
+        )
+        .unwrap();
         let level_idx = column_index(&sheet, "异常等级");
         let source_idx = column_index(&sheet, "异常主要来源");
         let detail_idx = column_index(&sheet, "异常明细解释");
@@ -1084,7 +1143,8 @@ mod tests {
         let sheet = build_work_order_anomaly_sheet(
             &bundle(vec![row("WO1", 100, "其他入库", &[])]),
             &test_config(PipelineName::Gb),
-        );
+        )
+        .unwrap();
         let can_analyze_idx = column_index(&sheet, "是否可参与分析");
         let level_idx = column_index(&sheet, "异常等级");
         let reason_idx = column_index(&sheet, "复核原因");
@@ -1113,7 +1173,8 @@ mod tests {
                 &[("software_amount", CellValue::Decimal(Decimal::new(5, 0)))],
             )]),
             &test_config(PipelineName::Sk),
-        );
+        )
+        .unwrap();
 
         assert!(sheet.columns.contains(&"软件费用合计完工金额".to_string()));
         assert!(sheet.columns.contains(&"软件费用单位完工成本".to_string()));
@@ -1135,7 +1196,8 @@ mod tests {
                 row("WO-R3", 500, "汇报入库-返工生产", &[]),
             ]),
             &test_config(PipelineName::Gb),
-        );
+        )
+        .unwrap();
         let level_idx = column_index(&sheet, "异常等级");
         let scope_idx = column_index(&sheet, "生产类型");
 
@@ -1157,7 +1219,9 @@ mod tests {
     fn equal_decimal_scores_mark_multiple_non_total_sources() {
         let config = test_config(PipelineName::Gb);
         let source = row("WO-TIE", 100, "汇报入库-普通生产", &[]);
-        let mut anomaly_row = build_anomaly_row(&source, &config);
+        let bundle = bundle(vec![source]);
+        let mut anomaly_row =
+            build_anomaly_row(&bundle.work_order_rows[0], &bundle.schema, &config).unwrap();
         for metric_key in ["dm_unit_cost", "dl_unit_cost"] {
             anomaly_row.audits.insert(
                 metric_key,
@@ -1221,7 +1285,8 @@ mod tests {
                 ),
             ]),
             &test_config(PipelineName::Gb),
-        );
+        )
+        .unwrap();
         let level_idx = column_index(&sheet, "异常等级");
         let detail_idx = column_index(&sheet, "异常明细解释");
 
@@ -1242,5 +1307,24 @@ mod tests {
             panic!("detail explanation should be text");
         };
         assert!(detail.contains("score="));
+    }
+
+    #[test]
+    fn foreign_schema_row_error_is_propagated() {
+        let named = row("WO1", 100, "汇报入库-普通生产", &[]);
+        let mut bundle = bundle(vec![named.clone()]);
+        let columns = named.keys().cloned().collect::<Vec<_>>();
+        let cells = columns
+            .iter()
+            .map(|column| named.get(column).cloned().unwrap())
+            .collect::<Vec<_>>();
+        let foreign = IndexedTable::from_raw(columns, vec![cells]).unwrap();
+        let (_, _, mut rows) = foreign.into_parts();
+        bundle.work_order_rows = vec![IndexedFactRow::new(rows.pop().unwrap())];
+
+        let error =
+            build_work_order_anomaly_sheet(&bundle, &test_config(PipelineName::Gb)).unwrap_err();
+
+        assert_eq!(error.code(), crate::error::ErrorCode::InternalError);
     }
 }

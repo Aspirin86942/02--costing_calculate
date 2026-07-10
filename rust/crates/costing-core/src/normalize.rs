@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::error::CostingError;
-use crate::model::{CellValue, MonthRange, NormalizedCostFrame, RawWorkbook, TableRow};
+use crate::model::{CellValue, MonthRange, NormalizedCostFrame, RawWorkbook};
 use crate::pipeline::PipelineConfig;
+use crate::table::{ColumnId, ColumnSchema, DerivedColumnPosition, IndexedRow, IndexedTable};
 
 const PERIOD_COLUMN: &str = "年期";
 const MONTH_COLUMN: &str = "月份";
@@ -29,6 +30,46 @@ const FILL_COLUMNS: &[&str] = &[
 const VENDOR_COLUMNS: &[&str] = &["供应商编码", "供应商名称"];
 const KEY_COLUMNS: &[&str] = &[MONTH_COLUMN, "产品编码", "工单编号", "工单行号"];
 
+#[derive(Debug, Clone, Copy)]
+struct ResolvedFillColumn {
+    id: ColumnId,
+    is_vendor: bool,
+}
+
+struct NormalizeColumns {
+    period: Option<ColumnId>,
+    month: Option<ColumnId>,
+    cost_center: Option<ColumnId>,
+    cost_item: Option<ColumnId>,
+    total_row_columns: [Option<ColumnId>; 3],
+    fill_columns: Vec<ResolvedFillColumn>,
+}
+
+impl NormalizeColumns {
+    fn resolve(schema: &ColumnSchema) -> Self {
+        Self {
+            period: schema.optional(PERIOD_COLUMN),
+            month: schema.optional(MONTH_COLUMN),
+            cost_center: schema.optional(COST_CENTER_COLUMN),
+            cost_item: schema.optional(COST_ITEM_COLUMN),
+            total_row_columns: [
+                schema.optional(PERIOD_COLUMN),
+                schema.optional(MONTH_COLUMN),
+                schema.optional(COST_CENTER_COLUMN),
+            ],
+            fill_columns: FILL_COLUMNS
+                .iter()
+                .filter_map(|name| {
+                    schema.optional(name).map(|id| ResolvedFillColumn {
+                        id,
+                        is_vendor: VENDOR_COLUMNS.contains(name),
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
 pub fn build_month_range(
     month_start: Option<&str>,
     month_end: Option<&str>,
@@ -48,35 +89,42 @@ pub fn normalize_workbook(
     _config: &PipelineConfig,
     month_range: Option<MonthRange>,
 ) -> Result<NormalizedCostFrame, CostingError> {
-    let normalized_range = match month_range {
-        Some(range) => Some(normalize_month_range(range)?),
-        None => None,
+    let normalized_range = month_range.map(normalize_month_range).transpose()?;
+    let mut source_names = flatten_headers(&raw.header_rows);
+    normalize_key_column_names(&mut source_names);
+    let mut table = IndexedTable::from_raw(source_names, raw.rows)?;
+    let columns = NormalizeColumns::resolve(table.schema());
+
+    table.try_retain_rows(|row| Ok(!is_total_row(row, &columns)?))?;
+    forward_fill_with_rules(&mut table, &columns)?;
+
+    let month_id = if let Some(period_id) = columns.period {
+        let values = derive_month_values(table.rows(), period_id)?;
+        Some(table.ensure_or_reuse_derived_column(
+            MONTH_COLUMN,
+            DerivedColumnPosition::AfterFirstSourceName(PERIOD_COLUMN),
+            values,
+        )?)
+    } else {
+        columns.month
     };
 
-    let mut columns = flatten_headers(&raw.header_rows);
-    normalize_key_column_names(&mut columns);
-    let mut rows = rows_to_maps(&columns, raw.rows);
-
-    rows.retain(|row| !is_total_row(row));
-    forward_fill_with_rules(&mut rows);
-    insert_month_column(&mut columns, &mut rows);
-    insert_filled_cost_item_column(&mut columns, &mut rows);
+    let filled_values = derive_filled_cost_item_values(table.rows(), columns.cost_item)?;
+    table.ensure_or_reuse_derived_column(
+        FILLED_COST_ITEM_COLUMN,
+        DerivedColumnPosition::End,
+        filled_values,
+    )?;
 
     if let Some(range) = normalized_range.as_ref() {
         // 月份过滤统一走 YYYY-MM 键，避免展示格式差异影响边界命中。
-        rows.retain(|row| month_in_range(row, range));
+        table.try_retain_rows(|row| month_in_range(row, month_id, columns.period, range))?;
     }
 
-    let key_columns = KEY_COLUMNS
-        .iter()
-        .map(|column| (*column).to_string())
-        .collect();
-
-    Ok(NormalizedCostFrame {
-        columns,
-        rows,
-        key_columns,
-    })
+    Ok(NormalizedCostFrame::new(
+        table,
+        KEY_COLUMNS.iter().map(|name| (*name).to_string()).collect(),
+    ))
 }
 
 pub fn flatten_headers(header_rows: &[Vec<String>; 2]) -> Vec<String> {
@@ -148,122 +196,80 @@ fn infer_rename_map(columns: &[String]) -> BTreeMap<String, String> {
     rename_map
 }
 
-fn rows_to_maps(columns: &[String], rows: Vec<Vec<CellValue>>) -> Vec<TableRow> {
-    rows.into_iter()
-        .map(|row| {
-            let values = columns
-                .iter()
-                .enumerate()
-                .map(|(index, column)| {
-                    (
-                        column.clone(),
-                        row.get(index).cloned().unwrap_or(CellValue::Blank),
-                    )
+fn is_total_row(row: &IndexedRow, columns: &NormalizeColumns) -> Result<bool, CostingError> {
+    for id in columns.total_row_columns.iter().flatten().copied() {
+        if cell_text(row.get(id)?).contains("合计") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn forward_fill_with_rules(
+    table: &mut IndexedTable,
+    columns: &NormalizeColumns,
+) -> Result<(), CostingError> {
+    let mut last_values = vec![None; columns.fill_columns.len()];
+    table.try_update_rows(|row| {
+        for (index, column) in columns.fill_columns.iter().enumerate() {
+            let current = row.get(column.id)?.clone();
+            let integrated_row = columns
+                .cost_center
+                .map(|id| {
+                    row.get(id)
+                        .map(|value| cell_text(value) == INTEGRATED_WORKSHOP_NAME)
                 })
-                .collect::<BTreeMap<_, _>>();
-            TableRow { values }
-        })
-        .collect()
-}
-
-fn is_total_row(row: &TableRow) -> bool {
-    [PERIOD_COLUMN, MONTH_COLUMN, COST_CENTER_COLUMN]
-        .iter()
-        .filter_map(|column| row.values.get(*column))
-        .any(|value| cell_text(value).contains("合计"))
-}
-
-fn forward_fill_with_rules(rows: &mut [TableRow]) {
-    let mut last_values: BTreeMap<String, CellValue> = BTreeMap::new();
-
-    for row in rows.iter_mut() {
-        for column in FILL_COLUMNS {
-            if !row.values.contains_key(*column) {
-                continue;
-            }
-
-            let key = (*column).to_string();
-            let current = row.values.get(*column).cloned().unwrap_or(CellValue::Blank);
-            let is_vendor_column = VENDOR_COLUMNS.contains(column);
-            let integrated_row = row
-                .values
-                .get(COST_CENTER_COLUMN)
-                .map(|value| cell_text(value) == INTEGRATED_WORKSHOP_NAME)
+                .transpose()?
                 .unwrap_or(false);
 
             if is_blank_like(&current) {
-                if is_vendor_column && integrated_row {
+                if column.is_vendor && integrated_row {
                     continue;
                 }
-                if let Some(previous) = last_values.get(*column).cloned() {
-                    row.values.insert(key, previous);
+                if let Some(previous) = last_values[index].clone() {
+                    row.replace(column.id, previous)?;
                 }
                 continue;
             }
 
-            if is_vendor_column && integrated_row {
+            if column.is_vendor && integrated_row {
                 // 集成车间行不能成为供应商向下填充的种子，避免跨工单串值。
                 continue;
             }
-
-            last_values.insert(key, current);
+            last_values[index] = Some(current);
         }
-    }
+        Ok(())
+    })
 }
 
-fn insert_month_column(columns: &mut Vec<String>, rows: &mut [TableRow]) {
-    let Some(period_index) = columns.iter().position(|column| column == PERIOD_COLUMN) else {
-        return;
-    };
-
-    if !columns.iter().any(|column| column == MONTH_COLUMN) {
-        columns.insert(period_index + 1, MONTH_COLUMN.to_string());
-    }
-
-    for row in rows.iter_mut() {
-        let month_value = row
-            .values
-            .get(PERIOD_COLUMN)
-            .map(format_period_value)
-            .unwrap_or(CellValue::Blank);
-        row.values.insert(MONTH_COLUMN.to_string(), month_value);
-    }
+fn derive_month_values(
+    rows: &[IndexedRow],
+    period: ColumnId,
+) -> Result<Vec<CellValue>, CostingError> {
+    rows.iter()
+        .map(|row| row.get(period).map(format_period_value))
+        .collect()
 }
 
-fn insert_filled_cost_item_column(columns: &mut Vec<String>, rows: &mut [TableRow]) {
-    if !columns
-        .iter()
-        .any(|column| column == FILLED_COST_ITEM_COLUMN)
-    {
-        columns.push(FILLED_COST_ITEM_COLUMN.to_string());
-    }
-
-    if !columns.iter().any(|column| column == COST_ITEM_COLUMN) {
-        for row in rows.iter_mut() {
-            row.values
-                .insert(FILLED_COST_ITEM_COLUMN.to_string(), CellValue::Blank);
-        }
-        return;
-    }
-
+fn derive_filled_cost_item_values(
+    rows: &[IndexedRow],
+    cost_item: Option<ColumnId>,
+) -> Result<Vec<CellValue>, CostingError> {
     let mut last_cost_item: Option<CellValue> = None;
-    for row in rows.iter_mut() {
-        let current = row
-            .values
-            .get(COST_ITEM_COLUMN)
-            .cloned()
+    let mut values = Vec::with_capacity(rows.len());
+    for row in rows {
+        let current = cost_item
+            .map(|id| row.get(id).cloned())
+            .transpose()?
             .unwrap_or(CellValue::Blank);
-        if is_blank_like(&current) {
-            row.values.insert(
-                FILLED_COST_ITEM_COLUMN.to_string(),
-                last_cost_item.clone().unwrap_or(CellValue::Blank),
-            );
-        } else {
+        if !is_blank_like(&current) {
             last_cost_item = Some(current.clone());
-            row.values
-                .insert(FILLED_COST_ITEM_COLUMN.to_string(), current);
+            values.push(current);
+        } else {
+            values.push(last_cost_item.clone().unwrap_or(CellValue::Blank));
         }
     }
+    Ok(values)
 }
 
 fn format_period_value(value: &CellValue) -> CellValue {
@@ -283,14 +289,22 @@ fn format_period_value(value: &CellValue) -> CellValue {
     CellValue::Text(text)
 }
 
-fn month_in_range(row: &TableRow, range: &MonthRange) -> bool {
-    let normalized = row
-        .values
-        .get(MONTH_COLUMN)
-        .and_then(normalize_period_key)
-        .or_else(|| row.values.get(PERIOD_COLUMN).and_then(normalize_period_key));
+fn month_in_range(
+    row: &IndexedRow,
+    month: Option<ColumnId>,
+    period: Option<ColumnId>,
+    range: &MonthRange,
+) -> Result<bool, CostingError> {
+    let normalized = month
+        .map(|id| row.get(id).map(normalize_period_key))
+        .transpose()?
+        .flatten()
+        .or(period
+            .map(|id| row.get(id).map(normalize_period_key))
+            .transpose()?
+            .flatten());
 
-    match normalized {
+    Ok(match normalized {
         None => false,
         Some(period) => {
             let after_start = range
@@ -305,7 +319,7 @@ fn month_in_range(row: &TableRow, range: &MonthRange) -> bool {
                 .unwrap_or(true);
             after_start && before_end
         }
-    }
+    })
 }
 
 fn normalize_month_range(range: MonthRange) -> Result<MonthRange, CostingError> {
@@ -398,6 +412,22 @@ mod tests {
     use super::*;
     use crate::pipeline::{PipelineConfig, PipelineName};
 
+    fn raw_table(columns: &[&str], rows: Vec<Vec<CellValue>>) -> RawWorkbook {
+        RawWorkbook {
+            sheet_name: "成本计算单".to_string(),
+            header_rows: [
+                vec![String::new(); columns.len()],
+                columns.iter().map(|name| (*name).to_string()).collect(),
+            ],
+            rows,
+        }
+    }
+
+    fn value(frame: &NormalizedCostFrame, row_index: usize, column: &str) -> CellValue {
+        let id = frame.table.schema().require(column).unwrap();
+        frame.table.rows()[row_index].get(id).unwrap().clone()
+    }
+
     fn raw_with_vendor_rows() -> RawWorkbook {
         RawWorkbook {
             sheet_name: "成本计算单".to_string(),
@@ -441,10 +471,10 @@ mod tests {
         let config = PipelineConfig::for_name(PipelineName::Gb);
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
         assert_eq!(
-            normalized.rows[1].values["产品编码"],
+            value(&normalized, 1, "产品编码"),
             CellValue::Text("P1".to_string())
         );
-        assert_eq!(normalized.rows[1].values["供应商编码"], CellValue::Blank);
+        assert_eq!(value(&normalized, 1, "供应商编码"), CellValue::Blank);
     }
 
     #[test]
@@ -495,7 +525,7 @@ mod tests {
 
         let normalized = normalize_workbook(raw, &config, None).unwrap();
         assert_eq!(
-            normalized.rows[2].values["供应商编码"],
+            value(&normalized, 2, "供应商编码"),
             CellValue::Text("V001".to_string())
         );
     }
@@ -512,7 +542,7 @@ mod tests {
             CellValue::Blank,
         ]);
         let normalized = normalize_workbook(raw, &config, None).unwrap();
-        assert_eq!(normalized.rows.len(), 2);
+        assert_eq!(normalized.row_count(), 2);
     }
 
     #[test]
@@ -557,20 +587,14 @@ mod tests {
 
         let normalized = normalize_workbook(raw, &config, None).unwrap();
 
-        assert!(normalized
-            .columns
-            .iter()
-            .any(|column| column == "子项物料编码"));
-        assert!(normalized
-            .columns
-            .iter()
-            .any(|column| column == "成本项目名称"));
+        assert!(normalized.table.schema().optional("子项物料编码").is_some());
+        assert!(normalized.table.schema().optional("成本项目名称").is_some());
         assert_eq!(
-            normalized.rows[0].values["子项物料编码"],
+            value(&normalized, 0, "子项物料编码"),
             CellValue::Text("MAT-1".to_string())
         );
         assert_eq!(
-            normalized.rows[0].values["成本项目名称"],
+            value(&normalized, 0, "成本项目名称"),
             CellValue::Text("制造费用".to_string())
         );
     }
@@ -593,11 +617,12 @@ mod tests {
         let normalized = normalize_workbook(raw, &config, None).unwrap();
 
         assert!(normalized
-            .columns
-            .iter()
-            .any(|column| column == FILLED_COST_ITEM_COLUMN));
+            .table
+            .schema()
+            .optional(FILLED_COST_ITEM_COLUMN)
+            .is_some());
         assert_eq!(
-            normalized.rows[0].values[FILLED_COST_ITEM_COLUMN],
+            value(&normalized, 0, FILLED_COST_ITEM_COLUMN),
             CellValue::Blank
         );
     }
@@ -608,7 +633,7 @@ mod tests {
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
 
         assert_eq!(
-            normalized.key_columns,
+            normalized.key_columns(),
             vec![
                 "月份".to_string(),
                 "产品编码".to_string(),
@@ -622,10 +647,12 @@ mod tests {
     fn adds_month_column_after_period_column() {
         let config = PipelineConfig::for_name(PipelineName::Gb);
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
-        assert_eq!(normalized.columns[1], "月份");
+        let (schema, display, rows) = normalized.into_table().into_parts();
+        assert_eq!(schema.name(display[1]).unwrap(), "月份");
+        let month = schema.require("月份").unwrap();
         assert_eq!(
-            normalized.rows[0].values["月份"],
-            CellValue::Text("2025年01期".to_string())
+            rows[0].get(month).unwrap(),
+            &CellValue::Text("2025年01期".to_string())
         );
     }
 
@@ -647,7 +674,7 @@ mod tests {
         let normalized = normalize_workbook(raw, &config, None).unwrap();
 
         assert_eq!(
-            normalized.rows[0].values["月份"],
+            value(&normalized, 0, "月份"),
             CellValue::Text("2025年07期".to_string())
         );
     }
@@ -683,9 +710,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(normalized.rows.len(), 1);
+        assert_eq!(normalized.row_count(), 1);
         assert_eq!(
-            normalized.rows[0].values["工单编号"],
+            value(&normalized, 0, "工单编号"),
             CellValue::Text("WO-2".to_string())
         );
     }
@@ -701,5 +728,174 @@ mod tests {
         // 7 个 UTF-8 字节且第 4 字节位于中文字符内部，可覆盖历史字节切片 panic。
         let error = build_month_range(Some("123中a"), None).unwrap_err();
         assert_eq!(error.code(), crate::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn fills_cost_item_from_previous_non_blank_row() {
+        let frame = normalize_workbook(
+            raw_table(
+                &["成本项目名称"],
+                vec![
+                    vec![CellValue::Text("直接人工".to_string())],
+                    vec![CellValue::Blank],
+                ],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, _, rows) = frame.into_table().into_parts();
+        let filled = schema.require(FILLED_COST_ITEM_COLUMN).unwrap();
+
+        assert_eq!(
+            rows[1].get(filled).unwrap(),
+            &CellValue::Text("直接人工".to_string())
+        );
+    }
+
+    #[test]
+    fn alias_collision_uses_last_physical_column() {
+        let frame = normalize_workbook(
+            raw_table(
+                &["物料编码", "物料编码"],
+                vec![vec![
+                    CellValue::Text("FIRST".to_string()),
+                    CellValue::Text("LAST".to_string()),
+                ]],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, _, rows) = frame.into_table().into_parts();
+        let material = schema.require(CHILD_MATERIAL_COLUMN).unwrap();
+
+        assert_eq!(
+            rows[0].get(material).unwrap(),
+            &CellValue::Text("LAST".to_string())
+        );
+    }
+
+    #[test]
+    fn existing_month_column_reuses_last_slot_without_moving_display_position() {
+        let frame = normalize_workbook(
+            raw_table(
+                &["年期", "月份", "月份"],
+                vec![vec![
+                    CellValue::Text("2025年07期".to_string()),
+                    CellValue::Text("first".to_string()),
+                    CellValue::Text("last".to_string()),
+                ]],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, display, rows) = frame.into_table().into_parts();
+        let display_names = display
+            .iter()
+            .map(|id| schema.name(*id).unwrap())
+            .collect::<Vec<_>>();
+        let month = schema.require(MONTH_COLUMN).unwrap();
+
+        assert_eq!(display_names[..3], ["年期", "月份", "月份"]);
+        assert_eq!(schema.len(), 4);
+        assert_eq!(
+            rows[0].get(month).unwrap(),
+            &CellValue::Text("2025年07期".to_string())
+        );
+    }
+
+    #[test]
+    fn missing_period_column_does_not_add_or_overwrite_month() {
+        let frame = normalize_workbook(
+            raw_table(
+                &["月份"],
+                vec![vec![CellValue::Text("manual-month".to_string())]],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, display, rows) = frame.into_table().into_parts();
+        let month = schema.require(MONTH_COLUMN).unwrap();
+
+        assert_eq!(schema.len(), 2);
+        assert_eq!(schema.name(display[0]).unwrap(), MONTH_COLUMN);
+        assert_eq!(
+            rows[0].get(month).unwrap(),
+            &CellValue::Text("manual-month".to_string())
+        );
+    }
+
+    #[test]
+    fn duplicate_period_column_inserts_month_after_first_name_and_reads_last_slot() {
+        let frame = normalize_workbook(
+            raw_table(
+                &["年期", "年期", "成本中心名称"],
+                vec![vec![
+                    CellValue::Text("2025年01期".to_string()),
+                    CellValue::Text("2025年02期".to_string()),
+                    CellValue::Text("车间".to_string()),
+                ]],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, display, rows) = frame.into_table().into_parts();
+        let display_names = display
+            .iter()
+            .map(|id| schema.name(*id).unwrap())
+            .collect::<Vec<_>>();
+        let month = schema.require(MONTH_COLUMN).unwrap();
+
+        assert_eq!(display_names[..3], ["年期", "月份", "年期"]);
+        assert_eq!(
+            rows[0].get(month).unwrap(),
+            &CellValue::Text("2025年02期".to_string())
+        );
+        assert_eq!(schema.len(), 5);
+    }
+
+    #[test]
+    fn existing_filled_cost_item_reuses_last_slot_without_appending() {
+        let frame = normalize_workbook(
+            raw_table(
+                &[
+                    COST_ITEM_COLUMN,
+                    FILLED_COST_ITEM_COLUMN,
+                    FILLED_COST_ITEM_COLUMN,
+                ],
+                vec![vec![
+                    CellValue::Text("直接人工".to_string()),
+                    CellValue::Text("first".to_string()),
+                    CellValue::Text("last".to_string()),
+                ]],
+            ),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            None,
+        )
+        .unwrap();
+        let (schema, display, rows) = frame.into_table().into_parts();
+        let display_names = display
+            .iter()
+            .map(|id| schema.name(*id).unwrap())
+            .collect::<Vec<_>>();
+        let filled = schema.require(FILLED_COST_ITEM_COLUMN).unwrap();
+
+        assert_eq!(
+            display_names,
+            [
+                COST_ITEM_COLUMN,
+                FILLED_COST_ITEM_COLUMN,
+                FILLED_COST_ITEM_COLUMN
+            ]
+        );
+        assert_eq!(schema.len(), 3);
+        assert_eq!(
+            rows[0].get(filled).unwrap(),
+            &CellValue::Text("直接人工".to_string())
+        );
     }
 }

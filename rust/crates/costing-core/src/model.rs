@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
+use crate::error::CostingError;
 use crate::error::ErrorCode;
+use crate::table::{ColumnId, ColumnSchema, IndexedRow, IndexedTable};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -32,24 +34,73 @@ pub struct RawWorkbook {
     pub rows: Vec<Vec<CellValue>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct TableRow {
-    pub values: BTreeMap<String, CellValue>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug)]
 pub struct NormalizedCostFrame {
-    pub columns: Vec<String>,
-    pub rows: Vec<TableRow>,
-    pub key_columns: Vec<String>,
+    pub(crate) table: IndexedTable,
+    key_columns: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+impl NormalizedCostFrame {
+    pub(crate) fn new(table: IndexedTable, key_columns: Vec<String>) -> Self {
+        Self { table, key_columns }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.table.rows().is_empty()
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.table.rows().len()
+    }
+
+    pub fn key_columns(&self) -> &[String] {
+        &self.key_columns
+    }
+
+    pub(crate) fn into_table(self) -> IndexedTable {
+        self.table
+    }
+}
+
+#[derive(Debug)]
 pub struct SplitResult {
-    pub detail_columns: Vec<String>,
-    pub detail_rows: Vec<TableRow>,
-    pub qty_columns: Vec<String>,
-    pub qty_rows: Vec<TableRow>,
+    pub(crate) schema: ColumnSchema,
+    pub(crate) detail_display_columns: Vec<ColumnId>,
+    pub(crate) detail_rows: Vec<IndexedRow>,
+    pub(crate) qty_display_columns: Vec<ColumnId>,
+    pub(crate) qty_rows: Vec<IndexedRow>,
+}
+
+impl SplitResult {
+    pub(crate) fn schema(&self) -> &ColumnSchema {
+        &self.schema
+    }
+
+    pub(crate) fn detail_rows(&self) -> &[IndexedRow] {
+        &self.detail_rows
+    }
+
+    pub(crate) fn qty_rows(&self) -> &[IndexedRow] {
+        &self.qty_rows
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        ColumnSchema,
+        Vec<ColumnId>,
+        Vec<IndexedRow>,
+        Vec<ColumnId>,
+        Vec<IndexedRow>,
+    ) {
+        (
+            self.schema,
+            self.detail_display_columns,
+            self.detail_rows,
+            self.qty_display_columns,
+            self.qty_rows,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,17 +114,88 @@ pub struct ErrorIssue {
     pub retryable: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedFactRow {
+    pub(crate) source: IndexedRow,
+    pub(crate) derived_values: BTreeMap<String, CellValue>,
+}
+
+impl IndexedFactRow {
+    pub(crate) fn new(source: IndexedRow) -> Self {
+        Self {
+            source,
+            derived_values: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn get_named<'a>(
+        &'a self,
+        schema: &ColumnSchema,
+        name: &str,
+    ) -> Result<Option<&'a CellValue>, CostingError> {
+        if let Some(value) = self.derived_values.get(name) {
+            return Ok(Some(value));
+        }
+        schema
+            .optional(name)
+            .map(|id| self.source.get(id))
+            .transpose()
+    }
+
+    pub(crate) fn insert_derived(
+        &mut self,
+        name: impl Into<String>,
+        value: CellValue,
+    ) -> Option<CellValue> {
+        self.derived_values.insert(name.into(), value)
+    }
+
+    pub(crate) fn take_named(
+        &mut self,
+        schema: &ColumnSchema,
+        name: &str,
+    ) -> Result<Option<CellValue>, CostingError> {
+        if let Some(value) = self.derived_values.remove(name) {
+            return Ok(Some(value));
+        }
+        schema
+            .optional(name)
+            .map(|id| self.source.take(id))
+            .transpose()
+    }
+
+    pub(crate) fn into_parts(self) -> (IndexedRow, BTreeMap<String, CellValue>) {
+        (self.source, self.derived_values)
+    }
+}
+
+#[derive(Debug)]
 pub struct FactBundle {
-    pub detail_columns: Vec<String>,
-    pub detail_fact: Vec<TableRow>,
-    pub qty_columns: Vec<String>,
-    pub qty_input_row_count: usize,
-    pub filtered_invalid_qty_count: usize,
-    pub filtered_missing_total_amount_count: usize,
-    pub qty_fact: Vec<TableRow>,
-    pub work_order_fact: Vec<TableRow>,
-    pub error_issues: Vec<ErrorIssue>,
+    pub(crate) schema: ColumnSchema,
+    pub(crate) detail_display_columns: Vec<ColumnId>,
+    pub(crate) detail_rows: Vec<IndexedRow>,
+    pub(crate) qty_display_columns: Vec<ColumnId>,
+    pub(crate) qty_input_row_count: usize,
+    pub(crate) filtered_invalid_qty_count: usize,
+    pub(crate) filtered_missing_total_amount_count: usize,
+    pub(crate) qty_rows: Vec<IndexedFactRow>,
+    pub(crate) work_order_rows: Vec<IndexedFactRow>,
+    pub(crate) duplicate_work_order_row_count: usize,
+    pub(crate) error_issues: Vec<ErrorIssue>,
+}
+
+impl FactBundle {
+    pub(crate) fn detail_row_count(&self) -> usize {
+        self.detail_rows.len()
+    }
+
+    pub(crate) fn qty_row_count(&self) -> usize {
+        self.qty_rows.len()
+    }
+
+    pub(crate) fn work_order_row_count(&self) -> usize {
+        self.work_order_rows.len()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

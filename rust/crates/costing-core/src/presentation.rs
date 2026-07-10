@@ -2,10 +2,8 @@ use std::collections::BTreeMap;
 
 use crate::anomaly::build_work_order_anomaly_sheet;
 use crate::error::CostingError;
-use crate::fact::{build_qty_sheet_rows, qty_sheet_columns};
-use crate::model::{
-    CellValue, FactBundle, IndexedFactRow, SheetModel, StageTimings, WorkbookPayload,
-};
+use crate::fact::qty_sheet_columns;
+use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel, StageTimings, WorkbookPayload};
 use crate::pipeline::PipelineConfig;
 use crate::quality::build_quality_metrics;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, ProjectionPlan};
@@ -64,14 +62,14 @@ pub fn build_workbook_payload(
         detail_rows,
         detail_number_format_columns,
     )?;
-    let qty_rows = build_qty_sheet_rows(qty_rows, &schema, config)?;
-    let qty_sheet = build_qty_sheet(
+    let qty_sheet = build_typed_qty_sheet(
         "成本计算单数量聚合维度",
         &schema,
         &qty_display_columns,
         qty_base_columns.len(),
         qty_columns,
         qty_rows,
+        config,
         qty_number_format_columns,
     )?;
     let sheets = vec![detail_sheet, qty_sheet, work_order_sheet];
@@ -112,28 +110,22 @@ fn build_flat_sheet(
     })
 }
 
-fn build_qty_sheet(
+fn build_typed_qty_sheet(
     sheet_name: &str,
     schema: &ColumnSchema,
     display_columns: &[ColumnId],
     base_column_count: usize,
     columns: Vec<String>,
-    rows: Vec<IndexedFactRow>,
+    rows: Vec<QtyFactRow>,
+    config: &PipelineConfig,
     number_format_columns: fn(&[String]) -> Vec<String>,
 ) -> Result<SheetModel, CostingError> {
     let plan = ProjectionPlan::new(schema, display_columns)?;
-    let derived_columns = &columns[base_column_count..];
     let mut sheet_rows = Vec::with_capacity(rows.len());
-    for mut row in rows {
-        let mut derived = Vec::with_capacity(derived_columns.len());
-        for column in derived_columns {
-            derived.push(match row.take_named(schema, column)? {
-                Some(value) => value,
-                None => CellValue::Blank,
-            });
-        }
-        let (source, _) = row.into_parts();
-        let mut cells = plan.project_row(source)?;
+    for row in rows {
+        let mut derived = Vec::with_capacity(columns.len() - base_column_count);
+        append_typed_qty_cells(&mut derived, &row, config);
+        let mut cells = plan.project_row(row.source)?;
         cells.extend(derived);
         sheet_rows.push(cells);
     }
@@ -147,6 +139,79 @@ fn build_qty_sheet(
         auto_filter: true,
         fixed_width: Some(15.0),
     })
+}
+
+fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: &PipelineConfig) {
+    let amounts = &row.amounts;
+    for amount in [
+        amounts.direct_material,
+        amounts.direct_labor,
+        amounts.manufacturing_overhead,
+        amounts.moh_other,
+        amounts.moh_labor,
+        amounts.moh_consumables,
+        amounts.moh_depreciation,
+        amounts.moh_utilities,
+    ] {
+        cells.push(CellValue::Decimal(amount));
+    }
+    for index in 0..config.standalone_cost_items.len() {
+        cells.push(CellValue::Decimal(amounts.standalone_amount(index)));
+    }
+
+    for amount in [
+        amounts.direct_material,
+        amounts.direct_labor,
+        amounts.manufacturing_overhead,
+        amounts.moh_other,
+        amounts.moh_labor,
+        amounts.moh_consumables,
+        amounts.moh_depreciation,
+        amounts.moh_utilities,
+    ] {
+        cells.push(decimal_or_blank(safe_divide(amount, row.completed_qty)));
+    }
+    for index in 0..config.standalone_cost_items.len() {
+        cells.push(decimal_or_blank(safe_divide(
+            amounts.standalone_amount(index),
+            row.completed_qty,
+        )));
+    }
+
+    cells.push(CellValue::Text(yes_no(row.moh_matches).to_string()));
+    cells.push(CellValue::Text(yes_no(row.total_matches).to_string()));
+    cells.push(CellValue::Text(
+        if row.check_reason.is_empty() {
+            "通过"
+        } else {
+            "需复核"
+        }
+        .to_string(),
+    ));
+    cells.push(CellValue::Text(row.check_reason.clone()));
+}
+
+fn safe_divide(
+    numerator: rust_decimal::Decimal,
+    denominator: rust_decimal::Decimal,
+) -> Option<rust_decimal::Decimal> {
+    if denominator == rust_decimal::Decimal::ZERO {
+        None
+    } else {
+        numerator.checked_div(denominator)
+    }
+}
+
+fn decimal_or_blank(value: Option<rust_decimal::Decimal>) -> CellValue {
+    value.map(CellValue::Decimal).unwrap_or(CellValue::Blank)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "是"
+    } else {
+        "否"
+    }
 }
 
 fn column_names(
@@ -211,7 +276,7 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use crate::model::{CellValue, ErrorIssue, FactBundle, IndexedFactRow, StageTimings};
+    use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow, StageTimings};
     use crate::pipeline::{PipelineConfig, PipelineName};
     use crate::sheet_contract::{detail_sheet_columns, qty_sheet_base_columns};
     use crate::table::IndexedTable;
@@ -236,10 +301,21 @@ mod tests {
     ) -> FactBundle {
         let detail_len = detail.len();
         let qty_len = qty.len();
+        let unique_work_order_count = work_order.len().min(qty_len);
+        let merged_qty = qty
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let mut merged = row.clone();
+                if let Some(extra) = work_order.get(index) {
+                    merged.extend(extra.clone());
+                }
+                merged
+            })
+            .collect::<Vec<_>>();
         let named_rows = detail
             .iter()
-            .chain(&qty)
-            .chain(&work_order)
+            .chain(&merged_qty)
             .cloned()
             .collect::<Vec<_>>();
         let positional = named_rows
@@ -253,28 +329,33 @@ mod tests {
             .collect::<Vec<_>>();
         let table = IndexedTable::from_raw(columns.clone(), positional).unwrap();
         let (schema, _, mut indexed_rows) = table.into_parts();
-        let qty_and_work = indexed_rows.split_off(detail_len);
-        let (qty_rows, work_order_rows) = qty_and_work.split_at(qty_len);
-        let to_fact = |source: crate::table::IndexedRow, named: &NamedTestRow| {
-            let mut fact = IndexedFactRow::new(source);
-            for (name, value) in named {
-                if schema.optional(name).is_none() {
-                    fact.insert_derived(name, value.clone());
-                }
-            }
-            fact
-        };
-        let qty_rows = qty_rows
-            .iter()
-            .cloned()
-            .zip(&qty)
-            .map(|(source, named)| to_fact(source, named))
-            .collect();
-        let work_order_rows = work_order_rows
-            .iter()
-            .cloned()
-            .zip(&work_order)
-            .map(|(source, named)| to_fact(source, named))
+        let qty_sources = indexed_rows.split_off(detail_len);
+        let qty_rows = qty_sources
+            .into_iter()
+            .zip(&merged_qty)
+            .map(|(source, named)| QtyFactRow {
+                source,
+                work_order_key: test_text(named, "工单编号"),
+                completed_qty: test_decimal(named, "completed_qty"),
+                completed_total: test_decimal(named, "completed_amount_total"),
+                amounts: CostAmounts {
+                    direct_material: test_decimal(named, "dm_amount"),
+                    direct_labor: test_decimal(named, "dl_amount"),
+                    manufacturing_overhead: test_decimal(named, "moh_amount"),
+                    moh_other: test_decimal(named, "moh_other_amount"),
+                    moh_labor: test_decimal(named, "moh_labor_amount"),
+                    moh_consumables: test_decimal(named, "moh_consumables_amount"),
+                    moh_depreciation: test_decimal(named, "moh_depreciation_amount"),
+                    moh_utilities: test_decimal(named, "moh_utilities_amount"),
+                    standalone: vec![
+                        test_decimal(named, "outsource_amount"),
+                        test_decimal(named, "software_amount"),
+                    ],
+                },
+                moh_matches: test_bool(named, "moh_matches", true),
+                total_matches: test_bool(named, "total_matches", true),
+                check_reason: test_text(named, "check_reason"),
+            })
             .collect();
         let detail_names = detail_sheet_columns(&columns);
         let qty_names = qty_sheet_base_columns(&columns);
@@ -283,13 +364,36 @@ mod tests {
             qty_display_columns: schema.display_order_for(&qty_names).unwrap(),
             schema,
             detail_rows: indexed_rows,
+            qty_rows,
+            unique_work_order_indices: (0..unique_work_order_count).collect(),
             qty_input_row_count: qty_len,
             filtered_invalid_qty_count: 0,
             filtered_missing_total_amount_count: 0,
-            qty_rows,
-            work_order_rows,
             duplicate_work_order_row_count: 0,
             error_issues,
+        }
+    }
+
+    fn test_decimal(row: &NamedTestRow, key: &str) -> Decimal {
+        match row.get(key) {
+            Some(CellValue::Decimal(value)) => *value,
+            Some(CellValue::Text(value)) => value.parse().unwrap_or(Decimal::ZERO),
+            _ => Decimal::ZERO,
+        }
+    }
+
+    fn test_text(row: &NamedTestRow, key: &str) -> String {
+        match row.get(key) {
+            Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.clone(),
+            Some(CellValue::Decimal(value)) => value.normalize().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn test_bool(row: &NamedTestRow, key: &str, default: bool) -> bool {
+        match row.get(key) {
+            Some(CellValue::Text(value)) => value == "true" || value == "是",
+            _ => default,
         }
     }
 
@@ -386,6 +490,77 @@ mod tests {
         test_bundle(columns, Vec::new(), Vec::new(), Vec::new(), Vec::new())
     }
 
+    fn typed_projection_bundle(check_reason: &str) -> FactBundle {
+        let columns = [
+            "月份",
+            "产品编码",
+            "产品名称",
+            "工单编号",
+            "工单行号",
+            "本期完工数量",
+            "本期完工金额",
+            "单据类型",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let typed_values = [
+            (
+                "completed_amount_total",
+                CellValue::Decimal(Decimal::new(99, 0)),
+            ),
+            ("dm_amount", CellValue::Decimal(Decimal::new(11, 0))),
+            ("dl_amount", CellValue::Decimal(Decimal::new(12, 0))),
+            ("moh_amount", CellValue::Decimal(Decimal::new(13, 0))),
+            ("moh_other_amount", CellValue::Decimal(Decimal::new(1, 0))),
+            ("moh_labor_amount", CellValue::Decimal(Decimal::new(2, 0))),
+            (
+                "moh_consumables_amount",
+                CellValue::Decimal(Decimal::new(3, 0)),
+            ),
+            (
+                "moh_depreciation_amount",
+                CellValue::Decimal(Decimal::new(4, 0)),
+            ),
+            ("moh_utilities_amount", CellValue::Decimal(Decimal::ZERO)),
+            ("outsource_amount", CellValue::Decimal(Decimal::new(6, 0))),
+            ("software_amount", CellValue::Decimal(Decimal::new(7, 0))),
+            ("moh_matches", CellValue::Text("否".to_string())),
+            ("total_matches", CellValue::Text("否".to_string())),
+            ("check_reason", CellValue::Text(check_reason.to_string())),
+        ];
+        let make_qty = |order: &str, source_qty: &str, completed_qty: Decimal| {
+            let mut values = row(&[
+                ("月份", CellValue::Text("2025年01期".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string())),
+                ("产品名称", CellValue::Text("产品".to_string())),
+                ("工单编号", CellValue::Text(order.to_string())),
+                ("工单行号", CellValue::Text("1".to_string())),
+                ("本期完工数量", CellValue::Text(source_qty.to_string())),
+                ("本期完工金额", CellValue::Text("99.00".to_string())),
+                ("单据类型", CellValue::Text("汇报入库-普通生产".to_string())),
+                ("completed_qty", CellValue::Decimal(completed_qty)),
+            ]);
+            values.extend(
+                typed_values
+                    .iter()
+                    .cloned()
+                    .map(|(key, value)| (key.to_string(), value)),
+            );
+            values
+        };
+        test_bundle(
+            columns,
+            Vec::new(),
+            vec![
+                make_qty("WO1", "2.00", Decimal::new(2, 0)),
+                make_qty("WO2", "0.00", Decimal::ZERO),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
     #[test]
     fn payload_has_exactly_three_default_sheets_without_product_dimension() {
         let payload = build_workbook_payload(
@@ -452,6 +627,208 @@ mod tests {
             .iter()
             .any(|metric| metric.metric == "可参与分析占比"));
         assert_eq!(payload.stage_timings.stages.get("reader_rows"), Some(&1.0));
+    }
+
+    #[test]
+    fn qty_sheet_projects_typed_amounts_without_overlay_map() {
+        for (pipeline, reason, standalone_amounts, standalone_units) in [
+            (
+                PipelineName::Gb,
+                "制造费用明细与合计不一致;直接材料+直接人工+制造费用+委外加工费与总完工成本不一致",
+                vec!["本期完工委外加工费合计完工金额"],
+                vec!["委外加工费单位完工成本"],
+            ),
+            (
+                PipelineName::Sk,
+                "制造费用明细与合计不一致;直接材料+直接人工+制造费用+委外加工费+软件费用与总完工成本不一致",
+                vec![
+                    "本期完工委外加工费合计完工金额",
+                    "本期完工软件费用合计完工金额",
+                ],
+                vec!["委外加工费单位完工成本", "软件费用单位完工成本"],
+            ),
+        ] {
+            let config = PipelineConfig::for_name(pipeline);
+            let payload = build_workbook_payload(
+                typed_projection_bundle(reason),
+                &config,
+                StageTimings::default(),
+                false,
+            )
+            .unwrap();
+            let sheet = &payload.sheet_models[1];
+            let amount_start = sheet
+                .columns
+                .iter()
+                .position(|column| column == "本期完工直接材料合计完工金额")
+                .unwrap();
+            let mut expected_suffix = vec![
+                "本期完工直接材料合计完工金额",
+                "本期完工直接人工合计完工金额",
+                "本期完工制造费用合计完工金额",
+                "本期完工制造费用_其他合计完工金额",
+                "本期完工制造费用_人工合计完工金额",
+                "本期完工制造费用_机物料及低耗合计完工金额",
+                "本期完工制造费用_折旧合计完工金额",
+                "本期完工制造费用_水电费合计完工金额",
+            ];
+            expected_suffix.extend(standalone_amounts.iter().copied());
+            expected_suffix.extend([
+                "直接材料单位完工金额",
+                "直接人工单位完工金额",
+                "制造费用单位完工金额",
+                "制造费用_其他单位完工成本",
+                "制造费用_人工单位完工成本",
+                "制造费用_机物料及低耗单位完工成本",
+                "制造费用_折旧单位完工成本",
+                "制造费用_水电费单位完工成本",
+            ]);
+            expected_suffix.extend(standalone_units.iter().copied());
+            let total_match_column = match pipeline {
+                PipelineName::Gb => "直接材料+直接人工+制造费用+委外加工费是否等于总完工成本",
+                PipelineName::Sk => {
+                    "直接材料+直接人工+制造费用+委外加工费+软件费用是否等于总完工成本"
+                }
+            };
+            expected_suffix.extend([
+                "制造费用明细项合计是否等于制造费用合计",
+                total_match_column,
+                "数据校验状态",
+                "异常原因说明",
+            ]);
+            assert_eq!(
+                sheet.columns[amount_start..],
+                expected_suffix
+                    .iter()
+                    .map(|value| (*value).to_string())
+                    .collect::<Vec<_>>()
+            );
+
+            let mut expected_cells = vec![
+                CellValue::Decimal(Decimal::new(11, 0)),
+                CellValue::Decimal(Decimal::new(12, 0)),
+                CellValue::Decimal(Decimal::new(13, 0)),
+                CellValue::Decimal(Decimal::new(1, 0)),
+                CellValue::Decimal(Decimal::new(2, 0)),
+                CellValue::Decimal(Decimal::new(3, 0)),
+                CellValue::Decimal(Decimal::new(4, 0)),
+                CellValue::Decimal(Decimal::ZERO),
+                CellValue::Decimal(Decimal::new(6, 0)),
+            ];
+            if pipeline == PipelineName::Sk {
+                expected_cells.push(CellValue::Decimal(Decimal::new(7, 0)));
+            }
+            expected_cells.extend([
+                CellValue::Decimal(Decimal::new(55, 1)),
+                CellValue::Decimal(Decimal::new(6, 0)),
+                CellValue::Decimal(Decimal::new(65, 1)),
+                CellValue::Decimal(Decimal::new(5, 1)),
+                CellValue::Decimal(Decimal::new(1, 0)),
+                CellValue::Decimal(Decimal::new(15, 1)),
+                CellValue::Decimal(Decimal::new(2, 0)),
+                CellValue::Decimal(Decimal::ZERO),
+                CellValue::Decimal(Decimal::new(3, 0)),
+            ]);
+            if pipeline == PipelineName::Sk {
+                expected_cells.push(CellValue::Decimal(Decimal::new(35, 1)));
+            }
+            expected_cells.extend([
+                CellValue::Text("否".to_string()),
+                CellValue::Text("否".to_string()),
+                CellValue::Text("需复核".to_string()),
+                CellValue::Text(reason.to_string()),
+            ]);
+            assert_eq!(sheet.rows[0][amount_start..], expected_cells);
+            assert!(sheet
+                .rows
+                .iter()
+                .all(|cells| cells.len() == sheet.columns.len()));
+
+            let source_qty = sheet
+                .columns
+                .iter()
+                .position(|column| column == "本期完工数量")
+                .unwrap();
+            let source_total = sheet
+                .columns
+                .iter()
+                .position(|column| column == "本期完工金额")
+                .unwrap();
+            assert_eq!(sheet.rows[0][source_qty], CellValue::Text("2.00".to_string()));
+            assert_eq!(sheet.rows[0][source_total], CellValue::Text("99.00".to_string()));
+            let amount_count = 8 + config.standalone_cost_items.len();
+            let unit_start = amount_start + amount_count;
+            assert!(sheet.rows[1][unit_start..unit_start + amount_count]
+                .iter()
+                .all(|value| *value == CellValue::Blank));
+            assert_eq!(
+                sheet.number_formats["本期完工直接材料合计完工金额"],
+                "#,##0.00"
+            );
+            assert_eq!(sheet.number_formats[standalone_units[0]], "#,##0.00");
+        }
+    }
+
+    #[test]
+    fn qty_sheet_uses_blank_when_typed_unit_cost_overflows() {
+        let mut source = typed_projection_bundle("");
+        source.qty_rows.truncate(1);
+        source.qty_rows[0].completed_qty = Decimal::new(1, 28);
+        source.qty_rows[0].amounts.direct_material = Decimal::MAX;
+        let payload = build_workbook_payload(
+            source,
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+            false,
+        )
+        .unwrap();
+        let sheet = &payload.sheet_models[1];
+        let unit_cost = sheet
+            .columns
+            .iter()
+            .position(|column| column == "直接材料单位完工金额")
+            .unwrap();
+
+        assert_eq!(sheet.rows[0][unit_cost], CellValue::Blank);
+    }
+
+    #[test]
+    fn work_order_sheet_borrows_qty_fact_by_unique_indices() {
+        let mut source = bundle();
+        source.unique_work_order_indices = vec![0];
+        let config = PipelineConfig {
+            product_order: &[],
+            ..PipelineConfig::for_name(PipelineName::Gb)
+        };
+
+        let payload =
+            build_workbook_payload(source, &config, StageTimings::default(), false).unwrap();
+
+        assert_eq!(payload.sheet_models[2].rows.len(), 1);
+    }
+
+    #[test]
+    fn presentation_preserves_three_sheet_order_after_fact_model_change() {
+        let payload = build_workbook_payload(
+            bundle(),
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            payload
+                .sheet_models
+                .iter()
+                .map(|sheet| sheet.sheet_name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "成本计算单总表",
+                "成本计算单数量聚合维度",
+                "成本分析工单维度",
+            ]
+        );
     }
 
     #[test]

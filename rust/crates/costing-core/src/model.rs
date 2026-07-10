@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use crate::error::CostingError;
 use crate::error::ErrorCode;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, IndexedTable};
 use rust_decimal::Decimal;
@@ -156,59 +155,16 @@ impl CostAmounts {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct IndexedFactRow {
+#[derive(Debug)]
+pub(crate) struct QtyFactRow {
     pub(crate) source: IndexedRow,
-    pub(crate) derived_values: BTreeMap<String, CellValue>,
-}
-
-impl IndexedFactRow {
-    pub(crate) fn new(source: IndexedRow) -> Self {
-        Self {
-            source,
-            derived_values: BTreeMap::new(),
-        }
-    }
-
-    pub(crate) fn get_named<'a>(
-        &'a self,
-        schema: &ColumnSchema,
-        name: &str,
-    ) -> Result<Option<&'a CellValue>, CostingError> {
-        if let Some(value) = self.derived_values.get(name) {
-            return Ok(Some(value));
-        }
-        schema
-            .optional(name)
-            .map(|id| self.source.get(id))
-            .transpose()
-    }
-
-    pub(crate) fn insert_derived(
-        &mut self,
-        name: impl Into<String>,
-        value: CellValue,
-    ) -> Option<CellValue> {
-        self.derived_values.insert(name.into(), value)
-    }
-
-    pub(crate) fn take_named(
-        &mut self,
-        schema: &ColumnSchema,
-        name: &str,
-    ) -> Result<Option<CellValue>, CostingError> {
-        if let Some(value) = self.derived_values.remove(name) {
-            return Ok(Some(value));
-        }
-        schema
-            .optional(name)
-            .map(|id| self.source.take(id))
-            .transpose()
-    }
-
-    pub(crate) fn into_parts(self) -> (IndexedRow, BTreeMap<String, CellValue>) {
-        (self.source, self.derived_values)
-    }
+    pub(crate) work_order_key: String,
+    pub(crate) completed_qty: Decimal,
+    pub(crate) completed_total: Decimal,
+    pub(crate) amounts: CostAmounts,
+    pub(crate) moh_matches: bool,
+    pub(crate) total_matches: bool,
+    pub(crate) check_reason: String,
 }
 
 #[derive(Debug)]
@@ -217,16 +173,22 @@ pub struct FactBundle {
     pub(crate) detail_display_columns: Vec<ColumnId>,
     pub(crate) detail_rows: Vec<IndexedRow>,
     pub(crate) qty_display_columns: Vec<ColumnId>,
+    pub(crate) qty_rows: Vec<QtyFactRow>,
+    pub(crate) unique_work_order_indices: Vec<usize>,
     pub(crate) qty_input_row_count: usize,
     pub(crate) filtered_invalid_qty_count: usize,
     pub(crate) filtered_missing_total_amount_count: usize,
-    pub(crate) qty_rows: Vec<IndexedFactRow>,
-    pub(crate) work_order_rows: Vec<IndexedFactRow>,
     pub(crate) duplicate_work_order_row_count: usize,
     pub(crate) error_issues: Vec<ErrorIssue>,
 }
 
 impl FactBundle {
+    pub(crate) fn work_order_rows(&self) -> impl Iterator<Item = &QtyFactRow> {
+        self.unique_work_order_indices
+            .iter()
+            .map(|index| &self.qty_rows[*index])
+    }
+
     pub(crate) fn detail_row_count(&self) -> usize {
         self.detail_rows.len()
     }
@@ -236,7 +198,7 @@ impl FactBundle {
     }
 
     pub(crate) fn work_order_row_count(&self) -> usize {
-        self.work_order_rows.len()
+        self.unique_work_order_indices.len()
     }
 }
 

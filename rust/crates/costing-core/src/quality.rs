@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 
 use crate::error::CostingError;
-use crate::model::{CellValue, FactBundle, IndexedFactRow, QualityMetric};
+use crate::model::{CellValue, FactBundle, QtyFactRow, QualityMetric};
 use crate::table::ColumnSchema;
 
 pub fn build_quality_metrics(
@@ -12,12 +12,13 @@ pub fn build_quality_metrics(
     let null_rate_value = if month_filter_empty_result {
         "N/A".to_string()
     } else {
-        format_rate(null_rate(&bundle.schema, &bundle.qty_rows, "dm_amount")?)
+        // 数量事实中的直接材料始终是 Decimal；缺失明细已在 fact 阶段按 0 聚合。
+        format_rate(0.0)
     };
     let coverage_value = if month_filter_empty_result {
         "N/A".to_string()
     } else {
-        format_rate(analyzable_rate(&bundle.schema, &bundle.work_order_rows)?)
+        format_rate(analyzable_rate(bundle)?)
     };
 
     Ok(vec![
@@ -76,7 +77,7 @@ pub fn build_quality_metrics(
         QualityMetric {
             category: "范围检查".to_string(),
             metric: "完工数量小于等于0行数".to_string(),
-            value: non_positive_qty_count(&bundle.schema, &bundle.qty_rows)?.to_string(),
+            value: non_positive_qty_count(&bundle.qty_rows).to_string(),
             description: "保留后的数量事实不应存在非正完工数量".to_string(),
         },
         QualityMetric {
@@ -92,67 +93,30 @@ pub fn build_quality_metrics(
     ])
 }
 
-fn null_rate(
-    schema: &ColumnSchema,
-    rows: &[IndexedFactRow],
-    column: &str,
-) -> Result<f64, CostingError> {
-    if rows.is_empty() {
-        return Ok(0.0);
-    }
-    let mut null_count = 0usize;
-    for row in rows {
-        // fact 中未出现的派生金额 bucket 会在数量页按 0 写出，不应计为空值。
-        if row.get_named(schema, column)?.is_some_and(is_blank_like) {
-            null_count += 1;
-        }
-    }
-    Ok(null_count as f64 / rows.len() as f64)
+fn non_positive_qty_count(rows: &[QtyFactRow]) -> usize {
+    rows.iter()
+        .filter(|row| row.completed_qty <= Decimal::ZERO)
+        .count()
 }
 
-fn non_positive_qty_count(
-    schema: &ColumnSchema,
-    rows: &[IndexedFactRow],
-) -> Result<usize, CostingError> {
-    let mut count = 0usize;
-    for row in rows {
-        if row
-            .get_named(schema, "completed_qty")?
-            .and_then(cell_to_decimal)
-            .map(|value| value <= Decimal::ZERO)
-            .unwrap_or(true)
-        {
-            count += 1;
-        }
-    }
-    Ok(count)
-}
-
-fn analyzable_rate(schema: &ColumnSchema, rows: &[IndexedFactRow]) -> Result<f64, CostingError> {
-    if rows.is_empty() {
+fn analyzable_rate(bundle: &FactBundle) -> Result<f64, CostingError> {
+    let total = bundle.work_order_row_count();
+    if total == 0 {
         return Ok(0.0);
     }
     let mut analyzable = 0usize;
-    for row in rows {
-        let qty = row
-            .get_named(schema, "completed_qty")?
-            .and_then(cell_to_decimal)
-            .unwrap_or(Decimal::ZERO);
-        let total = row
-            .get_named(schema, "completed_amount_total")?
-            .and_then(cell_to_decimal)
-            .unwrap_or(Decimal::ZERO);
-        if qty > Decimal::ZERO && total > Decimal::ZERO && has_analyzable_doc_type(schema, row)? {
+    for row in bundle.work_order_rows() {
+        if row.completed_qty > Decimal::ZERO
+            && row.completed_total > Decimal::ZERO
+            && has_analyzable_doc_type(&bundle.schema, row)?
+        {
             analyzable += 1;
         }
     }
-    Ok(analyzable as f64 / rows.len() as f64)
+    Ok(analyzable as f64 / total as f64)
 }
 
-fn has_analyzable_doc_type(
-    schema: &ColumnSchema,
-    row: &IndexedFactRow,
-) -> Result<bool, CostingError> {
+fn has_analyzable_doc_type(schema: &ColumnSchema, row: &QtyFactRow) -> Result<bool, CostingError> {
     Ok(matches!(
         text_any(schema, row, &["doc_type", "单据类型"])?.trim(),
         "汇报入库-普通生产" | "直接入库-普通生产" | "汇报入库-返工生产"
@@ -165,23 +129,15 @@ fn format_rate(value: f64) -> String {
 
 fn text_any(
     schema: &ColumnSchema,
-    row: &IndexedFactRow,
+    row: &QtyFactRow,
     columns: &[&str],
 ) -> Result<String, CostingError> {
     for column in columns {
-        if let Some(value) = row.get_named(schema, column)? {
-            return Ok(cell_to_text(value));
+        if let Some(id) = schema.optional(column) {
+            return Ok(cell_to_text(row.source.get(id)?));
         }
     }
     Ok(String::new())
-}
-
-fn is_blank_like(value: &CellValue) -> bool {
-    match value {
-        CellValue::Blank => true,
-        CellValue::Text(value) | CellValue::DateLike(value) => value.trim().is_empty(),
-        CellValue::Decimal(_) => false,
-    }
 }
 
 fn cell_to_text(value: &CellValue) -> String {
@@ -192,22 +148,32 @@ fn cell_to_text(value: &CellValue) -> String {
     }
 }
 
-fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
-    match value {
-        CellValue::Decimal(value) => Some(*value),
-        CellValue::Text(value) => value.trim().parse().ok(),
-        CellValue::Blank | CellValue::DateLike(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::model::{CellValue, FactBundle, IndexedFactRow};
+    use crate::model::{CellValue, CostAmounts, FactBundle, QtyFactRow};
     use crate::table::IndexedTable;
 
     use super::*;
+
+    fn qty_fact(
+        source: crate::table::IndexedRow,
+        key: &str,
+        completed_qty: Decimal,
+        completed_total: Decimal,
+    ) -> QtyFactRow {
+        QtyFactRow {
+            source,
+            work_order_key: key.to_string(),
+            completed_qty,
+            completed_total,
+            amounts: CostAmounts::new(0),
+            moh_matches: true,
+            total_matches: true,
+            check_reason: String::new(),
+        }
+    }
 
     #[test]
     fn quality_metrics_report_fact_row_counts() {
@@ -245,11 +211,17 @@ mod tests {
         let (schema, display, mut rows) = table.into_parts();
         let detail_rows = vec![rows.remove(0)];
         let qty_rows = rows
-            .iter()
-            .cloned()
-            .map(IndexedFactRow::new)
+            .into_iter()
+            .enumerate()
+            .map(|(index, source)| {
+                qty_fact(
+                    source,
+                    &format!("key-{index}"),
+                    Decimal::ONE,
+                    Decimal::new(100, 0),
+                )
+            })
             .collect::<Vec<_>>();
-        let work_order_rows = rows.into_iter().map(IndexedFactRow::new).collect();
         let bundle = FactBundle {
             schema,
             detail_display_columns: display.clone(),
@@ -259,7 +231,7 @@ mod tests {
             filtered_invalid_qty_count: 1,
             filtered_missing_total_amount_count: 0,
             qty_rows,
-            work_order_rows,
+            unique_work_order_indices: vec![0, 1],
             duplicate_work_order_row_count: 2,
             error_issues: Vec::new(),
         };
@@ -295,7 +267,7 @@ mod tests {
             filtered_invalid_qty_count: 0,
             filtered_missing_total_amount_count: 0,
             qty_rows: Vec::new(),
-            work_order_rows: Vec::new(),
+            unique_work_order_indices: Vec::new(),
             duplicate_work_order_row_count: 0,
             error_issues: Vec::new(),
         };
@@ -316,11 +288,11 @@ mod tests {
 
     #[test]
     fn foreign_schema_row_error_is_propagated() {
-        let table = IndexedTable::from_raw(vec!["completed_qty".to_string()], vec![]).unwrap();
+        let table = IndexedTable::from_raw(vec!["单据类型".to_string()], vec![]).unwrap();
         let (schema, display, _) = table.into_parts();
         let foreign = IndexedTable::from_raw(
-            vec!["completed_qty".to_string()],
-            vec![vec![CellValue::Decimal(Decimal::ONE)]],
+            vec!["单据类型".to_string()],
+            vec![vec![CellValue::Text("汇报入库-普通生产".to_string())]],
         )
         .unwrap();
         let (_, _, mut foreign_rows) = foreign.into_parts();
@@ -332,8 +304,13 @@ mod tests {
             qty_input_row_count: 1,
             filtered_invalid_qty_count: 0,
             filtered_missing_total_amount_count: 0,
-            qty_rows: vec![IndexedFactRow::new(foreign_rows.pop().unwrap())],
-            work_order_rows: Vec::new(),
+            qty_rows: vec![qty_fact(
+                foreign_rows.pop().unwrap(),
+                "key",
+                Decimal::ONE,
+                Decimal::ONE,
+            )],
+            unique_work_order_indices: vec![0],
             duplicate_work_order_row_count: 0,
             error_issues: Vec::new(),
         };
@@ -341,5 +318,124 @@ mod tests {
         let error = build_quality_metrics(&bundle, false).unwrap_err();
 
         assert_eq!(error.code(), crate::error::ErrorCode::InternalError);
+    }
+
+    #[test]
+    fn quality_reuses_fact_duplicate_count_without_rebuilding_keys() {
+        let table = IndexedTable::from_raw(Vec::new(), Vec::new()).unwrap();
+        let (schema, display, _) = table.into_parts();
+        let bundle = FactBundle {
+            schema,
+            detail_display_columns: display.clone(),
+            detail_rows: Vec::new(),
+            qty_display_columns: display,
+            qty_rows: Vec::new(),
+            unique_work_order_indices: Vec::new(),
+            qty_input_row_count: 0,
+            filtered_invalid_qty_count: 0,
+            filtered_missing_total_amount_count: 0,
+            duplicate_work_order_row_count: 7,
+            error_issues: Vec::new(),
+        };
+
+        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let duplicate = metrics
+            .iter()
+            .find(|metric| metric.metric == "工单主键重复行数")
+            .unwrap();
+
+        assert_eq!(duplicate.value, "7");
+    }
+
+    #[test]
+    fn quality_uses_unique_indices_for_analysis_coverage() {
+        let columns = vec!["单据类型".to_string()];
+        let table = IndexedTable::from_raw(
+            columns,
+            vec![
+                vec![CellValue::Text("汇报入库-普通生产".to_string())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string())],
+                vec![CellValue::Text("其他入库".to_string())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string())],
+            ],
+        )
+        .unwrap();
+        let (schema, display, rows) = table.into_parts();
+        let qty_rows = rows
+            .into_iter()
+            .enumerate()
+            .map(|(index, source)| {
+                let (qty, total) = match index {
+                    2 => (Decimal::ONE, Decimal::ZERO),
+                    4 => (Decimal::ZERO, Decimal::ONE),
+                    _ => (Decimal::ONE, Decimal::ONE),
+                };
+                qty_fact(source, &format!("key-{index}"), qty, total)
+            })
+            .collect();
+        let bundle = FactBundle {
+            schema,
+            detail_display_columns: display.clone(),
+            detail_rows: Vec::new(),
+            qty_display_columns: display,
+            qty_rows,
+            // index 0 是重复键的非首条；覆盖率只看首次索引 1..4。
+            unique_work_order_indices: vec![1, 2, 3, 4],
+            qty_input_row_count: 5,
+            filtered_invalid_qty_count: 0,
+            filtered_missing_total_amount_count: 0,
+            duplicate_work_order_row_count: 2,
+            error_issues: Vec::new(),
+        };
+
+        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let coverage = metrics
+            .iter()
+            .find(|metric| metric.metric == "可参与分析占比")
+            .unwrap();
+
+        assert_eq!(coverage.value, "25.00%");
+    }
+
+    #[test]
+    fn quality_reports_zero_non_positive_qty_after_fact_filter() {
+        let table = IndexedTable::from_raw(
+            vec!["单据类型".to_string()],
+            vec![vec![CellValue::Text("汇报入库-普通生产".to_string())]],
+        )
+        .unwrap();
+        let (schema, display, mut rows) = table.into_parts();
+        let qty_rows = vec![QtyFactRow {
+            source: rows.pop().unwrap(),
+            work_order_key: "key".to_string(),
+            completed_qty: Decimal::ONE,
+            completed_total: Decimal::ONE,
+            amounts: CostAmounts::new(0),
+            moh_matches: true,
+            total_matches: true,
+            check_reason: String::new(),
+        }];
+        let bundle = FactBundle {
+            schema,
+            detail_display_columns: display.clone(),
+            detail_rows: Vec::new(),
+            qty_display_columns: display,
+            qty_rows,
+            unique_work_order_indices: vec![0],
+            qty_input_row_count: 1,
+            filtered_invalid_qty_count: 0,
+            filtered_missing_total_amount_count: 0,
+            duplicate_work_order_row_count: 0,
+            error_issues: Vec::new(),
+        };
+
+        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let non_positive = metrics
+            .iter()
+            .find(|metric| metric.metric == "完工数量小于等于0行数")
+            .unwrap();
+
+        assert_eq!(non_positive.value, "0");
     }
 }

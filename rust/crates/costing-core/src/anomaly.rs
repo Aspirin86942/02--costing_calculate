@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use rust_decimal::Decimal;
 
 use crate::error::CostingError;
-use crate::model::{CellValue, FactBundle, IndexedFactRow, SheetModel};
+use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel};
 use crate::pipeline::PipelineConfig;
 use crate::scoring::{
     decimal_ln, grade_score, modified_z_score, resolve_effective_log_mad, weighted_mad,
@@ -129,7 +129,7 @@ struct MetricAudit {
 }
 
 struct AnomalyRow<'a> {
-    source: &'a IndexedFactRow,
+    source: &'a QtyFactRow,
     numbers: BTreeMap<String, Decimal>,
     production_scope: String,
     can_analyze: bool,
@@ -174,13 +174,13 @@ pub fn build_work_order_anomaly_sheet(
 fn analysis_work_order_rows<'a>(
     bundle: &'a FactBundle,
     config: &PipelineConfig,
-) -> Result<Vec<&'a IndexedFactRow>, CostingError> {
+) -> Result<Vec<&'a QtyFactRow>, CostingError> {
     if config.product_order.is_empty() {
-        return Ok(bundle.work_order_rows.iter().collect());
+        return Ok(bundle.work_order_rows().collect());
     }
 
     let mut rows = Vec::new();
-    for row in &bundle.work_order_rows {
+    for row in bundle.work_order_rows() {
         let product_code = text_any(&bundle.schema, row, &["product_code", "产品编码"])?;
         let product_name = text_any(&bundle.schema, row, &["product_name", "产品名称"])?;
         // 产品编码可能复用，必须按编码和名称精确匹配，避免错误产品进入异常池。
@@ -249,53 +249,38 @@ fn insert_before(columns: &mut Vec<String>, marker: &str, value: &str) {
 }
 
 fn build_anomaly_row<'a>(
-    row: &'a IndexedFactRow,
+    row: &'a QtyFactRow,
     schema: &ColumnSchema,
     config: &PipelineConfig,
 ) -> Result<AnomalyRow<'a>, CostingError> {
-    let completed_qty = decimal(schema, row, "completed_qty")?.unwrap_or(ZERO);
-    let completed_total = decimal(schema, row, "completed_amount_total")?.unwrap_or(ZERO);
+    let completed_qty = row.completed_qty;
+    let completed_total = row.completed_total;
     let mut numbers = BTreeMap::from([
         ("completed_qty".to_string(), completed_qty),
         ("completed_amount_total".to_string(), completed_total),
-        (
-            "dm_amount".to_string(),
-            decimal(schema, row, "dm_amount")?.unwrap_or(ZERO),
-        ),
-        (
-            "dl_amount".to_string(),
-            decimal(schema, row, "dl_amount")?.unwrap_or(ZERO),
-        ),
-        (
-            "moh_amount".to_string(),
-            decimal(schema, row, "moh_amount")?.unwrap_or(ZERO),
-        ),
-        (
-            "moh_other_amount".to_string(),
-            decimal(schema, row, "moh_other_amount")?.unwrap_or(ZERO),
-        ),
-        (
-            "moh_labor_amount".to_string(),
-            decimal(schema, row, "moh_labor_amount")?.unwrap_or(ZERO),
-        ),
+        ("dm_amount".to_string(), row.amounts.direct_material),
+        ("dl_amount".to_string(), row.amounts.direct_labor),
+        ("moh_amount".to_string(), row.amounts.manufacturing_overhead),
+        ("moh_other_amount".to_string(), row.amounts.moh_other),
+        ("moh_labor_amount".to_string(), row.amounts.moh_labor),
         (
             "moh_consumables_amount".to_string(),
-            decimal(schema, row, "moh_consumables_amount")?.unwrap_or(ZERO),
+            row.amounts.moh_consumables,
         ),
         (
             "moh_depreciation_amount".to_string(),
-            decimal(schema, row, "moh_depreciation_amount")?.unwrap_or(ZERO),
+            row.amounts.moh_depreciation,
         ),
         (
             "moh_utilities_amount".to_string(),
-            decimal(schema, row, "moh_utilities_amount")?.unwrap_or(ZERO),
+            row.amounts.moh_utilities,
         ),
     ]);
 
     insert_unit_costs(&mut numbers, completed_qty);
-    for item in config.standalone_cost_items {
+    for (index, item) in config.standalone_cost_items.iter().enumerate() {
         let meta = standalone_meta(item);
-        let amount = decimal(schema, row, meta.amount_key)?.unwrap_or(ZERO);
+        let amount = row.amounts.standalone_amount(index);
         numbers.insert(meta.amount_key.to_string(), amount);
         if let Some(unit_cost) = safe_divide(amount, completed_qty) {
             numbers.insert(meta.unit_key.to_string(), unit_cost);
@@ -695,12 +680,12 @@ fn decimal_value(row: &AnomalyRow<'_>, key: &str) -> CellValue {
 
 fn value_any(
     schema: &ColumnSchema,
-    row: &IndexedFactRow,
+    row: &QtyFactRow,
     keys: &[&str],
 ) -> Result<CellValue, CostingError> {
     for key in keys {
-        if let Some(value) = row.get_named(schema, key)? {
-            return Ok(value.clone());
+        if let Some(id) = schema.optional(key) {
+            return Ok(row.source.get(id)?.clone());
         }
     }
     Ok(CellValue::Blank)
@@ -708,31 +693,15 @@ fn value_any(
 
 fn text_any(
     schema: &ColumnSchema,
-    row: &IndexedFactRow,
+    row: &QtyFactRow,
     keys: &[&str],
 ) -> Result<String, CostingError> {
     for key in keys {
-        if let Some(value) = row.get_named(schema, key)? {
-            return Ok(cell_to_text(value));
+        if let Some(id) = schema.optional(key) {
+            return Ok(cell_to_text(row.source.get(id)?));
         }
     }
     Ok(String::new())
-}
-
-fn decimal(
-    schema: &ColumnSchema,
-    row: &IndexedFactRow,
-    key: &str,
-) -> Result<Option<Decimal>, CostingError> {
-    Ok(row.get_named(schema, key)?.and_then(cell_to_decimal))
-}
-
-fn cell_to_decimal(value: &CellValue) -> Option<Decimal> {
-    match value {
-        CellValue::Decimal(value) => Some(*value),
-        CellValue::Text(value) => value.trim().parse().ok(),
-        CellValue::Blank | CellValue::DateLike(_) => None,
-    }
 }
 
 fn cell_to_text(value: &CellValue) -> String {
@@ -819,7 +788,7 @@ mod tests {
 
     use rust_decimal::Decimal;
 
-    use crate::model::{CellValue, ErrorIssue, FactBundle, IndexedFactRow};
+    use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow};
     use crate::pipeline::{PipelineConfig, PipelineName};
     use crate::table::IndexedTable;
 
@@ -886,7 +855,8 @@ mod tests {
             }
         }
         let positional = rows
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|mut named| {
                 columns
                     .iter()
@@ -895,19 +865,63 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let table = IndexedTable::from_raw(columns, positional).unwrap();
-        let (schema, display, rows) = table.into_parts();
+        let (schema, display, sources) = table.into_parts();
+        let qty_rows = sources
+            .into_iter()
+            .zip(&rows)
+            .map(|(source, named)| QtyFactRow {
+                source,
+                work_order_key: text_value(named, "工单编号"),
+                completed_qty: decimal_value(named, "completed_qty"),
+                completed_total: decimal_value(named, "completed_amount_total"),
+                amounts: CostAmounts {
+                    direct_material: decimal_value(named, "dm_amount"),
+                    direct_labor: decimal_value(named, "dl_amount"),
+                    manufacturing_overhead: decimal_value(named, "moh_amount"),
+                    moh_other: decimal_value(named, "moh_other_amount"),
+                    moh_labor: decimal_value(named, "moh_labor_amount"),
+                    moh_consumables: decimal_value(named, "moh_consumables_amount"),
+                    moh_depreciation: decimal_value(named, "moh_depreciation_amount"),
+                    moh_utilities: decimal_value(named, "moh_utilities_amount"),
+                    standalone: vec![
+                        decimal_value(named, "outsource_amount"),
+                        decimal_value(named, "software_amount"),
+                    ],
+                },
+                moh_matches: true,
+                total_matches: true,
+                check_reason: String::new(),
+            })
+            .collect::<Vec<_>>();
+        let unique_work_order_indices = (0..qty_rows.len()).collect();
         FactBundle {
             schema,
             detail_display_columns: Vec::new(),
             detail_rows: vec![],
             qty_display_columns: display,
-            qty_input_row_count: 0,
+            qty_rows,
+            unique_work_order_indices,
+            qty_input_row_count: rows.len(),
             filtered_invalid_qty_count: 0,
             filtered_missing_total_amount_count: 0,
-            qty_rows: vec![],
-            work_order_rows: rows.into_iter().map(IndexedFactRow::new).collect(),
             duplicate_work_order_row_count: 0,
             error_issues: Vec::<ErrorIssue>::new(),
+        }
+    }
+
+    fn decimal_value(row: &NamedTestRow, key: &str) -> Decimal {
+        match row.get(key) {
+            Some(CellValue::Decimal(value)) => *value,
+            Some(CellValue::Text(value)) => value.parse().unwrap_or(Decimal::ZERO),
+            _ => Decimal::ZERO,
+        }
+    }
+
+    fn text_value(row: &NamedTestRow, key: &str) -> String {
+        match row.get(key) {
+            Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.clone(),
+            Some(CellValue::Decimal(value)) => value.normalize().to_string(),
+            _ => String::new(),
         }
     }
 
@@ -1185,6 +1199,140 @@ mod tests {
     }
 
     #[test]
+    fn work_order_sheet_maps_typed_amounts_and_standalone_by_unique_indices() {
+        let mut source = bundle(vec![
+            row("WO-SKIP", 1, "汇报入库-普通生产", &[]),
+            row(
+                "WO-KEEP",
+                90,
+                "汇报入库-普通生产",
+                &[
+                    ("dm_amount", CellValue::Decimal(Decimal::new(11, 0))),
+                    ("dl_amount", CellValue::Decimal(Decimal::new(12, 0))),
+                    ("moh_amount", CellValue::Decimal(Decimal::new(13, 0))),
+                    ("moh_other_amount", CellValue::Decimal(Decimal::new(1, 0))),
+                    ("moh_labor_amount", CellValue::Decimal(Decimal::new(2, 0))),
+                    (
+                        "moh_consumables_amount",
+                        CellValue::Decimal(Decimal::new(3, 0)),
+                    ),
+                    (
+                        "moh_depreciation_amount",
+                        CellValue::Decimal(Decimal::new(4, 0)),
+                    ),
+                    (
+                        "moh_utilities_amount",
+                        CellValue::Decimal(Decimal::new(5, 0)),
+                    ),
+                    ("outsource_amount", CellValue::Decimal(Decimal::new(6, 0))),
+                    ("software_amount", CellValue::Decimal(Decimal::new(7, 0))),
+                ],
+            ),
+        ]);
+        source.unique_work_order_indices = vec![1];
+        let config = PipelineConfig {
+            product_order: &[],
+            ..PipelineConfig::for_name(PipelineName::Sk)
+        };
+
+        let sheet = build_work_order_anomaly_sheet(&source, &config).unwrap();
+
+        assert_eq!(sheet.rows.len(), 1);
+        let expected = [
+            ("工单编号", CellValue::Text("WO-KEEP".to_string())),
+            ("总完工成本", CellValue::Decimal(Decimal::new(90, 0))),
+            (
+                "直接材料合计完工金额",
+                CellValue::Decimal(Decimal::new(11, 0)),
+            ),
+            (
+                "直接人工合计完工金额",
+                CellValue::Decimal(Decimal::new(12, 0)),
+            ),
+            (
+                "制造费用合计完工金额",
+                CellValue::Decimal(Decimal::new(13, 0)),
+            ),
+            (
+                "制造费用_其他合计完工金额",
+                CellValue::Decimal(Decimal::new(1, 0)),
+            ),
+            (
+                "制造费用_人工合计完工金额",
+                CellValue::Decimal(Decimal::new(2, 0)),
+            ),
+            (
+                "制造费用_机物料及低耗合计完工金额",
+                CellValue::Decimal(Decimal::new(3, 0)),
+            ),
+            (
+                "制造费用_折旧合计完工金额",
+                CellValue::Decimal(Decimal::new(4, 0)),
+            ),
+            (
+                "制造费用_水电费合计完工金额",
+                CellValue::Decimal(Decimal::new(5, 0)),
+            ),
+            (
+                "委外加工费合计完工金额",
+                CellValue::Decimal(Decimal::new(6, 0)),
+            ),
+            (
+                "软件费用合计完工金额",
+                CellValue::Decimal(Decimal::new(7, 0)),
+            ),
+            ("总单位完工成本", CellValue::Decimal(Decimal::new(90, 0))),
+            (
+                "直接材料单位完工成本",
+                CellValue::Decimal(Decimal::new(11, 0)),
+            ),
+            (
+                "直接人工单位完工成本",
+                CellValue::Decimal(Decimal::new(12, 0)),
+            ),
+            (
+                "制造费用单位完工成本",
+                CellValue::Decimal(Decimal::new(13, 0)),
+            ),
+            (
+                "制造费用_其他单位完工成本",
+                CellValue::Decimal(Decimal::new(1, 0)),
+            ),
+            (
+                "制造费用_人工单位完工成本",
+                CellValue::Decimal(Decimal::new(2, 0)),
+            ),
+            (
+                "制造费用_机物料及低耗单位完工成本",
+                CellValue::Decimal(Decimal::new(3, 0)),
+            ),
+            (
+                "制造费用_折旧单位完工成本",
+                CellValue::Decimal(Decimal::new(4, 0)),
+            ),
+            (
+                "制造费用_水电费单位完工成本",
+                CellValue::Decimal(Decimal::new(5, 0)),
+            ),
+            (
+                "委外加工费单位完工成本",
+                CellValue::Decimal(Decimal::new(6, 0)),
+            ),
+            (
+                "软件费用单位完工成本",
+                CellValue::Decimal(Decimal::new(7, 0)),
+            ),
+        ];
+        for (column, value) in expected {
+            assert_eq!(
+                sheet.rows[0][column_index(&sheet, column)],
+                value,
+                "{column}"
+            );
+        }
+    }
+
+    #[test]
     fn scores_normal_and_rework_in_separate_pools() {
         let sheet = build_work_order_anomaly_sheet(
             &bundle(vec![
@@ -1220,8 +1368,12 @@ mod tests {
         let config = test_config(PipelineName::Gb);
         let source = row("WO-TIE", 100, "汇报入库-普通生产", &[]);
         let bundle = bundle(vec![source]);
-        let mut anomaly_row =
-            build_anomaly_row(&bundle.work_order_rows[0], &bundle.schema, &config).unwrap();
+        let mut anomaly_row = build_anomaly_row(
+            bundle.work_order_rows().next().unwrap(),
+            &bundle.schema,
+            &config,
+        )
+        .unwrap();
         for metric_key in ["dm_unit_cost", "dl_unit_cost"] {
             anomaly_row.audits.insert(
                 metric_key,
@@ -1320,7 +1472,7 @@ mod tests {
             .collect::<Vec<_>>();
         let foreign = IndexedTable::from_raw(columns, vec![cells]).unwrap();
         let (_, _, mut rows) = foreign.into_parts();
-        bundle.work_order_rows = vec![IndexedFactRow::new(rows.pop().unwrap())];
+        bundle.qty_rows[0].source = rows.pop().unwrap();
 
         let error =
             build_work_order_anomaly_sheet(&bundle, &test_config(PipelineName::Gb)).unwrap_err();

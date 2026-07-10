@@ -80,6 +80,29 @@ def test_compare_workbooks_detects_number_format_width_and_header_style_mismatch
     assert any(error.startswith('header styles mismatch Sheet') for error in report['errors'])
 
 
+def test_compare_workbooks_detects_data_cell_style_mismatch(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    _write_workbook(expected, 'Header', second_row_value=1, data_cell_styled=True)
+    _write_workbook(actual, 'Header', second_row_value=1)
+
+    report = compare_workbooks(expected, actual)
+
+    assert not report['passed']
+    assert any(error.startswith('data styles mismatch Sheet') for error in report['errors'])
+
+
+def test_compare_workbooks_normalizes_explicit_and_inherited_blank_cell_styles(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    _write_blank_numeric_style_workbook(expected, explicit_blank_style=True)
+    _write_blank_numeric_style_workbook(actual, explicit_blank_style=False)
+
+    report = compare_workbooks(expected, actual)
+
+    assert report == {'passed': True, 'errors': []}
+
+
 def _write_workbook(
     path: Path,
     value: object,
@@ -90,6 +113,7 @@ def _write_workbook(
     freeze_panes: str | None = None,
     auto_filter: str | None = None,
     styled: bool = False,
+    data_cell_styled: bool = False,
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -111,6 +135,27 @@ def _write_workbook(
         thin = Side(style='thin')
         sheet['A1'].border = Border(left=thin, right=thin, top=thin, bottom=thin)
         sheet['A2'].number_format = '#,##0.00'
+    if data_cell_styled:
+        thin = Side(style='thin')
+        sheet['A2'].alignment = Alignment(horizontal='right', vertical='center')
+        sheet['A2'].border = Border(left=thin, right=thin, top=thin, bottom=thin)
     if extra_sheet is not None:
         workbook.create_sheet(extra_sheet)
+    workbook.save(path)
+
+
+def _write_blank_numeric_style_workbook(path: Path, *, explicit_blank_style: bool) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Sheet'
+    sheet['A1'] = '数值列'
+    sheet['B1'] = '标记列'
+    sheet['A1'].font = Font(bold=True)
+    sheet['B1'].font = Font(bold=True)
+    sheet['B2'] = '保留数据行'
+    sheet.column_dimensions['A'].width = 15
+    if explicit_blank_style:
+        sheet['A2'].number_format = '#,##0.00'
+    else:
+        sheet.column_dimensions['A'].number_format = '#,##0.00'
     workbook.save(path)

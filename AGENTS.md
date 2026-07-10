@@ -14,7 +14,7 @@
 - `data/raw/{gb,sk}/`: 原始 Excel 输入
 - `data/processed/{gb,sk}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
-- 历史 `scripts/` 已移除；新增功能统一在 `src/` 实现
+- 历史 `scripts/` 已移除；新增业务功能默认在 `rust/` 实现，`src/` 仅用于 Python oracle/legacy/regression 或退场前必要修复
 
 ### Build / Test / Dev Commands
 - `cargo build --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现

@@ -67,6 +67,7 @@ def compare_workbooks(expected_path: Path, actual_path: Path) -> dict[str, Any]:
             ('column_widths', 'column widths'),
             ('number_formats', 'number formats'),
             ('header_styles', 'header styles'),
+            ('data_styles', 'data styles'),
             ('conditional_format_ranges', 'conditional format ranges'),
         ):
             expected_value = expected_sheet_meta.get(metadata_key)
@@ -121,6 +122,7 @@ def workbook_sheet_metadata(path: Path) -> dict[str, dict[str, Any]]:
                 'column_widths': _column_widths(worksheet),
                 'number_formats': _number_formats(worksheet, style_catalog),
                 'header_styles': _row_styles(worksheet, 1, style_catalog),
+                'data_styles': _data_styles(worksheet, style_catalog),
                 'conditional_format_ranges': sorted(
                     node.attrib.get('sqref', '') for node in worksheet.findall(f'{{{MAIN_NS}}}conditionalFormatting')
                 ),
@@ -242,6 +244,38 @@ def _row_styles(
         ]
         for cell in row.findall(f'{{{MAIN_NS}}}c')
     }
+
+
+def _data_styles(
+    worksheet: ET.Element,
+    style_catalog: list[tuple[Any, ...]],
+) -> dict[int, tuple[tuple[Any, ...], ...]]:
+    column_styles = _column_styles(worksheet)
+    data_rows = [
+        row
+        for row in worksheet.findall(f'.//{{{MAIN_NS}}}sheetData/{{{MAIN_NS}}}row')
+        if int(row.attrib.get('r', '0')) > 1
+    ]
+    if not data_rows:
+        return {}
+
+    columns = set(_row_styles(worksheet, 1, style_catalog)) | set(column_styles)
+    explicit_cell_counts: dict[int, int] = {}
+    styles: dict[int, set[tuple[Any, ...]]] = {}
+    for row in data_rows:
+        for cell in row.findall(f'{{{MAIN_NS}}}c'):
+            column_index = _column_index(cell.attrib['r'])
+            columns.add(column_index)
+            explicit_cell_counts[column_index] = explicit_cell_counts.get(column_index, 0) + 1
+            style_id = int(cell.attrib.get('s', column_styles.get(column_index, 0)))
+            styles.setdefault(column_index, set()).add(style_catalog[style_id])
+
+    # 缺失的空白单元格继承列格式；按有效样式比较，避免把 OOXML 存储方式差异误判为业务差异。
+    for column_index in columns:
+        if explicit_cell_counts.get(column_index, 0) < len(data_rows):
+            styles.setdefault(column_index, set()).add(style_catalog[column_styles.get(column_index, 0)])
+
+    return {column_index: tuple(sorted(styles.get(column_index, set()), key=repr)) for column_index in sorted(columns)}
 
 
 def _column_index(cell_reference: str) -> int:

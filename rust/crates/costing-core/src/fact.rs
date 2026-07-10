@@ -256,7 +256,11 @@ fn append_non_positive_unit_cost_issues(
         }
         let row_id = work_order_key(row);
         for (amount_key, field_name) in NON_POSITIVE_UNIT_COST_METRICS {
-            let unit_cost = decimal_from_values(&row.values, amount_key) / completed_qty;
+            let Some(unit_cost) =
+                safe_divide(decimal_from_values(&row.values, amount_key), completed_qty)
+            else {
+                continue;
+            };
             if unit_cost <= ZERO {
                 error_issues.push(error_issue(
                     row_id.clone(),
@@ -494,20 +498,37 @@ fn moh_component_sum(values: &BTreeMap<String, CellValue>) -> Decimal {
         + decimal_from_values(values, MOH_UTILITIES_AMOUNT_KEY)
 }
 
-fn work_order_key(row: &TableRow) -> String {
+pub(crate) fn work_order_key(row: &TableRow) -> String {
     let period = row
         .values
         .get("月份")
         .or_else(|| row.values.get("年期"))
-        .map(cell_to_text)
+        .map(normalize_key_value)
         .unwrap_or_default();
     [
         period,
-        text(row, "产品编码"),
-        text(row, "工单编号"),
-        text(row, "工单行号"),
+        normalized_key_text(row, "产品编码"),
+        normalized_key_text(row, "工单编号"),
+        normalized_key_text(row, "工单行号"),
     ]
     .join("|")
+}
+
+fn normalized_key_text(row: &TableRow, column: &str) -> String {
+    row.values
+        .get(column)
+        .map(normalize_key_value)
+        .unwrap_or_default()
+}
+
+fn normalize_key_value(value: &CellValue) -> String {
+    let normalized = cell_to_text(value).trim().to_string();
+    if let Some(integer) = normalized.strip_suffix(".0") {
+        if !integer.is_empty() && integer.chars().all(|character| character.is_ascii_digit()) {
+            return integer.to_string();
+        }
+    }
+    normalized
 }
 
 fn bucket_names(cost_item: &str, standalone_items: &[&str]) -> Vec<String> {
@@ -601,7 +622,7 @@ fn safe_divide(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
     if denominator == ZERO {
         None
     } else {
-        Some(numerator / denominator)
+        numerator.checked_div(denominator)
     }
 }
 
@@ -655,6 +676,7 @@ fn validate_required_columns(
 
 #[cfg(test)]
 mod tests {
+    use crate::anomaly::build_work_order_anomaly_sheet;
     use crate::error::ErrorCode;
     use crate::model::{CellValue, SplitResult, TableRow};
     use crate::pipeline::{PipelineConfig, PipelineName};
@@ -734,6 +756,92 @@ mod tests {
             sheet[0].values["直接材料+直接人工+制造费用+委外加工费是否等于总完工成本"],
             CellValue::Text("是".to_string())
         );
+    }
+
+    #[test]
+    fn work_order_keys_trim_text_and_normalize_integer_suffixes_before_joining() {
+        let detail = vec![row(&[
+            ("月份", CellValue::Text(" 2025年01期 ".to_string())),
+            ("产品编码", CellValue::Text(" P1 ".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text(" WO1 ".to_string())),
+            ("工单行号", CellValue::Text(" 1.0 ".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
+            ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
+        ])];
+
+        let bundle = build_fact_bundle(
+            split_result(detail, qty),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bundle.qty_fact[0].values[DM_AMOUNT_KEY],
+            CellValue::Decimal(Decimal::new(10, 0))
+        );
+        assert!(!bundle
+            .error_issues
+            .iter()
+            .any(|issue| issue.issue_type == "TOTAL_COST_MISMATCH"));
+    }
+
+    #[test]
+    fn overflowing_unit_costs_become_blank_without_panicking() {
+        const PRODUCT_ORDER: &[(&str, &str)] = &[("P1", "产品")];
+        let amount = Decimal::new(9_999_999_999, 0);
+        let tiny_qty = Decimal::new(1, 28);
+        let detail = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("本期完工金额", CellValue::Decimal(amount)),
+        ])];
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("单据类型", CellValue::Text("汇报入库-普通生产".to_string())),
+            ("本期完工数量", CellValue::Decimal(tiny_qty)),
+            ("本期完工金额", CellValue::Decimal(amount)),
+        ])];
+        let config = PipelineConfig {
+            product_order: PRODUCT_ORDER,
+            ..PipelineConfig::for_name(PipelineName::Gb)
+        };
+
+        let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
+        let qty_sheet = build_qty_sheet_rows(&bundle, &config);
+        let anomaly_sheet = build_work_order_anomaly_sheet(&bundle, &config);
+        let total_unit_index = anomaly_sheet
+            .columns
+            .iter()
+            .position(|column| column == "总单位完工成本")
+            .unwrap();
+
+        assert_eq!(qty_sheet[0].values[QTY_DM_UNIT_COST], CellValue::Blank);
+        assert_eq!(anomaly_sheet.rows[0][total_unit_index], CellValue::Blank);
+        assert!(!bundle.error_issues.iter().any(|issue| {
+            issue.issue_type == "NON_POSITIVE_UNIT_COST"
+                && matches!(
+                    issue.field_name.as_str(),
+                    "总单位完工成本" | "直接材料单位完工成本"
+                )
+        }));
     }
 
     #[test]

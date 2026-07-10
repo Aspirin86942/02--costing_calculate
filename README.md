@@ -59,7 +59,7 @@ Rust CLI 默认拒绝覆盖已存在的 `--output`，并禁止输入、输出指
 - `成本计算单数量聚合维度`
 - `成本分析工单维度`
 
-- 每次处理只在对应 `data/processed/<pipeline>/` 目录生成 `*_处理后.xlsx`
+- 示例默认将 `*_处理后.xlsx` 写入 `data/processed/<pipeline>/`；实际输出位置由 `--output` 指定
 - 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台
 - `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
@@ -92,6 +92,11 @@ Rust CLI 默认拒绝覆盖已存在的 `--output`，并禁止输入、输出指
 - 不使用合并单元格
 
 ## 目录结构
+- `rust/` - 当前主实现的 Cargo workspace
+  - `costing-cli` - `costing-calculate` CLI 编排与错误输出
+  - `costing-core` - GB/SK ETL、Decimal 成本计算、质量审计与异常分析
+  - `costing-xlsx` - 原始工作簿读取和 3-sheet workbook 写出
+  - `costing-oracle-tests` - Rust 运行时契约比较支持
 - `src/analytics/` - 分析与异常检测模块
   - `contracts.py` - 共享数据结构
   - `fact_builder.py` - fact 构建与 Decimal 工具

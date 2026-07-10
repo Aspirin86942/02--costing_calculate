@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rust_decimal::Decimal;
 
+use crate::fact::work_order_key;
 use crate::model::{CellValue, FactBundle, QualityMetric, TableRow};
 
 pub fn build_quality_metrics(
@@ -162,26 +163,6 @@ fn has_analyzable_doc_type(row: &TableRow) -> bool {
 
 fn format_rate(value: f64) -> String {
     format!("{:.2}%", value * 100.0)
-}
-
-fn work_order_key(row: &TableRow) -> String {
-    let period = row
-        .values
-        .get("月份")
-        .or_else(|| row.values.get("年期"))
-        .map(cell_to_text)
-        .unwrap_or_default();
-    [
-        period,
-        text(row, "产品编码"),
-        text(row, "工单编号"),
-        text(row, "工单行号"),
-    ]
-    .join("|")
-}
-
-fn text(row: &TableRow, column: &str) -> String {
-    row.values.get(column).map(cell_to_text).unwrap_or_default()
 }
 
 fn text_any(row: &TableRow, columns: &[&str]) -> String {

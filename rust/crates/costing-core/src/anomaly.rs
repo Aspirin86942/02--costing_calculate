@@ -188,9 +188,37 @@ fn analysis_work_order_rows<'a>(
                 .map(|order_index| (order_index, row))
         })
         .collect::<Vec<_>>();
-    // 稳定排序保留同一产品的工单源顺序，同时确保产品块严格遵循白名单顺序。
-    rows.sort_by_key(|(order_index, _)| *order_index);
+    // Python 展示契约在白名单顺序内继续按月份、工单号和数值工单行排序。
+    rows.sort_by(|(left_order, left_row), (right_order, right_row)| {
+        left_order
+            .cmp(right_order)
+            .then_with(|| {
+                compare_text_field(left_row, right_row, &["period_display", "月份", "period"])
+            })
+            .then_with(|| compare_text_field(left_row, right_row, &["order_no", "工单编号"]))
+            .then_with(|| compare_order_line(left_row, right_row))
+    });
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+fn compare_text_field(left: &TableRow, right: &TableRow, keys: &[&str]) -> std::cmp::Ordering {
+    text_any(left, keys)
+        .trim()
+        .cmp(text_any(right, keys).trim())
+}
+
+fn compare_order_line(left: &TableRow, right: &TableRow) -> std::cmp::Ordering {
+    let left_text = text_any(left, &["order_line", "工单行", "工单行号"]);
+    let right_text = text_any(right, &["order_line", "工单行", "工单行号"]);
+    match (
+        left_text.trim().parse::<Decimal>(),
+        right_text.trim().parse::<Decimal>(),
+    ) {
+        (Ok(left_number), Ok(right_number)) => left_number.cmp(&right_number),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => left_text.trim().cmp(right_text.trim()),
+    }
 }
 
 fn work_order_columns(config: &PipelineConfig) -> Vec<String> {
@@ -680,7 +708,7 @@ fn safe_divide(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
     if denominator == ZERO {
         None
     } else {
-        Some(numerator / denominator)
+        numerator.checked_div(denominator)
     }
 }
 
@@ -936,6 +964,73 @@ mod tests {
         assert_eq!(
             sheet.rows[1][product_code_idx],
             CellValue::Text("P1".to_string())
+        );
+    }
+
+    #[test]
+    fn analysis_sheet_sorts_each_product_by_month_order_and_numeric_order_line() {
+        let rows = vec![
+            row(
+                "WO-B",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("月份", CellValue::Text("2025年02期".to_string())),
+                    ("工单行号", CellValue::Text("1".to_string())),
+                ],
+            ),
+            row(
+                "WO-A",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("月份", CellValue::Text("2025年01期".to_string())),
+                    ("工单行号", CellValue::Text("10".to_string())),
+                ],
+            ),
+            row(
+                "WO-A",
+                100,
+                "汇报入库-普通生产",
+                &[
+                    ("月份", CellValue::Text("2025年01期".to_string())),
+                    ("工单行号", CellValue::Text("2".to_string())),
+                ],
+            ),
+        ];
+
+        let sheet = build_work_order_anomaly_sheet(&bundle(rows), &test_config(PipelineName::Gb));
+        let month_index = column_index(&sheet, "月份");
+        let order_index = column_index(&sheet, "工单编号");
+        let order_line_index = column_index(&sheet, "工单行");
+
+        assert_eq!(
+            sheet
+                .rows
+                .iter()
+                .map(|row| (
+                    row[month_index].clone(),
+                    row[order_index].clone(),
+                    row[order_line_index].clone(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    CellValue::Text("2025年01期".to_string()),
+                    CellValue::Text("WO-A".to_string()),
+                    CellValue::Text("2".to_string()),
+                ),
+                (
+                    CellValue::Text("2025年01期".to_string()),
+                    CellValue::Text("WO-A".to_string()),
+                    CellValue::Text("10".to_string()),
+                ),
+                (
+                    CellValue::Text("2025年02期".to_string()),
+                    CellValue::Text("WO-B".to_string()),
+                    CellValue::Text("1".to_string()),
+                ),
+            ]
         );
     }
 

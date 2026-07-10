@@ -19,8 +19,6 @@ fn summary(
             .iter()
             .map(|(issue_type, count)| ((*issue_type).to_owned(), *count))
             .collect(),
-        error_log_preview: Vec::new(),
-        error_log_preview_truncated: false,
         quality_metrics: quality_metrics
             .iter()
             .map(|(category, metric, value)| QualityMetric {

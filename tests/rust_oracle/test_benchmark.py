@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.rust_oracle import benchmark
+from tests.rust_oracle import benchmark, repo_paths
 from tests.rust_oracle.oracle_runner import (
     REQUIRED_RUST_PAYLOAD_STAGES,
     OracleRunSummary,
@@ -17,6 +17,67 @@ from tests.rust_oracle.repo_paths import repo_root
 _INPUT_SHA = 'a' * 64
 _BINARY_SHA = 'b' * 64
 _CHANGED_SHA = 'c' * 64
+
+
+def test_require_benchmark_sample_rejects_unknown_pipeline() -> None:
+    with pytest.raises(AssertionError, match="unsupported benchmark pipeline: 'unknown'"):
+        repo_paths.require_benchmark_sample('unknown')
+
+
+def test_require_benchmark_sample_fails_when_sample_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv('COSTING_GB_SAMPLE', raising=False)
+    monkeypatch.setattr(repo_paths, 'repo_root', lambda: tmp_path)
+    (tmp_path / 'data' / 'raw' / 'gb').mkdir(parents=True)
+
+    with pytest.raises(AssertionError, match='requires exactly one sample'):
+        repo_paths.require_benchmark_sample('gb')
+
+
+def test_require_benchmark_sample_does_not_fallback_from_invalid_environment_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    raw_dir = tmp_path / 'data' / 'raw' / 'gb'
+    raw_dir.mkdir(parents=True)
+    (raw_dir / 'gb-fallback.xlsx').write_bytes(b'fallback')
+    invalid_path = tmp_path / 'missing.xlsx'
+    monkeypatch.setenv('COSTING_GB_SAMPLE', str(invalid_path))
+    monkeypatch.setattr(repo_paths, 'repo_root', lambda: tmp_path)
+
+    with pytest.raises(AssertionError, match='COSTING_GB_SAMPLE must point to an existing .xlsx file'):
+        repo_paths.require_benchmark_sample('gb')
+
+
+def test_require_benchmark_sample_fails_when_multiple_samples_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv('COSTING_GB_SAMPLE', raising=False)
+    monkeypatch.setattr(repo_paths, 'repo_root', lambda: tmp_path)
+    raw_dir = tmp_path / 'data' / 'raw' / 'gb'
+    raw_dir.mkdir(parents=True)
+    (raw_dir / 'gb-first.xlsx').write_bytes(b'first')
+    (raw_dir / 'gb-second.xlsx').write_bytes(b'second')
+
+    with pytest.raises(AssertionError, match='found 2'):
+        repo_paths.require_benchmark_sample('gb')
+
+
+def test_require_benchmark_sample_returns_the_only_absolute_xlsx_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv('COSTING_GB_SAMPLE', raising=False)
+    monkeypatch.setattr(repo_paths, 'repo_root', lambda: tmp_path)
+    raw_dir = tmp_path / 'data' / 'raw' / 'gb'
+    raw_dir.mkdir(parents=True)
+    sample_path = raw_dir / 'gb-only.xlsx'
+    sample_path.write_bytes(b'sample')
+
+    assert repo_paths.require_benchmark_sample('gb') == sample_path.resolve()
 
 
 def _summary(

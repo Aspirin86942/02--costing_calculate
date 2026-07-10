@@ -25,19 +25,22 @@ Python oracle/regression 的开发、测试命令使用项目 `.venv`，由 `uv`
 Rust CLI 是当前默认/主入口：
 
 ```powershell
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
+cargo build --release --manifest-path rust/Cargo.toml
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
 ```
+
+上述正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径。
 
 从仓库根目录运行并省略 `--input` 时，CLI 会扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`。
 
 以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义输入、输出路径时，仍可显式指定：
 
 ```powershell
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
 ```
 
 Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：

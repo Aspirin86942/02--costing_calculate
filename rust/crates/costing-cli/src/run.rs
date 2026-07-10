@@ -11,7 +11,6 @@ use costing_core::timing::measure;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{
     reader::{read_raw_workbook, CostingXlsxError},
-    snapshot::build_reader_snapshot,
     writer::write_workbook,
 };
 
@@ -39,15 +38,16 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
     let month_filter_requested = month_range.is_some();
     let pipeline = PipelineConfig::for_name(args.pipeline);
     let mut timings = StageTimings::default();
-    let total_started = args.benchmark.then(Instant::now);
     let input = args
         .input
         .as_ref()
         .expect("resolve_cli_paths always supplies an input path");
-    let (raw, snapshot) = measure(&mut timings, "ingest", || {
+    let total_started = args.benchmark.then(Instant::now);
+
+    let (raw, reader_rows) = measure(&mut timings, "ingest", || {
         let raw = read_raw_workbook(input).map_err(|error| map_xlsx_read_error(input, error))?;
-        let snapshot = build_reader_snapshot(&raw);
-        Ok::<_, CostingError>((raw, snapshot))
+        let reader_rows = raw.rows.len();
+        Ok::<_, CostingError>((raw, reader_rows))
     })?;
     let normalized = measure(&mut timings, "normalize", || {
         Ok::<_, anyhow::Error>(normalize_workbook(raw, &pipeline, month_range)?)
@@ -59,12 +59,6 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
     let bundle = measure(&mut timings, "fact", || {
         Ok::<_, anyhow::Error>(build_fact_bundle(split, &pipeline)?)
     })?;
-    let mut run_counts = BTreeMap::from([
-        ("reader_rows".to_string(), snapshot.row_count),
-        ("detail_rows".to_string(), bundle.detail_fact.len()),
-        ("qty_rows".to_string(), bundle.qty_fact.len()),
-        ("work_order_rows".to_string(), bundle.work_order_fact.len()),
-    ]);
     let payload_timings = timings.clone();
     let payload = measure(&mut timings, "presentation", || {
         build_workbook_payload(
@@ -74,20 +68,35 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
             month_filter_empty_result,
         )
     })?;
-    run_counts.insert(
-        "qty_sheet_rows".to_string(),
-        payload
-            .sheet_models
-            .iter()
-            .find(|sheet| sheet.sheet_name == "成本计算单数量聚合维度")
-            .expect("workbook payload must contain the quantity aggregation sheet")
-            .rows
-            .len(),
-    );
-    run_counts.insert(
-        "quality_metric_count".to_string(),
-        payload.quality_metrics.len(),
-    );
+
+    if let Some(started) = total_started {
+        timings.insert("total", started.elapsed().as_secs_f64());
+    }
+
+    let detail_rows = required_quality_count(&payload.quality_metrics, "成本明细输入行数")?;
+    let qty_rows = required_quality_count(&payload.quality_metrics, "产品数量统计输出行数")?;
+    let work_order_rows = required_quality_count(&payload.quality_metrics, "工单异常分析输出行数")?;
+    let qty_sheet_rows = payload
+        .sheet_models
+        .iter()
+        .find(|sheet| sheet.sheet_name == "成本计算单数量聚合维度")
+        .ok_or_else(|| CostingError::Internal {
+            code: ErrorCode::InternalError,
+            message: "workbook payload is missing quantity sheet".to_string(),
+        })?
+        .rows
+        .len();
+    let run_counts = BTreeMap::from([
+        ("reader_rows".to_string(), reader_rows),
+        ("detail_rows".to_string(), detail_rows),
+        ("qty_rows".to_string(), qty_rows),
+        ("qty_sheet_rows".to_string(), qty_sheet_rows),
+        (
+            "quality_metric_count".to_string(),
+            payload.quality_metrics.len(),
+        ),
+        ("work_order_rows".to_string(), work_order_rows),
+    ]);
     let workbook_path = args.output.as_ref().map(|path| path.display().to_string());
     if !args.check_only {
         let output = args
@@ -97,9 +106,6 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         measure(&mut timings, "export", || {
             write_workbook(output, &payload).map_err(|error| map_xlsx_write_error(output, error))
         })?;
-    }
-    if let Some(started) = total_started {
-        timings.insert("total", started.elapsed().as_secs_f64());
     }
     let mut issue_type_counts = BTreeMap::new();
     for issue in &payload.error_log {
@@ -119,6 +125,35 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         run_counts,
         stage_timings: timings,
     })
+}
+
+fn required_quality_count(
+    quality_metrics: &[costing_core::model::QualityMetric],
+    metric_name: &str,
+) -> Result<usize, CostingError> {
+    let mut matches = quality_metrics
+        .iter()
+        .filter(|metric| metric.metric == metric_name);
+    let metric = matches.next().ok_or_else(|| CostingError::Internal {
+        code: ErrorCode::InternalError,
+        message: format!("workbook payload is missing quality metric: {metric_name}"),
+    })?;
+    if matches.next().is_some() {
+        return Err(CostingError::Internal {
+            code: ErrorCode::InternalError,
+            message: format!("workbook payload has duplicate quality metric: {metric_name}"),
+        });
+    }
+    metric
+        .value
+        .parse::<usize>()
+        .map_err(|error| CostingError::Internal {
+            code: ErrorCode::InternalError,
+            message: format!(
+                "workbook payload quality metric {metric_name} is not an integer: {}; {error}",
+                metric.value,
+            ),
+        })
 }
 
 fn resolve_cli_paths(

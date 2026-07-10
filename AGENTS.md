@@ -18,16 +18,17 @@
 - 当前执行口径以本文件和根 `README.md` 为准；`docs/superpowers/`、日期方案和 `spikes/` 属于历史记录，其中旧 `conda` 命令不再是当前默认环境口径
 
 ### Build / Test / Dev Commands
-- `cargo build --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
-- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb`: 从仓库根目录执行 GB Rust 管线
-- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk`: 从仓库根目录执行 SK Rust 管线
-- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark`: GB Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark`: SK Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `cargo build --release --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb`: 从仓库根目录执行 GB Rust 管线
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk`: 从仓库根目录执行 SK Rust 管线
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark`: GB Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark`: SK Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- 正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径
 - 省略 `--input` 时扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`
 - 非 `--check-only` 模式省略 `--output` 时，自动写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
 - 以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义路径时显式指定：
-  - `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx`
-  - `cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx`
+  - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx`
+  - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx`
 - Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件
 - `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
 - `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查

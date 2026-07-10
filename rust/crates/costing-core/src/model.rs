@@ -114,6 +114,48 @@ pub struct ErrorIssue {
     pub retryable: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CostAmounts {
+    pub(crate) direct_material: Decimal,
+    pub(crate) direct_labor: Decimal,
+    pub(crate) manufacturing_overhead: Decimal,
+    pub(crate) moh_other: Decimal,
+    pub(crate) moh_labor: Decimal,
+    pub(crate) moh_consumables: Decimal,
+    pub(crate) moh_depreciation: Decimal,
+    pub(crate) moh_utilities: Decimal,
+    // 独立成本项按 PipelineConfig 的固定顺序保存，避免每个工单重复持有 bucket 字符串。
+    pub(crate) standalone: Vec<Decimal>,
+}
+
+impl CostAmounts {
+    pub(crate) fn new(standalone_count: usize) -> Self {
+        Self {
+            direct_material: Decimal::ZERO,
+            direct_labor: Decimal::ZERO,
+            manufacturing_overhead: Decimal::ZERO,
+            moh_other: Decimal::ZERO,
+            moh_labor: Decimal::ZERO,
+            moh_consumables: Decimal::ZERO,
+            moh_depreciation: Decimal::ZERO,
+            moh_utilities: Decimal::ZERO,
+            standalone: vec![Decimal::ZERO; standalone_count],
+        }
+    }
+
+    pub(crate) fn standalone_amount(&self, index: usize) -> Decimal {
+        self.standalone.get(index).copied().unwrap_or(Decimal::ZERO)
+    }
+
+    pub(crate) fn moh_component_sum(&self) -> Decimal {
+        self.moh_other
+            + self.moh_labor
+            + self.moh_consumables
+            + self.moh_depreciation
+            + self.moh_utilities
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct IndexedFactRow {
     pub(crate) source: IndexedRow,

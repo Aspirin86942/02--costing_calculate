@@ -1,9 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use rust_decimal::Decimal;
 
 use crate::error::CostingError;
-use crate::model::{CellValue, ErrorIssue, FactBundle, IndexedFactRow, SplitResult};
+use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, IndexedFactRow, SplitResult};
 use crate::pipeline::PipelineConfig;
 use crate::sheet_contract::qty_sheet_base_columns;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow};
@@ -71,6 +71,50 @@ const REQUIRED_QTY_COLUMNS: &[&str] = &[
     "本期完工金额",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MohComponent {
+    Other,
+    Labor,
+    Consumables,
+    Depreciation,
+    Utilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CostClassification {
+    DirectMaterial,
+    DirectLabor,
+    ManufacturingOverhead(Option<MohComponent>),
+    Standalone(usize),
+    Unmapped,
+}
+
+impl CostAmounts {
+    fn add(&mut self, classification: CostClassification, amount: Decimal) {
+        match classification {
+            CostClassification::DirectMaterial => self.direct_material += amount,
+            CostClassification::DirectLabor => self.direct_labor += amount,
+            CostClassification::ManufacturingOverhead(component) => {
+                // 制造费用一行同时进入总额和可识别细项，保留既有双口径勾稽语义。
+                self.manufacturing_overhead += amount;
+                match component {
+                    Some(MohComponent::Other) => self.moh_other += amount,
+                    Some(MohComponent::Labor) => self.moh_labor += amount,
+                    Some(MohComponent::Consumables) => self.moh_consumables += amount,
+                    Some(MohComponent::Depreciation) => self.moh_depreciation += amount,
+                    Some(MohComponent::Utilities) => self.moh_utilities += amount,
+                    None => {}
+                }
+            }
+            CostClassification::Standalone(index) => {
+                // index 只由同一配置 slice 的 position 产生，因此这里可直接定位稳定槽位。
+                self.standalone[index] += amount;
+            }
+            CostClassification::Unmapped => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WorkOrderColumns {
     month_or_period: Option<ColumnId>,
@@ -135,7 +179,9 @@ pub fn build_fact_bundle(
     let detail_columns = DetailFactColumns::resolve(&schema)?;
     let qty_columns = QtyFactColumns::resolve(&schema)?;
 
-    let mut amount_by_key: BTreeMap<String, BTreeMap<String, Decimal>> = BTreeMap::new();
+    let standalone_count = config.standalone_cost_items.len();
+    // HashMap 只做工单键查询；issue 与输出顺序始终由输入行向量决定。
+    let mut amounts_by_key: HashMap<String, CostAmounts> = HashMap::new();
     let mut qty_rows_by_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut error_issues = Vec::new();
 
@@ -143,8 +189,8 @@ pub fn build_fact_bundle(
         let key = work_order_key(row, &detail_columns.key)?;
         let cost_item = cell_to_text(row.get(detail_columns.cost_item)?);
         let amount = cell_to_decimal(row.get(detail_columns.completed_amount)?);
-        let buckets = bucket_names(&cost_item, config.standalone_cost_items);
-        if buckets.is_empty() {
+        let classification = classify_cost_item(&cost_item, config.standalone_cost_items);
+        if classification == CostClassification::Unmapped {
             if !cost_item.trim().is_empty() {
                 error_issues.push(error_issue(
                     key,
@@ -169,13 +215,10 @@ pub fn build_fact_bundle(
             ));
         }
 
-        for bucket in buckets {
-            *amount_by_key
-                .entry(key.clone())
-                .or_default()
-                .entry(bucket)
-                .or_default() += amount.unwrap_or(ZERO);
-        }
+        amounts_by_key
+            .entry(key)
+            .or_insert_with(|| CostAmounts::new(standalone_count))
+            .add(classification, amount.unwrap_or(ZERO));
     }
 
     let qty_input_row_count = qty_source_rows.len();
@@ -220,16 +263,17 @@ pub fn build_fact_bundle(
     let mut qty_rows = Vec::with_capacity(valid_qty_rows.len());
     for qty_row in valid_qty_rows {
         let key = work_order_key(&qty_row, &qty_columns.key)?;
-        let amounts = amount_by_key.get(&key).cloned().unwrap_or_default();
+        let amounts = amounts_by_key
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| CostAmounts::new(standalone_count));
         let completed_qty =
             cell_to_decimal(qty_row.get(qty_columns.completed_qty)?).unwrap_or(ZERO);
         let completed_total =
             cell_to_decimal(qty_row.get(qty_columns.completed_amount)?).unwrap_or(ZERO);
         let mut fact_row = IndexedFactRow::new(qty_row);
 
-        for (bucket, amount) in amounts {
-            fact_row.insert_derived(bucket, CellValue::Decimal(amount));
-        }
+        write_amount_overlay(&mut fact_row, &amounts, config);
         fact_row.insert_derived(
             COMPLETED_QTY_KEY.to_string(),
             CellValue::Decimal(completed_qty),
@@ -590,30 +634,57 @@ fn normalize_key_value(value: &CellValue) -> String {
     normalized
 }
 
-fn bucket_names(cost_item: &str, standalone_items: &[&str]) -> Vec<String> {
+fn classify_cost_item(cost_item: &str, standalone_items: &[&str]) -> CostClassification {
     let normalized = cost_item.trim();
-    let mut buckets = match normalized {
-        "直接材料" => vec![DM_AMOUNT_KEY.to_string()],
-        "直接人工" => vec![DL_AMOUNT_KEY.to_string()],
+    match normalized {
+        "直接材料" => CostClassification::DirectMaterial,
+        "直接人工" => CostClassification::DirectLabor,
         value if value.starts_with("制造费用") => {
-            // 制造费用明细同时参与制造费用总额和明细勾稽，保持 Python fact_builder 的双口径。
-            let mut buckets = vec![MOH_AMOUNT_KEY.to_string()];
-            if let Some(component_key) = moh_component_key(value) {
-                buckets.push(component_key.to_string());
-            }
-            buckets
+            let component = match value {
+                "制造费用_其他" => Some(MohComponent::Other),
+                "制造费用-人工" => Some(MohComponent::Labor),
+                "制造费用_机物料及低耗" => Some(MohComponent::Consumables),
+                "制造费用_折旧" => Some(MohComponent::Depreciation),
+                "制造费用_水电费" => Some(MohComponent::Utilities),
+                _ => None,
+            };
+            CostClassification::ManufacturingOverhead(component)
         }
-        _ => Vec::new(),
-    };
-
-    if standalone_items
-        .iter()
-        .any(|item| item.trim() == normalized)
-    {
-        buckets.push(standalone_key(normalized));
+        value => standalone_items
+            .iter()
+            .position(|item| item.trim() == value)
+            .map(CostClassification::Standalone)
+            .unwrap_or(CostClassification::Unmapped),
     }
+}
 
-    buckets
+fn write_amount_overlay(row: &mut IndexedFactRow, amounts: &CostAmounts, config: &PipelineConfig) {
+    row.insert_derived(DM_AMOUNT_KEY, CellValue::Decimal(amounts.direct_material));
+    row.insert_derived(DL_AMOUNT_KEY, CellValue::Decimal(amounts.direct_labor));
+    row.insert_derived(
+        MOH_AMOUNT_KEY,
+        CellValue::Decimal(amounts.manufacturing_overhead),
+    );
+    row.insert_derived(MOH_OTHER_AMOUNT_KEY, CellValue::Decimal(amounts.moh_other));
+    row.insert_derived(MOH_LABOR_AMOUNT_KEY, CellValue::Decimal(amounts.moh_labor));
+    row.insert_derived(
+        MOH_CONSUMABLES_AMOUNT_KEY,
+        CellValue::Decimal(amounts.moh_consumables),
+    );
+    row.insert_derived(
+        MOH_DEPRECIATION_AMOUNT_KEY,
+        CellValue::Decimal(amounts.moh_depreciation),
+    );
+    row.insert_derived(
+        MOH_UTILITIES_AMOUNT_KEY,
+        CellValue::Decimal(amounts.moh_utilities),
+    );
+    for (index, item) in config.standalone_cost_items.iter().enumerate() {
+        row.insert_derived(
+            standalone_key(item),
+            CellValue::Decimal(amounts.standalone_amount(index)),
+        );
+    }
 }
 
 fn standalone_key(item: &str) -> String {
@@ -621,17 +692,6 @@ fn standalone_key(item: &str) -> String {
         "委外加工费" => "outsource_amount".to_string(),
         "软件费用" => "software_amount".to_string(),
         other => format!("standalone:{other}"),
-    }
-}
-
-fn moh_component_key(item: &str) -> Option<&'static str> {
-    match item.trim() {
-        "制造费用_其他" => Some(MOH_OTHER_AMOUNT_KEY),
-        "制造费用-人工" => Some(MOH_LABOR_AMOUNT_KEY),
-        "制造费用_机物料及低耗" => Some(MOH_CONSUMABLES_AMOUNT_KEY),
-        "制造费用_折旧" => Some(MOH_DEPRECIATION_AMOUNT_KEY),
-        "制造费用_水电费" => Some(MOH_UTILITIES_AMOUNT_KEY),
-        _ => None,
     }
 }
 
@@ -726,6 +786,30 @@ mod tests {
             .collect()
     }
 
+    fn detail_row(cost_item: &str, amount: CellValue) -> NamedTestRow {
+        row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("成本项目名称", CellValue::Text(cost_item.to_string())),
+            ("本期完工金额", amount),
+        ])
+    }
+
+    fn qty_row(completed_qty: Decimal, completed_total: Decimal) -> NamedTestRow {
+        row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(completed_qty)),
+            ("本期完工金额", CellValue::Decimal(completed_total)),
+        ])
+    }
+
     fn split_result(detail_rows: Vec<NamedTestRow>, qty_rows: Vec<NamedTestRow>) -> SplitResult {
         let mut columns = [
             "月份",
@@ -791,6 +875,206 @@ mod tests {
             .iter()
             .map(|id| bundle.schema.name(*id).unwrap().to_string())
             .collect()
+    }
+
+    #[test]
+    fn classifies_direct_material_and_direct_labor_without_allocating_bucket_names() {
+        assert_eq!(
+            classify_cost_item("直接材料", &["委外加工费"]),
+            CostClassification::DirectMaterial
+        );
+        assert_eq!(
+            classify_cost_item("直接人工", &["委外加工费"]),
+            CostClassification::DirectLabor
+        );
+    }
+
+    #[test]
+    fn manufacturing_component_updates_total_and_matching_component() {
+        let classification = classify_cost_item("制造费用_折旧", &["委外加工费", "软件费用"]);
+        assert_eq!(
+            classification,
+            CostClassification::ManufacturingOverhead(Some(MohComponent::Depreciation)),
+        );
+
+        let mut amounts = CostAmounts::new(2);
+        amounts.add(classification, Decimal::new(1250, 2));
+
+        assert_eq!(amounts.manufacturing_overhead, Decimal::new(1250, 2));
+        assert_eq!(amounts.moh_depreciation, Decimal::new(1250, 2));
+        assert_eq!(amounts.moh_component_sum(), Decimal::new(1250, 2));
+    }
+
+    #[test]
+    fn unknown_manufacturing_component_updates_only_moh_total() {
+        let classification = classify_cost_item("制造费用_未分类", &["委外加工费"]);
+        assert_eq!(
+            classification,
+            CostClassification::ManufacturingOverhead(None)
+        );
+
+        let mut amounts = CostAmounts::new(1);
+        amounts.add(classification, Decimal::new(9, 0));
+
+        assert_eq!(amounts.manufacturing_overhead, Decimal::new(9, 0));
+        assert_eq!(amounts.moh_component_sum(), Decimal::ZERO);
+        assert_eq!(amounts.standalone_amount(0), Decimal::ZERO);
+    }
+
+    #[test]
+    fn standalone_cost_uses_pipeline_configuration_index() {
+        let items = ["软件费用", "委外加工费"];
+        let classification = classify_cost_item("委外加工费", &items);
+        assert_eq!(classification, CostClassification::Standalone(1));
+
+        let mut amounts = CostAmounts::new(items.len());
+        amounts.add(classification, Decimal::new(35, 1));
+
+        assert_eq!(amounts.standalone_amount(0), Decimal::ZERO);
+        assert_eq!(amounts.standalone_amount(1), Decimal::new(35, 1));
+    }
+
+    #[test]
+    fn sk_standalone_cost_order_keeps_outsource_before_software() {
+        let items = ["委外加工费", "软件费用"];
+        assert_eq!(
+            classify_cost_item("委外加工费", &items),
+            CostClassification::Standalone(0),
+        );
+        assert_eq!(
+            classify_cost_item("软件费用", &items),
+            CostClassification::Standalone(1),
+        );
+    }
+
+    #[test]
+    fn unmapped_non_blank_cost_item_still_emits_the_same_issue() {
+        let bundle = build_fact_bundle(
+            split_result(vec![detail_row("未映射费用", CellValue::Blank)], vec![]),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bundle.error_issues,
+            vec![ErrorIssue {
+                row_id: "2025年01期|P1|WO1|1".to_string(),
+                issue_type: "UNMAPPED_COST_ITEM".to_string(),
+                field_name: "成本项目名称".to_string(),
+                original_value: "未映射费用".to_string(),
+                reason: "成本项目未映射到直接材料/直接人工/制造费用".to_string(),
+                action: "该行已从分析数据中排除".to_string(),
+                retryable: false,
+            }],
+        );
+    }
+
+    #[test]
+    fn missing_amount_issue_payload_remains_exact() {
+        let bundle = build_fact_bundle(
+            split_result(vec![detail_row("直接材料", CellValue::Blank)], vec![]),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bundle.error_issues,
+            vec![ErrorIssue {
+                row_id: "2025年01期|P1|WO1|1".to_string(),
+                issue_type: "MISSING_AMOUNT".to_string(),
+                field_name: "本期完工金额".to_string(),
+                original_value: String::new(),
+                reason: "成本明细金额为空，已按 0 参与汇总".to_string(),
+                action: "金额置为 0 后继续计算".to_string(),
+                retryable: false,
+            }],
+        );
+    }
+
+    #[test]
+    fn typed_amounts_keep_missing_amount_issue_before_qty_issues() {
+        let detail = vec![
+            detail_row("直接材料", CellValue::Blank),
+            detail_row("直接材料", CellValue::Decimal(Decimal::ONE)),
+            detail_row("直接人工", CellValue::Decimal(Decimal::ONE)),
+            detail_row("制造费用_其他", CellValue::Decimal(Decimal::ONE)),
+            detail_row("制造费用-人工", CellValue::Decimal(Decimal::ONE)),
+            detail_row("制造费用_机物料及低耗", CellValue::Decimal(Decimal::ONE)),
+            detail_row("制造费用_折旧", CellValue::Decimal(Decimal::ONE)),
+            detail_row("制造费用_水电费", CellValue::Decimal(Decimal::ONE)),
+        ];
+        let qty = vec![
+            qty_row(Decimal::ONE, Decimal::new(7, 0)),
+            qty_row(Decimal::new(2, 0), Decimal::new(8, 0)),
+        ];
+
+        let bundle = build_fact_bundle(
+            split_result(detail, qty),
+            &PipelineConfig::for_name(PipelineName::Gb),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bundle
+                .error_issues
+                .iter()
+                .map(|issue| issue.issue_type.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "MISSING_AMOUNT",
+                "DUPLICATE_WORK_ORDER_KEY",
+                "DUPLICATE_WORK_ORDER_KEY",
+                "TOTAL_COST_MISMATCH",
+            ]
+        );
+    }
+
+    #[test]
+    fn qty_without_detail_overlays_every_configured_amount_with_zero() {
+        let qty = vec![row(&[
+            ("月份", CellValue::Text("2025年01期".to_string())),
+            ("产品编码", CellValue::Text("P1".to_string())),
+            ("产品名称", CellValue::Text("产品".to_string())),
+            ("工单编号", CellValue::Text("WO1".to_string())),
+            ("工单行号", CellValue::Text("1".to_string())),
+            ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
+            ("本期完工金额", CellValue::Decimal(Decimal::ZERO)),
+            (DM_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (DL_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (MOH_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (MOH_OTHER_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (MOH_LABOR_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (MOH_CONSUMABLES_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            (
+                MOH_DEPRECIATION_AMOUNT_KEY,
+                CellValue::Decimal(Decimal::ONE),
+            ),
+            (MOH_UTILITIES_AMOUNT_KEY, CellValue::Decimal(Decimal::ONE)),
+            ("outsource_amount", CellValue::Decimal(Decimal::ONE)),
+            ("software_amount", CellValue::Decimal(Decimal::ONE)),
+        ])];
+        let config = PipelineConfig::for_name(PipelineName::Sk);
+
+        let bundle = build_fact_bundle(split_result(vec![], qty), &config).unwrap();
+
+        for amount_key in [
+            DM_AMOUNT_KEY,
+            DL_AMOUNT_KEY,
+            MOH_AMOUNT_KEY,
+            MOH_OTHER_AMOUNT_KEY,
+            MOH_LABOR_AMOUNT_KEY,
+            MOH_CONSUMABLES_AMOUNT_KEY,
+            MOH_DEPRECIATION_AMOUNT_KEY,
+            MOH_UTILITIES_AMOUNT_KEY,
+            "outsource_amount",
+            "software_amount",
+        ] {
+            assert_eq!(
+                fact_value(&bundle.schema, &bundle.qty_rows[0], amount_key),
+                Some(&CellValue::Decimal(Decimal::ZERO)),
+                "{amount_key} must come from the zero-valued overlay"
+            );
+        }
     }
 
     #[test]
@@ -1175,14 +1459,15 @@ mod tests {
             ),
             Some(&CellValue::Text("否".to_string()))
         );
-        assert!(bundle
-            .error_issues
-            .iter()
-            .any(|issue| issue.issue_type == "MOH_BREAKDOWN_MISMATCH"));
-        assert!(bundle
-            .error_issues
-            .iter()
-            .any(|issue| issue.issue_type == "TOTAL_COST_MISMATCH"));
+        assert_eq!(
+            bundle
+                .error_issues
+                .iter()
+                .take(2)
+                .map(|issue| issue.issue_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["MOH_BREAKDOWN_MISMATCH", "TOTAL_COST_MISMATCH"]
+        );
     }
 
     #[test]

@@ -126,8 +126,8 @@ struct MetricAudit {
     sample_size: usize,
 }
 
-struct AnomalyRow {
-    source: TableRow,
+struct AnomalyRow<'a> {
+    source: &'a TableRow,
     numbers: BTreeMap<String, Decimal>,
     production_scope: String,
     can_analyze: bool,
@@ -245,7 +245,7 @@ fn insert_before(columns: &mut Vec<String>, marker: &str, value: &str) {
     columns.insert(index, value.to_string());
 }
 
-fn build_anomaly_row(row: &TableRow, config: &PipelineConfig) -> AnomalyRow {
+fn build_anomaly_row<'a>(row: &'a TableRow, config: &PipelineConfig) -> AnomalyRow<'a> {
     let completed_qty = decimal(row, "completed_qty").unwrap_or(ZERO);
     let completed_total = decimal(row, "completed_amount_total").unwrap_or(ZERO);
     let mut numbers = BTreeMap::from([
@@ -306,7 +306,7 @@ fn build_anomaly_row(row: &TableRow, config: &PipelineConfig) -> AnomalyRow {
         && matches!(production_scope.as_str(), NORMAL_SCOPE | REWORK_SCOPE);
 
     AnomalyRow {
-        source: row.clone(),
+        source: row,
         numbers,
         production_scope,
         can_analyze,
@@ -340,7 +340,7 @@ fn insert_unit_costs(numbers: &mut BTreeMap<String, Decimal>, completed_qty: Dec
     }
 }
 
-fn score_rows(rows: &mut [AnomalyRow]) {
+fn score_rows(rows: &mut [AnomalyRow<'_>]) {
     for metric in ANOMALY_METRICS {
         append_non_positive_reasons(rows, *metric);
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -449,12 +449,12 @@ fn score_rows(rows: &mut [AnomalyRow]) {
     }
 }
 
-fn push_score_reason(row: &mut AnomalyRow, metric: Metric, reason: &str) {
+fn push_score_reason(row: &mut AnomalyRow<'_>, metric: Metric, reason: &str) {
     row.reasons
         .push(format!("{}{}", metric.display_name, reason));
 }
 
-fn append_non_positive_reasons(rows: &mut [AnomalyRow], metric: Metric) {
+fn append_non_positive_reasons(rows: &mut [AnomalyRow<'_>], metric: Metric) {
     for row in rows {
         if !positive_number(row, metric.key) {
             row.reasons
@@ -463,7 +463,7 @@ fn append_non_positive_reasons(rows: &mut [AnomalyRow], metric: Metric) {
     }
 }
 
-fn finalize_row_anomaly(row: &mut AnomalyRow) {
+fn finalize_row_anomaly(row: &mut AnomalyRow<'_>) {
     let mut severity_rank = 0;
     let mut highest_score: Option<Decimal> = None;
     let mut highest_source = String::new();
@@ -510,7 +510,7 @@ fn finalize_row_anomaly(row: &mut AnomalyRow) {
     row.detail_explanation = build_detail_explanation(row);
 }
 
-fn build_detail_explanation(row: &AnomalyRow) -> String {
+fn build_detail_explanation(row: &AnomalyRow<'_>) -> String {
     let mut parts = Vec::new();
     for metric in ANOMALY_METRICS {
         let Some(audit) = row.audits.get(metric.key) else {
@@ -557,7 +557,7 @@ fn format_percent(value: f64) -> String {
     format!("{:.2}%", value * 100.0)
 }
 
-fn map_work_order_value(row: &AnomalyRow, column: &str, config: &PipelineConfig) -> CellValue {
+fn map_work_order_value(row: &AnomalyRow<'_>, column: &str, config: &PipelineConfig) -> CellValue {
     match column {
         "月份" => value_any(&row.source, &["period_display", "月份", "年期"]),
         "成本中心" => value_any(&row.source, &["cost_center", "成本中心名称"]),
@@ -602,7 +602,11 @@ fn map_work_order_value(row: &AnomalyRow, column: &str, config: &PipelineConfig)
     }
 }
 
-fn standalone_display_value(row: &AnomalyRow, column: &str, config: &PipelineConfig) -> CellValue {
+fn standalone_display_value(
+    row: &AnomalyRow<'_>,
+    column: &str,
+    config: &PipelineConfig,
+) -> CellValue {
     for item in config.standalone_cost_items {
         let meta = standalone_meta(item);
         if column == meta.amount_column {
@@ -648,7 +652,7 @@ fn build_number_formats(columns: &[String]) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn group_key(row: &AnomalyRow) -> String {
+fn group_key(row: &AnomalyRow<'_>) -> String {
     format!(
         "{}|{}|{}",
         text_any(&row.source, &["product_code", "产品编码"]),
@@ -657,14 +661,14 @@ fn group_key(row: &AnomalyRow) -> String {
     )
 }
 
-fn positive_number(row: &AnomalyRow, key: &str) -> bool {
+fn positive_number(row: &AnomalyRow<'_>, key: &str) -> bool {
     row.numbers
         .get(key)
         .map(|value| *value > ZERO)
         .unwrap_or(false)
 }
 
-fn decimal_value(row: &AnomalyRow, key: &str) -> CellValue {
+fn decimal_value(row: &AnomalyRow<'_>, key: &str) -> CellValue {
     row.numbers
         .get(key)
         .copied()

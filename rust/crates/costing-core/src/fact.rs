@@ -334,12 +334,10 @@ fn append_column(columns: &mut Vec<String>, column: &str) {
     }
 }
 
-pub fn build_qty_sheet_rows(bundle: &FactBundle, config: &PipelineConfig) -> Vec<TableRow> {
-    bundle
-        .qty_fact
-        .iter()
+pub fn build_qty_sheet_rows(rows: Vec<TableRow>, config: &PipelineConfig) -> Vec<TableRow> {
+    rows.into_iter()
         .map(|row| {
-            let mut values = row.values.clone();
+            let mut values = row.values;
             let completed_qty = decimal_from_values(&values, COMPLETED_QTY_KEY);
             let dm = decimal_from_values(&values, DM_AMOUNT_KEY);
             let dl = decimal_from_values(&values, DL_AMOUNT_KEY);
@@ -747,7 +745,7 @@ mod tests {
         ])];
         let config = PipelineConfig::for_name(PipelineName::Gb);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let sheet = build_qty_sheet_rows(&bundle, &config);
+        let sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
         assert_eq!(
             sheet[0].values["本期完工委外加工费合计完工金额"],
             CellValue::Decimal(Decimal::new(5, 0))
@@ -825,8 +823,8 @@ mod tests {
         };
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let qty_sheet = build_qty_sheet_rows(&bundle, &config);
         let anomaly_sheet = build_work_order_anomaly_sheet(&bundle, &config);
+        let qty_sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
         let total_unit_index = anomaly_sheet
             .columns
             .iter()
@@ -866,7 +864,7 @@ mod tests {
         ])];
         let config = PipelineConfig::for_name(PipelineName::Sk);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let sheet = build_qty_sheet_rows(&bundle, &config);
+        let sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
         assert_eq!(
             sheet[0].values["本期完工软件费用合计完工金额"],
             CellValue::Decimal(Decimal::new(7, 0))
@@ -999,7 +997,7 @@ mod tests {
         ])];
         let config = PipelineConfig::for_name(PipelineName::Gb);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let sheet = build_qty_sheet_rows(&bundle, &config);
+        let sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
         let columns = qty_sheet_columns(&bundle.qty_columns, &config);
 
         assert!(columns.contains(&"制造费用_人工单位完工成本".to_string()));
@@ -1069,15 +1067,14 @@ mod tests {
         let config = PipelineConfig::for_name(PipelineName::Gb);
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let sheet = build_qty_sheet_rows(&bundle, &config);
-
         assert_eq!(bundle.qty_fact.len(), 1);
         assert_eq!(bundle.work_order_fact.len(), 1);
-        assert_eq!(sheet.len(), 1);
         assert_eq!(
             bundle.qty_fact[0].values["工单编号"],
             CellValue::Text("WO1".to_string())
         );
+        let sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
+        assert_eq!(sheet.len(), 1);
     }
 
     #[test]
@@ -1103,7 +1100,7 @@ mod tests {
         let config = PipelineConfig::for_name(PipelineName::Gb);
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
-        let sheet = build_qty_sheet_rows(&bundle, &config);
+        let sheet = build_qty_sheet_rows(bundle.qty_fact, &config);
 
         assert!(bundle
             .error_issues

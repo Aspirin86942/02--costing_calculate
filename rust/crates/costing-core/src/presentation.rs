@@ -39,28 +39,39 @@ pub fn build_workbook_payload(
     timings: StageTimings,
     month_filter_empty_result: bool,
 ) -> Result<WorkbookPayload, CostingError> {
+    let quality_metrics = build_quality_metrics(&bundle, month_filter_empty_result);
+    let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config);
+    let detail_columns = detail_sheet_columns(&bundle.detail_columns);
+    let qty_columns = qty_sheet_columns(&bundle.qty_columns, config);
+
+    let FactBundle {
+        detail_fact,
+        qty_fact,
+        error_issues,
+        ..
+    } = bundle;
     let detail_sheet = build_flat_sheet(
         "成本计算单总表",
-        detail_sheet_columns(&bundle.detail_columns),
-        bundle.detail_fact.clone(),
+        detail_columns,
+        detail_fact,
         detail_number_format_columns,
     );
+    let qty_rows = build_qty_sheet_rows(qty_fact, config);
     let qty_sheet = build_flat_sheet(
         "成本计算单数量聚合维度",
-        qty_sheet_columns(&bundle.qty_columns, config),
-        build_qty_sheet_rows(&bundle, config),
+        qty_columns,
+        qty_rows,
         qty_number_format_columns,
     );
-    let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config);
     let sheets = vec![detail_sheet, qty_sheet, work_order_sheet];
     ensure_no_product_dimension(&sheets)?;
-    let error_log = bundle.error_issues.clone();
+    let error_log_count = error_issues.len();
 
     Ok(WorkbookPayload {
         sheet_models: sheets,
-        quality_metrics: build_quality_metrics(&bundle, month_filter_empty_result),
-        error_log_count: error_log.len(),
-        error_log,
+        quality_metrics,
+        error_log_count,
+        error_log: error_issues,
         stage_timings: timings,
     })
 }
@@ -72,14 +83,14 @@ fn build_flat_sheet(
     number_format_columns: fn(&[String]) -> Vec<String>,
 ) -> SheetModel {
     let sheet_rows = rows
-        .iter()
-        .map(|row| {
+        .into_iter()
+        .map(|mut row| {
             columns
                 .iter()
-                .map(|column| row.values.get(column).cloned().unwrap_or(CellValue::Blank))
-                .collect()
+                .map(|column| row.values.remove(column).unwrap_or(CellValue::Blank))
+                .collect::<Vec<_>>()
         })
-        .collect();
+        .collect::<Vec<_>>();
     SheetModel {
         sheet_name: sheet_name.to_string(),
         column_types: build_column_types(&columns),
@@ -298,6 +309,25 @@ mod tests {
             ]
         );
         assert!(!names.contains(&"成本分析产品维度"));
+    }
+
+    #[test]
+    fn payload_preserves_error_log_and_sheet_cells_when_consuming_bundle() {
+        let source = bundle();
+        let expected_error_log = source.error_issues.clone();
+        let expected_detail_rows = source.detail_fact.len();
+
+        let payload = build_workbook_payload(
+            source,
+            &PipelineConfig::for_name(PipelineName::Gb),
+            StageTimings::default(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(payload.error_log, expected_error_log);
+        assert_eq!(payload.error_log_count, expected_error_log.len());
+        assert_eq!(payload.sheet_models[0].rows.len(), expected_detail_rows);
     }
 
     #[test]

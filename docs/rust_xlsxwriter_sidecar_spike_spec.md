@@ -1,5 +1,7 @@
 # Rust 高速 Excel 写出 Sidecar Spike Spec
 
+> 2026-07-10 后补兼容说明：本文是历史 spike 规格；其中 Python 环境命令已从退役的 conda 口径更新为当前 uv/.venv，以便复跑验证。架构判断和性能结论仍按文中原始日期理解。
+
 ## 1. 背景
 
 当前项目路径：
@@ -361,18 +363,18 @@ legacy/helper 可用性
 
 ### 5.5 Phase 0 验证命令
 
-优先使用项目 conda 环境：
+优先使用项目 uv/.venv 环境：
 
 ```bash
-conda run -n costing311 python -m pytest tests -q
-conda run -n costing311 python -m ruff check src tests
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m pytest tests -q
+uv run python -m ruff check src tests
+uv run python -m ruff format src tests --check
 ```
 
 如果只做最小验证，至少运行：
 
 ```bash
-conda run -n costing311 python -m pytest tests/contracts tests/test_costing_etl.py tests/test_runner.py -q
+uv run python -m pytest tests/contracts tests/test_costing_etl.py tests/test_runner.py -q
 ```
 
 ### 5.6 Phase 0 benchmark
@@ -386,8 +388,8 @@ data\raw\gb\gb-成本计算单_2026070916484310_100160.xlsx
 重新运行：
 
 ```bash
-conda run -n costing311 python main.py gb --benchmark
-conda run -n costing311 python main.py gb --check-only --benchmark
+uv run python main.py gb --benchmark
+uv run python main.py gb --check-only --benchmark
 ```
 
 记录：
@@ -487,7 +489,7 @@ Rust sidecar 输出的 workbook 必须包含：
 ```bash
 cargo --version
 rustc --version
-conda run -n costing311 python -c "import polars, openpyxl, xlsxwriter"
+uv run python -c "import polars, openpyxl, xlsxwriter"
 ```
 
 如果 Rust 工具链或 Python 依赖不可用，结论应标记为：
@@ -623,7 +625,7 @@ number 类型解析失败被静默转成文本
 ```text
 cargo 不可用
 rustc 不可用
-conda costing311 环境不可用
+项目 uv/.venv 环境不可用
 Phase 1 需要的 Python 依赖不可导入
 真实 GB 输入文件不存在
 ```
@@ -779,7 +781,7 @@ sheet_003_intermediate_export_seconds=x.xxx
 示例命令：
 
 ```bash
-conda run -n costing311 python spikes/001-rust-xlsxwriter-sidecar/python/export_payload_for_rust.py gb
+uv run python spikes/001-rust-xlsxwriter-sidecar/python/export_payload_for_rust.py gb
 ```
 
 输出：
@@ -879,8 +881,8 @@ rust_output.xlsx
 
 示例命令：
 
-```bash
-conda run -n costing311 python spikes/001-rust-xlsxwriter-sidecar/python/validate_rust_workbook.py ^
+```cmd
+uv run python spikes/001-rust-xlsxwriter-sidecar/python/validate_rust_workbook.py ^
   data/processed/gb/gb-成本计算单_2026070916484310_100160_处理后.xlsx ^
   spikes/001-rust-xlsxwriter-sidecar/tmp/rust_output.xlsx
 ```
@@ -1423,7 +1425,7 @@ Phase 1：再实现 throwaway Rust writer sidecar spike。
 Phase 1 前置环境检查：
 - cargo --version
 - rustc --version
-- conda run -n costing311 python -c "import polars, openpyxl, xlsxwriter"
+- uv run python -c "import polars, openpyxl, xlsxwriter"
 - 如果环境缺失，输出 BLOCKED_ENVIRONMENT，不得判定 INVALIDATED。
 
 请新建：

@@ -2,6 +2,8 @@
 
 金蝶 ERP 成本计算单数据处理工具。
 
+当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；日期方案、历史实施计划和 spike 仅记录当时上下文，文档边界见 [`docs/README.md`](docs/README.md)。
+
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
 - 默认输出 3 张业务工作表，覆盖成本总表、数量聚合和工单维度异常
@@ -93,10 +95,10 @@ Rust CLI 默认拒绝覆盖已存在的 `--output`，并禁止输入、输出指
 
 ## 目录结构
 - `rust/` - 当前主实现的 Cargo workspace
-  - `costing-cli` - `costing-calculate` CLI 编排与错误输出
-  - `costing-core` - GB/SK ETL、Decimal 成本计算、质量审计与异常分析
-  - `costing-xlsx` - 原始工作簿读取和 3-sheet workbook 写出
-  - `costing-oracle-tests` - Rust 运行时契约比较支持
+  - `crates/costing-cli` - `costing-calculate` CLI 编排与错误输出
+  - `crates/costing-core` - GB/SK ETL、Decimal 成本计算、质量审计与异常分析
+  - `crates/costing-xlsx` - 原始工作簿读取和 3-sheet workbook 写出
+  - `crates/costing-oracle-tests` - Rust 运行时契约比较支持
 - `src/analytics/` - 分析与异常检测模块
   - `contracts.py` - 共享数据结构
   - `fact_builder.py` - fact 构建与 Decimal 工具

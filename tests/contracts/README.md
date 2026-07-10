@@ -47,6 +47,8 @@ COSTING_GB_SAMPLE=... COSTING_SK_SAMPLE=... uv run python -m pytest tests/test_f
 
 Rust rewrite 必须通过 Python oracle 比对后，才能证明与 Python legacy/oracle 路径一致；Python retirement 仍需单独批准。
 
+2026-07-10 的 GB/SK 自动化验证与性能证据记录在 [`docs/rust_rewrite_validation.md`](../../docs/rust_rewrite_validation.md)；该结果不等于 Python 退场审批。
+
 Required checks:
 
 - `tests/test_full_rust_cli_oracle.py`

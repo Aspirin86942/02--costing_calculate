@@ -1,8 +1,8 @@
 # Python Retirement After Rust Validation
 
-This document lists Python code that may be removed only after Rust CLI is validated for GB and SK.
+The Rust CLI was validated for GB and SK on 2026-07-10; see [`rust_rewrite_validation.md`](rust_rewrite_validation.md) for the recorded snapshot and evidence limits. This document lists Python code that remains in place until a separate retirement change is reviewed and approved; validation alone is not deletion approval.
 
-## Keep Until Rust Is Validated
+## Keep Until Retirement Is Approved
 
 - `main.py`
 - `src/etl/`
@@ -16,7 +16,7 @@ This document lists Python code that may be removed only after Rust CLI is valid
 
 Rust does not implement `成本分析产品维度`.
 
-After Rust validation, remove the Python legacy product-dimension helpers in a separate change:
+In a separately approved retirement change, remove the Python legacy product-dimension helpers:
 
 - `src/analytics/table_rendering.py` product anomaly section helpers
 - `src/excel/product_anomaly_writer.py`

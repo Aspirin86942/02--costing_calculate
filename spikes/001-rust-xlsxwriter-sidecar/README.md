@@ -1,5 +1,7 @@
 # 001: rust_xlsxwriter sidecar
 
+> Compatibility note (2026-07-10): this is a historical spike report. Its Python benchmark command was updated from the retired conda environment to the current uv-managed `.venv`; the measurements remain the 2026-07-09 spike results.
+
 ## Question
 
 Can `rust_xlsxwriter` replace Python `xlsxwriter` export for the 3-sheet default workbook and reduce
@@ -12,7 +14,7 @@ Benchmark date: 2026-07-09
 Command:
 
 ```powershell
-conda run -n costing311 python spikes/001-rust-xlsxwriter-sidecar/python/benchmark_rust_writer.py gb `
+uv run python spikes/001-rust-xlsxwriter-sidecar/python/benchmark_rust_writer.py gb `
   --input 'D:\python_program\02--costing_calculate\data\raw\gb\gb-成本计算单_2026070916484310_100160.xlsx' `
   --tmp-dir .pytest-tmp/phase1-benchmark-final2 `
   --repeats 3 `

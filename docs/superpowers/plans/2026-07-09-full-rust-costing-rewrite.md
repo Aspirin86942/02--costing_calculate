@@ -1,12 +1,14 @@
 # Full Rust Costing Rewrite Implementation Plan
 
+> Compatibility note (2026-07-10): this is a historical implementation plan. Python oracle commands were updated from the retired conda environment to the current uv-managed `.venv` so validation steps remain runnable; implementation status belongs in current validation docs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a Rust CLI that fully replaces the current Python default costing ETL path for GB and SK, directly reads raw `.xlsx`, writes the current 3-sheet workbook, and validates against Python as a migration oracle.
 
 **Architecture:** Add a `rust/` Cargo workspace with separate crates for CLI orchestration, core ETL/analytics, XLSX I/O, and oracle test support. Keep Python production code in place during implementation, but use it only as the oracle for contract, fixture, real-sample, and benchmark comparisons.
 
-**Tech Stack:** Rust 2021, `clap`, `serde`, `serde_json`, `thiserror`, `anyhow`, `rust_decimal`, `chrono`, `calamine`, `rust_xlsxwriter`, `csv`; existing Python oracle commands use `uv run`.
+**Tech Stack:** Rust 2021, `clap`, `serde`, `serde_json`, `thiserror`, `anyhow`, `rust_decimal`, `chrono`, `calamine`, `rust_xlsxwriter`, `csv`; existing Python oracle commands use project `uv run` / `.venv`.
 
 ## Global Constraints
 

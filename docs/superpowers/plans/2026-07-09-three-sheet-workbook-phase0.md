@@ -1,12 +1,14 @@
 # Three-Sheet Workbook Phase 0 Implementation Plan
 
+> Compatibility note (2026-07-10): this is a historical implementation plan. Python environment commands were updated from the retired conda environment to the current uv-managed `.venv` so its checks remain runnable; the design prose still describes Phase 0 at the time.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Change the Python production workbook contract from four default sheets to three default sheets, without starting the Rust sidecar spike.
 
 **Architecture:** Phase 0 stops default SheetModel construction and workbook writing for `成本分析产品维度`, while keeping product-dimension analysis helpers available as legacy/helper code. The main output path remains Python/xlsxwriter, and both workbook writer entry points must produce the same 3-sheet default contract.
 
-**Tech Stack:** Python 3.11+, pandas, polars, xlsxwriter, openpyxl, pytest, ruff, conda environment `costing311`.
+**Tech Stack:** Python 3.11+, pandas, polars, xlsxwriter, openpyxl, pytest, ruff, project uv/.venv environment.
 
 ## Global Constraints
 
@@ -18,7 +20,7 @@
 - Keep product-dimension legacy/helper code for now, including `ProductAnomalySection`, `build_product_anomaly_sections`, and `product_anomaly_writer`.
 - Keep `product_anomaly_scope_mode` as a compatibility parameter for now; it must not cause a default product-dimension workbook sheet to be written.
 - Do not modify or stage unrelated untracked files, especially `uv.lock` and unrelated docs.
-- Use `conda run -n costing311 ...` for tests, lint, and benchmark commands.
+- Use `uv run ...` for tests, lint, and benchmark commands.
 - Follow TDD: write or update the failing test first, verify the failure, then implement the minimal code.
 
 ---
@@ -91,7 +93,7 @@ def test_build_sheet_models_outputs_three_default_business_sheets() -> None:
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets -q
+uv run python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets -q
 ```
 
 Expected: FAIL because `build_sheet_models()` still returns `成本分析产品维度`.
@@ -146,7 +148,7 @@ def test_build_sheet_models_ignores_product_anomaly_sections_for_default_contrac
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets tests/test_costing_etl.py::test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs tests/test_costing_etl.py::test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract -q
+uv run python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets tests/test_costing_etl.py::test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs tests/test_costing_etl.py::test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract -q
 ```
 
 Expected: FAIL because implementation still builds and returns the product model.
@@ -217,7 +219,7 @@ Do not remove the `product_anomaly_sections` parameter in this task. It keeps th
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets tests/test_costing_etl.py::test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs tests/test_costing_etl.py::test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract tests/test_costing_etl.py::test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets -q
+uv run python -m pytest tests/test_costing_etl.py::test_build_sheet_models_outputs_three_default_business_sheets tests/test_costing_etl.py::test_build_sheet_models_avoids_pyarrow_dependency_for_pandas_inputs tests/test_costing_etl.py::test_build_sheet_models_ignores_product_anomaly_sections_for_default_contract tests/test_costing_etl.py::test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets -q
 ```
 
 Expected: PASS after updating `test_build_sheet_models_marks_detail_and_qty_as_fast_flat_sheets` to remove the `product_anomaly_model` assertions and keep the three fast-path assertions.
@@ -282,7 +284,7 @@ def test_write_workbook_legacy_entrypoint_writes_three_default_sheets(tmp_path: 
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_write_workbook_legacy_entrypoint_writes_three_default_sheets -q
+uv run python -m pytest tests/test_costing_etl.py::test_write_workbook_legacy_entrypoint_writes_three_default_sheets -q
 ```
 
 Expected: FAIL because `write_workbook()` still writes `成本分析产品维度`.
@@ -322,7 +324,7 @@ def test_write_workbook_from_models_writes_three_default_sheets(tmp_path: Path) 
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_write_workbook_from_models_writes_three_default_sheets -q
+uv run python -m pytest tests/test_costing_etl.py::test_write_workbook_from_models_writes_three_default_sheets -q
 ```
 
 Expected: PASS after Task 1, because `build_sheet_models()` now provides only three models.
@@ -342,7 +344,7 @@ Keep the `product_anomaly_sections` argument for compatibility in Phase 0.
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_write_workbook_legacy_entrypoint_writes_three_default_sheets tests/test_costing_etl.py::test_write_workbook_from_models_writes_three_default_sheets -q
+uv run python -m pytest tests/test_costing_etl.py::test_write_workbook_legacy_entrypoint_writes_three_default_sheets tests/test_costing_etl.py::test_write_workbook_from_models_writes_three_default_sheets -q
 ```
 
 Expected: PASS.
@@ -446,7 +448,7 @@ def test_product_anomaly_writer_scoped_helper_preserves_layout(tmp_path: Path) -
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py::test_product_anomaly_writer_legacy_helper_preserves_layout tests/test_costing_etl.py::test_product_anomaly_writer_scoped_helper_preserves_layout -q
+uv run python -m pytest tests/test_costing_etl.py::test_product_anomaly_writer_legacy_helper_preserves_layout tests/test_costing_etl.py::test_product_anomaly_writer_scoped_helper_preserves_layout -q
 ```
 
 Expected: PASS. These tests should not depend on default `build_sheet_models()`.
@@ -519,7 +521,7 @@ assert xls.sheet_names == [
 Run the tests by exact name after locating them with `rg -n "expected_sheets|xls.sheet_names" tests/test_costing_etl.py`:
 
 ```bash
-conda run -n costing311 python -m pytest tests/test_costing_etl.py -q
+uv run python -m pytest tests/test_costing_etl.py -q
 ```
 
 Expected: PASS after Tasks 1-3, or fail only on remaining assertions that still expect `成本分析产品维度`. Update only those default-output assertions; do not remove product helper tests.
@@ -556,7 +558,7 @@ Keep `_extract_product_anomaly_sheet()`, `_extract_legacy_product_anomaly_sheet(
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/contracts/test_workbook_contract.py::test_default_workbook_semantics_match_baseline -q
+uv run python -m pytest tests/contracts/test_workbook_contract.py::test_default_workbook_semantics_match_baseline -q
 ```
 
 Expected: FAIL because `workbook_semantics.json` still contains `成本分析产品维度`.
@@ -566,7 +568,7 @@ Expected: FAIL because `workbook_semantics.json` still contains `成本分析产
 Run:
 
 ```bash
-conda run -n costing311 python tests/contracts/generate_baselines.py
+uv run python tests/contracts/generate_baselines.py
 ```
 
 Expected: `tests/contracts/baselines/workbook_semantics.json` is rewritten with three default sheets.
@@ -604,7 +606,7 @@ In `tests/contracts/README.md`, replace wording that freezes four sheets with wo
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/contracts -q
+uv run python -m pytest tests/contracts -q
 ```
 
 Expected: PASS.
@@ -705,7 +707,7 @@ Expected: No claim that default output has 4 sheets or includes `成本分析产
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests/contracts tests/test_costing_etl.py tests/test_runner.py -q
+uv run python -m pytest tests/contracts tests/test_costing_etl.py tests/test_runner.py -q
 ```
 
 Expected: PASS.
@@ -715,7 +717,7 @@ Expected: PASS.
 Run:
 
 ```bash
-conda run -n costing311 python -m pytest tests -q
+uv run python -m pytest tests -q
 ```
 
 Expected: PASS.
@@ -725,7 +727,7 @@ Expected: PASS.
 Run:
 
 ```bash
-conda run -n costing311 python -m ruff check src tests
+uv run python -m ruff check src tests
 ```
 
 Expected: PASS.
@@ -735,7 +737,7 @@ Expected: PASS.
 Run:
 
 ```bash
-conda run -n costing311 python -m ruff format src tests --check
+uv run python -m ruff format src tests --check
 ```
 
 Expected: PASS.
@@ -745,7 +747,7 @@ Expected: PASS.
 Run:
 
 ```bash
-conda run -n costing311 python main.py gb --check-only --benchmark
+uv run python main.py gb --check-only --benchmark
 ```
 
 Expected:
@@ -763,7 +765,7 @@ Record the payload/check-only seconds in the Phase 0 report.
 Run three times:
 
 ```bash
-conda run -n costing311 python main.py gb --benchmark
+uv run python main.py gb --benchmark
 ```
 
 Expected each run:
@@ -781,7 +783,7 @@ If the output workbook already exists and the CLI prompts or refuses overwrite, 
 Use the actual generated workbook path printed by the CLI. Run:
 
 ```bash
-conda run -n costing311 python -c "from openpyxl import load_workbook; p=r'data/processed/gb/gb-成本计算单_2026070916484310_100160_处理后.xlsx'; wb=load_workbook(p, read_only=True); print(wb.sheetnames)"
+uv run python -c "from openpyxl import load_workbook; p=r'data/processed/gb/gb-成本计算单_2026070916484310_100160_处理后.xlsx'; wb=load_workbook(p, read_only=True); print(wb.sheetnames)"
 ```
 
 Expected:

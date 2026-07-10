@@ -3,7 +3,7 @@
 
 ### Project Structure & Module Organization
 本仓库是用于成本核算工作簿的 Rust CLI 主实现仓库，保留 Python 作为迁移期 oracle/legacy 路径：
-- `rust/`: Cargo workspace，包含路径为 `costing-cli`（package/binary 名为 `costing-calculate`）、`costing-core`、`costing-xlsx` 和 `costing-oracle-tests` 的 crates
+- `rust/`: Cargo workspace；crates 位于 `rust/crates/costing-cli`（package/binary 名为 `costing-calculate`）、`rust/crates/costing-core`、`rust/crates/costing-xlsx` 和 `rust/crates/costing-oracle-tests`
 - `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
 - `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
 - `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）
@@ -15,6 +15,7 @@
 - `data/processed/{gb,sk}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
 - 历史 `scripts/` 已移除；新增业务功能默认在 `rust/` 实现，`src/` 仅用于 Python oracle/legacy/regression 或退场前必要修复
+- 当前执行口径以本文件和根 `README.md` 为准；`docs/superpowers/`、日期方案和 `spikes/` 属于历史记录，其中旧 `conda` 命令不再是当前默认环境口径
 
 ### Build / Test / Dev Commands
 - `cargo build --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
@@ -102,4 +103,3 @@
 2. search_graph 搜核心符号；
 3. 需要理解调用关系时用 trace_path；
 4. MCP 不可用或索引过期时，明确标注 degraded，再降级为 rg/read_file。
-

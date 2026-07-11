@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import socket
 import subprocess
 from dataclasses import replace
@@ -932,7 +933,7 @@ def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
 
 def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers() -> None:
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_evidence())
-    raw = json.dumps(artifact.payload, ensure_ascii=False)
+    raw = artifact.content
 
     assert '$GB_INPUT' in raw
     assert not any(token in raw for token in ('C:\\', 'D:\\', '/Users/', 'input.xlsx'))
@@ -1024,7 +1025,7 @@ def test_mismatch_artifact_omits_expected_and_actual_values() -> None:
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(
         _benchmark_manifest_evidence(mismatches=(mismatch,))
     )
-    raw = json.dumps(artifact.payload)
+    raw = artifact.content
     assert 'expected_value' not in raw
     assert 'actual_value' not in raw
     assert 'expected=' not in raw
@@ -1035,7 +1036,7 @@ def test_nonzero_stdout_stderr_canary_is_not_copied_to_manifest() -> None:
     artifact = EvidenceSanitizer.closed_policy().build_command_transcript(
         replace(_command_transcript_evidence(), exit_code=9, verdict=evidence.HarnessVerdict.CANDIDATE_FAILED)
     )
-    raw = json.dumps(artifact.payload)
+    raw = artifact.content
     assert 'unknown-canary' not in raw
     assert 'stdout' not in raw.lower()
     assert 'stderr' not in raw.lower()
@@ -1092,13 +1093,18 @@ def test_scan_tree_rejects_expected_actual_stdout_and_stderr_markers(tmp_path: P
 
 
 def test_scan_staged_checks_all_staged_evidence_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    first = tmp_path / 'docs' / 'performance' / 'first.json'
-    second = tmp_path / 'docs' / 'performance' / 'second.json'
-    first.parent.mkdir(parents=True)
-    first.write_text('{}', encoding='utf-8')
-    second.write_text('actual=unknown-canary', encoding='utf-8')
-    monkeypatch.setattr(evidence, 'repo_root', lambda: tmp_path)
-    monkeypatch.setattr(evidence, '_staged_evidence_paths', lambda _root: (first, second))
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    destination = root / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    first, second = _two_command_artifacts()
+    tampered = replace(second, content='actual=unknown-canary')
+    marker_name, marker_content = evidence._batch_commit_marker((first, tampered))
+    for artifact in (first, tampered):
+        (destination / artifact.file_name).write_text(artifact.content, encoding='utf-8')
+    (destination / marker_name).write_text(marker_content, encoding='utf-8')
+    _git(root, 'add', '--', 'docs/performance')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
     with pytest.raises(ValueError, match='sensitive'):
         EvidenceSanitizer.closed_policy().scan_staged()
 
@@ -1242,3 +1248,252 @@ def test_phase0a_manifest_cannot_be_overwritten(tmp_path: Path) -> None:
             cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
         )
     assert (destination / artifact.file_name).read_bytes() == original
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    git = shutil.which('git')
+    assert git is not None
+    return subprocess.run(  # noqa: S603 - tests resolve the local Git executable and use synthetic paths only.
+        [str(Path(git).resolve()), '-C', str(repo), *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _init_git_repo(path: Path) -> None:
+    path.mkdir()
+    _git(path, 'init', '--quiet')
+    _git(path, 'config', 'user.name', 'Synthetic Tester')
+    _git(path, 'config', 'user.email', 'synthetic@example.invalid')
+    (path / '.gitignore').write_text('rust/target/\n', encoding='utf-8')
+    _git(path, 'add', '.gitignore')
+    _git(path, 'commit', '--quiet', '-m', 'init')
+
+
+def test_scan_staged_reads_sensitive_index_blob_not_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    path = root / evidence.DEPENDENCY_MANIFEST_RELATIVE_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text('{"value":"actual=unknown-canary"}', encoding='utf-8')
+    _git(root, 'add', '--', path.relative_to(root).as_posix())
+    path.write_text('{"value":"safe"}', encoding='utf-8')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_staged_index_parser_preserves_special_filename(tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance') / 'odd name [组合] artifact.json'
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{}', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+
+    entries = evidence._staged_index_entries(root)
+
+    assert tuple(item.path for item in entries) == (relative,)
+
+
+def test_scan_staged_rejects_type_change_and_symlink_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance/type-change.json')
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{}', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+    _git(root, 'commit', '--quiet', '-m', 'regular evidence')
+    path.unlink()
+    try:
+        path.symlink_to(root / '.gitignore')
+    except OSError as exc:
+        pytest.skip(f'symlink creation unavailable: {exc}')
+    _git(root, 'add', '--', relative.as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='mode|symlink|type-change'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+@pytest.mark.parametrize(
+    'raw',
+    (
+        '{"value":"\\u0065xpected=secret"}',
+        '{"value":"D:\\u005cprivate\\u005cinput.xlsx"}',
+        '{"value":"ＳＴＤＯＵＴ： secret"}',
+        '{"value":"unknown-ｃａｎａｒｙ"}',
+        '{"actual":"secret"}',
+    ),
+)
+def test_scan_tree_rejects_json_escaped_and_nfkc_sensitive_markers(tmp_path: Path, raw: str) -> None:
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    (root / 'artifact.json').write_text(raw, encoding='utf-8')
+
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_tree(root)
+
+
+def test_scan_tree_matches_composed_identity_against_decomposed_unicode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    (root / 'artifact.json').write_text('{"value":"cafe\\u0301"}', encoding='utf-8')
+    monkeypatch.setattr(evidence.getpass, 'getuser', lambda: 'café')
+
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_tree(root)
+
+
+@pytest.mark.parametrize(
+    ('name', 'raw'),
+    (
+        ('duplicate.json', b'{"safe":1,"safe":2}'),
+        ('invalid.json', b'{'),
+        ('invalid-utf8.json', b'\xff'),
+    ),
+)
+def test_scan_tree_rejects_duplicate_invalid_json_and_utf8(tmp_path: Path, name: str, raw: bytes) -> None:
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    (root / name).write_bytes(raw)
+
+    with pytest.raises(ValueError, match='JSON|UTF-8|duplicate'):
+        EvidenceSanitizer.closed_policy().scan_tree(root)
+
+
+def test_sanitized_artifact_is_private_and_rebuilt_from_typed_source(tmp_path: Path) -> None:
+    assert not hasattr(evidence, 'SanitizedArtifact')
+    policy = EvidenceSanitizer.closed_policy()
+    artifact = policy.build_command_transcript(_command_transcript_evidence())
+    assert artifact.source == _command_transcript_evidence()
+    with pytest.raises(TypeError):
+        artifact.payload['extra'] = 'safe'  # type: ignore[index]
+
+    forged_payload = json.loads(artifact.content)
+    forged_payload['extra'] = 'safe'
+    forged = replace(
+        artifact,
+        payload=forged_payload,
+        content=json.dumps(forged_payload, ensure_ascii=False, indent=2) + '\n',
+    )
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    with pytest.raises(ValueError, match='typed source|tampered'):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=(forged,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+            scan_staged=False,
+        )
+
+
+def _two_command_artifacts() -> tuple[object, object]:
+    policy = EvidenceSanitizer.closed_policy()
+    first = policy.build_command_transcript(_command_transcript_evidence())
+    second = policy.build_command_transcript(
+        replace(_command_transcript_evidence(), command_id=evidence.CommandId.PHASE0H_SMOKE)
+    )
+    return first, second
+
+
+def test_write_batch_publishes_hash_bound_commit_marker_last(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    destination = root / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifacts = _two_command_artifacts()
+    linked: list[str] = []
+    real_link = evidence.os.link
+
+    def record_link(source: object, target: object) -> None:
+        linked.append(Path(str(target).removeprefix('\\\\?\\')).name)
+        real_link(source, target)
+
+    monkeypatch.setattr(evidence.os, 'link', record_link)
+    policy.write_batch(
+        destination_root=destination,
+        artifacts=artifacts,
+        cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        scan_staged=False,
+    )
+
+    marker = next(destination.glob('batch-*.commit.json'))
+    payload = json.loads(marker.read_text(encoding='utf-8'))
+    assert linked[-1] == marker.name
+    assert [item['file_name'] for item in payload['artifacts']] == [item.file_name for item in artifacts]
+    for item in payload['artifacts']:
+        assert item['sha256'] == evidence._sha256_file(destination / item['file_name'])
+    assert len(payload['batch_sha256']) == 64
+    _git(root, 'add', '--', 'docs/performance')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+    policy.scan_staged()
+
+
+@pytest.mark.parametrize('failure', ('winner_replace', 'second_failure', 'system_exit'))
+def test_write_batch_identity_safe_rollback_before_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifacts = _two_command_artifacts()
+    real_link = evidence.os.link
+    calls = 0
+
+    def fail_after_first(source: object, target: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            real_link(source, target)
+            if failure == 'winner_replace':
+                final = Path(str(target).removeprefix('\\\\?\\'))
+                final.unlink()
+                final.write_text('winner', encoding='utf-8')
+            return
+        if failure == 'system_exit':
+            raise SystemExit(9)
+        raise OSError('second artifact failed')
+
+    monkeypatch.setattr(evidence.os, 'link', fail_after_first)
+    expected = SystemExit if failure == 'system_exit' else OSError
+    with pytest.raises(expected):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=artifacts,
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+            scan_staged=False,
+        )
+
+    first_path = destination / artifacts[0].file_name
+    if failure == 'winner_replace':
+        assert first_path.read_text(encoding='utf-8') == 'winner'
+    else:
+        assert not first_path.exists()
+    assert not tuple(destination.glob('batch-*.commit.json'))
+
+
+def test_scan_tree_rejects_nested_junction_escape(tmp_path: Path) -> None:
+    root = tmp_path / 'evidence'
+    nested = root / 'nested'
+    outside = tmp_path / 'outside'
+    nested.mkdir(parents=True)
+    outside.mkdir()
+    (outside / 'artifact.json').write_text('{}', encoding='utf-8')
+    link = nested / 'escape'
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'junction/symlink creation unavailable: {exc}')
+
+    with pytest.raises(ValueError, match='reparse|symlink|escape'):
+        EvidenceSanitizer.closed_policy().scan_tree(root)

@@ -13,12 +13,15 @@ import stat
 import subprocess
 import tempfile
 import tomllib
+import unicodedata
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from types import MappingProxyType
+from typing import Literal, TypeAlias
 
 from tests.rust_oracle.benchmark_protocol import (
     AttemptState,
@@ -457,13 +460,33 @@ class TextReportEvidence:
     overall_verdict: HarnessVerdict
 
 
+EvidenceSource: TypeAlias = (
+    BenchmarkManifestEvidence
+    | CommandTranscriptEvidence
+    | SmokeSummaryEvidence
+    | PeImportsEvidence
+    | ForkProvenanceEvidence
+    | CargoFeatureTreeEvidence
+    | TextReportEvidence
+)
+
+
 @dataclass(frozen=True)
-class SanitizedArtifact:
+class _SanitizedArtifact:
     kind: EvidenceKind
     file_name: str
-    payload: dict[str, object]
+    payload: Mapping[str, object]
     content: str
     numeric_values: tuple[int | float, ...]
+    source: EvidenceSource
+
+
+@dataclass(frozen=True)
+class _StagedIndexEntry:
+    path: Path
+    mode: Literal['100644', '100755']
+    blob_sha: str
+    content: bytes
 
 
 def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -505,7 +528,7 @@ class EvidenceSanitizer:
     def closed_policy(cls) -> EvidenceSanitizer:
         return cls()
 
-    def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> SanitizedArtifact:
+    def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
         if not isinstance(value, BenchmarkManifestEvidence) or value.schema_version != 1:
             raise ValueError('benchmark evidence must use schema version 1')
         profile = _enum_text(value.profile, ComparisonProfile, 'profile')
@@ -640,9 +663,10 @@ class EvidenceSanitizer:
             EvidenceKind.BENCHMARK,
             f'benchmark-{_sha256_text(f"{profile}|{pipeline}|{candidate_sha}")[:16]}.json',
             payload,
+            value,
         )
 
-    def build_command_transcript(self, value: CommandTranscriptEvidence) -> SanitizedArtifact:
+    def build_command_transcript(self, value: CommandTranscriptEvidence) -> _SanitizedArtifact:
         if not isinstance(value, CommandTranscriptEvidence):
             raise ValueError('command evidence must use CommandTranscriptEvidence')
         command_id = _enum_text(value.command_id, CommandId, 'command ID')
@@ -658,9 +682,9 @@ class EvidenceSanitizer:
             'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
             'verdict': _enum_text(value.verdict, HarnessVerdict, 'command verdict'),
         }
-        return _json_artifact(EvidenceKind.COMMAND, f'command-{command_id}.json', payload)
+        return _json_artifact(EvidenceKind.COMMAND, f'command-{command_id}.json', payload, value)
 
-    def build_smoke(self, value: SmokeSummaryEvidence) -> SanitizedArtifact:
+    def build_smoke(self, value: SmokeSummaryEvidence) -> _SanitizedArtifact:
         if not isinstance(value, SmokeSummaryEvidence):
             raise ValueError('smoke evidence must use SmokeSummaryEvidence')
         sheets = [_enum_text(item, ApprovedSheet, 'approved sheet') for item in value.approved_sheets]
@@ -680,9 +704,9 @@ class EvidenceSanitizer:
             'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
             'verdict': _enum_text(value.verdict, HarnessVerdict, 'smoke verdict'),
         }
-        return _json_artifact(EvidenceKind.SMOKE, f'smoke-{pipeline}-{candidate_sha[:12]}.json', payload)
+        return _json_artifact(EvidenceKind.SMOKE, f'smoke-{pipeline}-{candidate_sha[:12]}.json', payload, value)
 
-    def build_pe_imports(self, value: PeImportsEvidence) -> SanitizedArtifact:
+    def build_pe_imports(self, value: PeImportsEvidence) -> _SanitizedArtifact:
         if not isinstance(value, PeImportsEvidence):
             raise ValueError('PE evidence must use PeImportsEvidence')
         candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
@@ -701,9 +725,9 @@ class EvidenceSanitizer:
             'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
             'verdict': _enum_text(value.verdict, HarnessVerdict, 'PE verdict'),
         }
-        return _json_artifact(EvidenceKind.PE_IMPORTS, f'pe-imports-{candidate_sha[:12]}.json', payload)
+        return _json_artifact(EvidenceKind.PE_IMPORTS, f'pe-imports-{candidate_sha[:12]}.json', payload, value)
 
-    def build_fork_provenance(self, value: ForkProvenanceEvidence) -> SanitizedArtifact:
+    def build_fork_provenance(self, value: ForkProvenanceEvidence) -> _SanitizedArtifact:
         if not isinstance(value, ForkProvenanceEvidence):
             raise ValueError('fork evidence must use ForkProvenanceEvidence')
         if value.official_url is not ForkUrl.OFFICIAL or value.fork_url is not ForkUrl.COSTING_FORK:
@@ -730,9 +754,14 @@ class EvidenceSanitizer:
         }
         if payload['no_pr'] is not True:
             raise ValueError('fork evidence requires an empty upstream PR result')
-        return _json_artifact(EvidenceKind.FORK_PROVENANCE, f'fork-provenance-{revision[:12]}.json', payload)
+        return _json_artifact(
+            EvidenceKind.FORK_PROVENANCE,
+            f'fork-provenance-{revision[:12]}.json',
+            payload,
+            value,
+        )
 
-    def build_cargo_feature_tree(self, value: CargoFeatureTreeEvidence) -> SanitizedArtifact:
+    def build_cargo_feature_tree(self, value: CargoFeatureTreeEvidence) -> _SanitizedArtifact:
         if not isinstance(value, CargoFeatureTreeEvidence):
             raise ValueError('Cargo evidence must use CargoFeatureTreeEvidence')
         label = _enum_text(value.candidate_label, ClosedBinaryLabel, 'candidate label')
@@ -773,9 +802,10 @@ class EvidenceSanitizer:
             EvidenceKind.CARGO_FEATURE_TREE,
             f'cargo-feature-tree-{label}-{candidate_sha[:12]}.json',
             payload,
+            value,
         )
 
-    def build_text_report(self, value: TextReportEvidence) -> SanitizedArtifact:
+    def build_text_report(self, value: TextReportEvidence) -> _SanitizedArtifact:
         if not isinstance(value, TextReportEvidence):
             raise ValueError('text report must use TextReportEvidence')
         report_kind = _enum_text(value.report_kind, ReportKind, 'report kind')
@@ -801,26 +831,24 @@ class EvidenceSanitizer:
         }
         lines = [f'# {title}', '', f'Overall: {overall}', '']
         lines.extend(f'- {item["check_id"]}: {item["verdict"]} ({item["evidence_sha256"]})' for item in checks)
-        return SanitizedArtifact(
+        return _SanitizedArtifact(
             kind=EvidenceKind.TEXT_REPORT,
             file_name=f'report-{report_kind}.md',
-            payload=payload,
+            payload=_deep_freeze(payload),
             content='\n'.join(lines) + '\n',
             numeric_values=(),
+            source=value,
         )
 
     def scan_tree(self, root: Path, *, sensitive_names: tuple[str, ...] = ()) -> None:
-        root = root.resolve(strict=True)
-        paths = (root,) if root.is_file() else tuple(sorted(item for item in root.rglob('*') if item.is_file()))
-        for path in paths:
-            _scan_versioned_text(_evidence_io_path(path).read_text(encoding='utf-8'), sensitive_names=sensitive_names)
-            _scan_versioned_text(path.name, sensitive_names=sensitive_names)
+        _scan_tree_safely(root, sensitive_names=sensitive_names)
 
     def scan_staged(self, *, sensitive_names: tuple[str, ...] = ()) -> None:
-        for path in _staged_evidence_paths(repo_root().resolve(strict=True)):
-            if not path.is_file():
-                raise ValueError('staged evidence path must be an existing file')
-            self.scan_tree(path, sensitive_names=sensitive_names)
+        entries = _staged_index_entries(repo_root().resolve(strict=True))
+        for entry in entries:
+            _scan_versioned_bytes(entry.content, suffix=entry.path.suffix, sensitive_names=sensitive_names)
+            _scan_versioned_text(entry.path.name, sensitive_names=sensitive_names)
+        _validate_staged_batch_markers(entries)
 
     def validate_local_destination(self, path: Path, *, ignored_roots: tuple[Path, ...]) -> Path:
         if not ignored_roots:
@@ -852,14 +880,14 @@ class EvidenceSanitizer:
         self,
         *,
         destination_root: Path,
-        artifacts: tuple[SanitizedArtifact, ...],
+        artifacts: tuple[_SanitizedArtifact, ...],
         cleanup_state: AttemptState,
         scan_staged: bool = True,
         sensitive_names: tuple[str, ...] = (),
     ) -> None:
         if cleanup_state is not AttemptState.CLEANUP_COMPLETE:
             raise ValueError('cleanup must be complete before versioned evidence is written')
-        if not artifacts or any(not isinstance(item, SanitizedArtifact) for item in artifacts):
+        if not artifacts or any(not isinstance(item, _SanitizedArtifact) for item in artifacts):
             raise ValueError('write_batch accepts typed sanitized artifacts only')
         destination_root = destination_root.resolve(strict=False)
         destination_root.mkdir(parents=True, exist_ok=True)
@@ -867,7 +895,8 @@ class EvidenceSanitizer:
         # 短 basename 避免 Windows 深层 pytest/CI 根目录把 staging 子文件推过传统 MAX_PATH。
         staging = destination_root / f'.s-{uuid.uuid4().hex[:12]}'
         staging.mkdir()
-        moved: list[Path] = []
+        marker_name, marker_content = _batch_commit_marker(artifacts)
+        moved: list[tuple[Path, _FileIdentity]] = []
         try:
             for artifact in artifacts:
                 if Path(artifact.file_name).name != artifact.file_name or artifact.file_name in {'.', '..'}:
@@ -877,9 +906,16 @@ class EvidenceSanitizer:
                     stream.write(artifact.content)
                     stream.flush()
                     os.fsync(stream.fileno())
+            marker_source = staging / marker_name
+            with _evidence_io_path(marker_source).open('x', encoding='utf-8', newline='\n') as stream:
+                stream.write(marker_content)
+                stream.flush()
+                os.fsync(stream.fileno())
             self.scan_tree(staging, sensitive_names=sensitive_names)
             for artifact in artifacts:
-                _validate_artifact_integrity(artifact)
+                rebuilt = self._rebuild_artifact(artifact)
+                if artifact != rebuilt:
+                    raise ValueError('sanitized artifact was tampered after its typed source builder')
             self.scan_tree(_performance_tree_root(destination_root), sensitive_names=sensitive_names)
             if scan_staged:
                 self.scan_staged(sensitive_names=sensitive_names)
@@ -888,18 +924,44 @@ class EvidenceSanitizer:
                 final = destination_root / artifact.file_name
                 if _evidence_io_path(final).exists():
                     raise FileExistsError(final)
+                source_identity = _file_identity(_evidence_io_path(source))
                 os.link(_evidence_io_path(source), _evidence_io_path(final))
-                moved.append(final)
+                moved.append((final, source_identity))
+                if _file_identity(_evidence_io_path(final)) != source_identity:
+                    raise OSError('published artifact identity changed before batch commit')
+            marker_final = destination_root / marker_name
+            if _evidence_io_path(marker_final).exists():
+                raise FileExistsError(marker_final)
+            marker_identity = _file_identity(_evidence_io_path(marker_source))
+            os.link(_evidence_io_path(marker_source), _evidence_io_path(marker_final))
+            moved.append((marker_final, marker_identity))
+            if _file_identity(_evidence_io_path(marker_final)) != marker_identity:
+                raise OSError('batch commit marker identity changed during publication')
             self.scan_tree(_performance_tree_root(destination_root), sensitive_names=sensitive_names)
         except BaseException:
-            for path in reversed(moved):
-                try:
-                    _evidence_io_path(path).unlink()
-                except FileNotFoundError:
-                    pass
+            for path, identity in reversed(moved):
+                _unlink_owned_path(_evidence_io_path(path), identity)
             raise
         finally:
             shutil.rmtree(_evidence_io_path(staging), ignore_errors=True)
+
+    def _rebuild_artifact(self, artifact: _SanitizedArtifact) -> _SanitizedArtifact:
+        source = artifact.source
+        if artifact.kind is EvidenceKind.BENCHMARK and isinstance(source, BenchmarkManifestEvidence):
+            return self.build_benchmark_manifest(source)
+        if artifact.kind is EvidenceKind.COMMAND and isinstance(source, CommandTranscriptEvidence):
+            return self.build_command_transcript(source)
+        if artifact.kind is EvidenceKind.SMOKE and isinstance(source, SmokeSummaryEvidence):
+            return self.build_smoke(source)
+        if artifact.kind is EvidenceKind.PE_IMPORTS and isinstance(source, PeImportsEvidence):
+            return self.build_pe_imports(source)
+        if artifact.kind is EvidenceKind.FORK_PROVENANCE and isinstance(source, ForkProvenanceEvidence):
+            return self.build_fork_provenance(source)
+        if artifact.kind is EvidenceKind.CARGO_FEATURE_TREE and isinstance(source, CargoFeatureTreeEvidence):
+            return self.build_cargo_feature_tree(source)
+        if artifact.kind is EvidenceKind.TEXT_REPORT and isinstance(source, TextReportEvidence):
+            return self.build_text_report(source)
+        raise ValueError('artifact kind does not match its immutable typed source')
 
     @staticmethod
     def write_dependency_manifest(output: Path, value: DependencyEvidence) -> None:
@@ -1185,57 +1247,29 @@ def _tool_version_payload(value: SanitizedToolVersion) -> dict[str, int]:
     }
 
 
-def _json_artifact(kind: EvidenceKind, file_name: str, payload: dict[str, object]) -> SanitizedArtifact:
+def _json_artifact(
+    kind: EvidenceKind,
+    file_name: str,
+    payload: dict[str, object],
+    source: EvidenceSource,
+) -> _SanitizedArtifact:
     content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
-    return SanitizedArtifact(
+    return _SanitizedArtifact(
         kind=kind,
         file_name=file_name,
-        payload=payload,
+        payload=_deep_freeze(payload),
         content=content,
         numeric_values=_numeric_values(payload),
+        source=source,
     )
 
 
-def _validate_artifact_integrity(artifact: SanitizedArtifact) -> None:
-    try:
-        expected_name = _expected_artifact_file_name(artifact)
-        if artifact.kind is EvidenceKind.TEXT_REPORT:
-            checks = artifact.payload['checks']
-            if not isinstance(checks, list):
-                raise ValueError('text report checks must be a list')
-            lines = [f'# {artifact.payload["title"]}', '', f'Overall: {artifact.payload["overall_verdict"]}', '']
-            lines.extend(
-                f'- {item["check_id"]}: {item["verdict"]} ({item["evidence_sha256"]})'
-                for item in checks
-                if isinstance(item, dict)
-            )
-            expected_content = '\n'.join(lines) + '\n'
-        else:
-            expected_content = json.dumps(artifact.payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError('sanitized artifact was tampered after its typed builder') from exc
-    if artifact.file_name != expected_name or artifact.content != expected_content:
-        raise ValueError('sanitized artifact was tampered after its typed builder')
-
-
-def _expected_artifact_file_name(artifact: SanitizedArtifact) -> str:
-    payload = artifact.payload
-    if artifact.kind is EvidenceKind.BENCHMARK:
-        identity = f'{payload["profile"]}|{payload["pipeline"]}|{payload["candidate_exe_sha256"]}'
-        return f'benchmark-{_sha256_text(identity)[:16]}.json'
-    if artifact.kind is EvidenceKind.COMMAND:
-        return f'command-{payload["command_id"]}.json'
-    if artifact.kind is EvidenceKind.SMOKE:
-        return f'smoke-{payload["pipeline"]}-{str(payload["candidate_exe_sha256"])[:12]}.json'
-    if artifact.kind is EvidenceKind.PE_IMPORTS:
-        return f'pe-imports-{str(payload["candidate_exe_sha256"])[:12]}.json'
-    if artifact.kind is EvidenceKind.FORK_PROVENANCE:
-        return f'fork-provenance-{str(payload["fork_revision"])[:12]}.json'
-    if artifact.kind is EvidenceKind.CARGO_FEATURE_TREE:
-        return f'cargo-feature-tree-{payload["candidate_label"]}-{str(payload["candidate_exe_sha256"])[:12]}.json'
-    if artifact.kind is EvidenceKind.TEXT_REPORT:
-        return f'report-{payload["report_kind"]}.md'
-    raise ValueError('sanitized artifact uses an unknown evidence kind')
+def _deep_freeze(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return value
 
 
 def _numeric_values(value: object) -> tuple[int | float, ...]:
@@ -1245,7 +1279,7 @@ def _numeric_values(value: object) -> tuple[int | float, ...]:
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError('versioned evidence contains a non-finite number')
         return (value,)
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return tuple(item for child in value.values() for item in _numeric_values(child))
     if isinstance(value, (list, tuple)):
         return tuple(item for child in value for item in _numeric_values(child))
@@ -1253,47 +1287,320 @@ def _numeric_values(value: object) -> tuple[int | float, ...]:
 
 
 def _scan_versioned_text(raw: str, *, sensitive_names: tuple[str, ...]) -> None:
-    folded = raw.casefold()
-    username = getpass.getuser().strip().casefold()
-    hostname = socket.gethostname().strip().casefold()
+    folded = unicodedata.normalize('NFKC', raw).casefold()
+    username = unicodedata.normalize('NFKC', getpass.getuser().strip()).casefold()
+    hostname = unicodedata.normalize('NFKC', socket.gethostname().strip()).casefold()
     names: set[str] = set()
     for item in sensitive_names:
         if not isinstance(item, str) or not item:
             raise ValueError('sensitive names must be non-empty strings')
         path = Path(item)
-        names.update((path.name.casefold(), path.stem.casefold()))
+        names.update(
+            (
+                unicodedata.normalize('NFKC', path.name).casefold(),
+                unicodedata.normalize('NFKC', path.stem).casefold(),
+            )
+        )
     identity_hit = any(token and len(token) >= 3 and token in folded for token in (username, hostname))
     name_hit = any(token and token in folded for token in names)
     if (
-        _DRIVE_PATH.search(raw)
-        or _UNC_PATH.search(raw)
-        or _USERS_PATH.search(raw)
-        or _VERSIONED_SENSITIVE_MARKER.search(raw)
+        _DRIVE_PATH.search(folded)
+        or _UNC_PATH.search(folded)
+        or _USERS_PATH.search(folded)
+        or _VERSIONED_SENSITIVE_MARKER.search(folded)
         or identity_hit
         or name_hit
     ):
         raise ValueError('versioned evidence contains sensitive content')
 
 
-def _staged_evidence_paths(root: Path) -> tuple[Path, ...]:
+def _scan_versioned_bytes(raw: bytes, *, suffix: str, sensitive_names: tuple[str, ...]) -> None:
+    try:
+        text = raw.decode('utf-8', errors='strict')
+    except UnicodeDecodeError as exc:
+        raise ValueError('versioned evidence is not valid UTF-8') from exc
+    _scan_versioned_text(text, sensitive_names=sensitive_names)
+    if suffix.casefold() != '.json':
+        return
+    payload = _strict_json_loads(text)
+    _scan_decoded_json_strings(payload, sensitive_names=sensitive_names)
+
+
+def _scan_decoded_json_strings(value: object, *, sensitive_names: tuple[str, ...]) -> None:
+    if isinstance(value, str):
+        _scan_versioned_text(value, sensitive_names=sensitive_names)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _scan_decoded_json_strings(item, sensitive_names=sensitive_names)
+        return
+    if not isinstance(value, dict):
+        return
+    forbidden_keys = {'expected', 'actual', 'stdout', 'stderr', 'expected_value', 'actual_value'}
+    for key, item in value.items():
+        normalized_key = unicodedata.normalize('NFKC', key).casefold()
+        if normalized_key in forbidden_keys:
+            raise ValueError('versioned evidence contains a sensitive JSON key')
+        _scan_versioned_text(key, sensitive_names=sensitive_names)
+        _scan_decoded_json_strings(item, sensitive_names=sensitive_names)
+
+
+def _run_git_bytes(root: Path, *args: str) -> bytes:
     git = shutil.which('git')
     if git is None:
         raise FileNotFoundError('git executable not found for staged evidence scan')
     completed = subprocess.run(  # noqa: S603 - fixed Git executable and closed arguments.
-        [git, '-C', str(root), 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '--'],
+        [git, '-C', str(root), *args],
         check=True,
         capture_output=True,
-        encoding='utf-8',
-        errors='strict',
     )
-    paths: list[Path] = []
-    for raw in completed.stdout.splitlines():
-        relative = Path(raw)
+    return completed.stdout
+
+
+def _staged_index_entries(root: Path) -> tuple[_StagedIndexEntry, ...]:
+    raw_paths = _run_git_bytes(
+        root,
+        'diff',
+        '--cached',
+        '--name-only',
+        '-z',
+        '--diff-filter=ACMRT',
+        '--',
+    )
+    entries: list[_StagedIndexEntry] = []
+    seen: set[Path] = set()
+    for raw_path in raw_paths.split(b'\0'):
+        if not raw_path:
+            continue
+        try:
+            relative_text = raw_path.decode('utf-8', errors='strict')
+        except UnicodeDecodeError as exc:
+            raise ValueError('staged evidence path is not valid UTF-8') from exc
+        relative = Path(relative_text)
         if '..' in relative.parts:
             raise ValueError('staged evidence path contains parent traversal')
-        if len(relative.parts) >= 2 and relative.parts[:2] == ('docs', 'performance'):
-            paths.append(root / relative)
-    return tuple(paths)
+        if len(relative.parts) < 2 or relative.parts[:2] != ('docs', 'performance'):
+            continue
+        if relative in seen:
+            raise ValueError('staged evidence path is duplicated')
+        seen.add(relative)
+        stage_raw = _run_git_bytes(root, 'ls-files', '--stage', '-z', '--', relative.as_posix())
+        rows = tuple(row for row in stage_raw.split(b'\0') if row)
+        if len(rows) != 1:
+            raise ValueError('staged evidence must have exactly one index entry')
+        try:
+            metadata, indexed_path = rows[0].split(b'\t', 1)
+            mode_raw, blob_raw, stage_number = metadata.split(b' ', 2)
+            mode = mode_raw.decode('ascii')
+            blob_sha = blob_raw.decode('ascii')
+            indexed_text = indexed_path.decode('utf-8', errors='strict')
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError('staged evidence index entry is malformed') from exc
+        if stage_number != b'0':
+            raise ValueError('staged evidence must use the unique stage-0 index entry')
+        if mode not in ('100644', '100755'):
+            raise ValueError('staged evidence mode rejects symlink, submodule, type-change and special files')
+        if indexed_text != relative.as_posix():
+            raise ValueError('staged evidence index path changed during lookup')
+        _require_hash(blob_sha, 40, 'staged Git blob SHA')
+        content = _run_git_bytes(root, 'cat-file', 'blob', blob_sha)
+        entries.append(_StagedIndexEntry(relative, mode, blob_sha, content))
+    return tuple(entries)
+
+
+def _validate_staged_batch_markers(entries: tuple[_StagedIndexEntry, ...]) -> None:
+    if not entries:
+        return
+    by_path = {item.path: item for item in entries}
+    legacy = DEPENDENCY_MANIFEST_RELATIVE_PATH
+    nonlegacy = {path for path in by_path if path != legacy}
+    marker_pattern = re.compile(r'^batch-([0-9a-f]{16})\.commit\.json$')
+    markers = tuple(item for item in entries if marker_pattern.fullmatch(item.path.name))
+    bound: set[Path] = set()
+    for marker in markers:
+        payload = _strict_json_loads(marker.content.decode('utf-8', errors='strict'))
+        records, batch_sha = _validate_batch_marker_payload(payload)
+        match = marker_pattern.fullmatch(marker.path.name)
+        assert match is not None
+        if match.group(1) != batch_sha[:16]:
+            raise ValueError('batch marker filename does not match its batch SHA')
+        for file_name, expected_sha in records:
+            path = marker.path.parent / file_name
+            entry = by_path.get(path)
+            if entry is None:
+                raise ValueError('batch marker references a missing staged artifact')
+            if _sha256_bytes(entry.content) != expected_sha:
+                raise ValueError('batch marker artifact SHA does not match the staged index blob')
+            if path in bound:
+                raise ValueError('staged artifact is bound by more than one batch marker')
+            bound.add(path)
+        bound.add(marker.path)
+    if nonlegacy != bound:
+        raise ValueError('staged evidence contains an orphan or uncommitted batch artifact')
+
+
+def _batch_commit_marker(artifacts: tuple[_SanitizedArtifact, ...]) -> tuple[str, str]:
+    names = tuple(item.file_name for item in artifacts)
+    if len(set(names)) != len(names):
+        raise ValueError('batch artifacts must have unique basenames')
+    records = [
+        {
+            'file_name': artifact.file_name,
+            'sha256': _sha256_bytes(artifact.content.encode('utf-8')),
+        }
+        for artifact in artifacts
+    ]
+    basis = {'schema_version': 1, 'artifacts': records}
+    batch_sha = _sha256_bytes(
+        json.dumps(basis, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    )
+    payload = {**basis, 'batch_sha256': batch_sha}
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    return f'batch-{batch_sha[:16]}.commit.json', content
+
+
+def _validate_batch_marker_payload(payload: object) -> tuple[tuple[tuple[str, str], ...], str]:
+    if not isinstance(payload, dict) or tuple(payload) != ('schema_version', 'artifacts', 'batch_sha256'):
+        raise ValueError('batch commit marker must use the exact closed schema')
+    if payload['schema_version'] != 1 or isinstance(payload['schema_version'], bool):
+        raise ValueError('batch commit marker schema version must be 1')
+    raw_records = payload['artifacts']
+    if not isinstance(raw_records, list) or not raw_records:
+        raise ValueError('batch commit marker must bind at least one artifact')
+    records: list[tuple[str, str]] = []
+    for raw in raw_records:
+        if not isinstance(raw, dict) or tuple(raw) != ('file_name', 'sha256'):
+            raise ValueError('batch commit marker artifact record uses an unknown field')
+        file_name = raw['file_name']
+        if (
+            not isinstance(file_name, str)
+            or Path(file_name).name != file_name
+            or re.fullmatch(r'[a-z0-9][a-z0-9.-]*\.(?:json|md)', file_name) is None
+            or file_name.startswith('batch-')
+        ):
+            raise ValueError('batch commit marker contains an invalid artifact basename')
+        records.append((file_name, _require_hash(raw['sha256'], 64, 'batch artifact SHA')))
+    if len({name for name, _sha in records}) != len(records):
+        raise ValueError('batch commit marker contains a duplicate artifact basename')
+    batch_sha = _require_hash(payload['batch_sha256'], 64, 'batch SHA')
+    basis = {
+        'schema_version': 1,
+        'artifacts': [{'file_name': name, 'sha256': sha} for name, sha in records],
+    }
+    expected = _sha256_bytes(
+        json.dumps(basis, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    )
+    if batch_sha != expected:
+        raise ValueError('batch commit marker batch SHA is invalid')
+    return tuple(records), batch_sha
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+_TreeIdentity = tuple[int, int, int, int, int]
+_ContentIdentity = tuple[int, int, int, int]
+
+
+def _tree_identity(metadata: os.stat_result) -> _TreeIdentity:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _content_identity(metadata: os.stat_result) -> _ContentIdentity:
+    return (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
+
+
+def _lstat_tree_path(path: Path) -> os.stat_result:
+    return os.lstat(_evidence_io_path(path))
+
+
+def _reject_tree_special(path: Path, metadata: os.stat_result) -> None:
+    attributes = getattr(metadata, 'st_file_attributes', 0)
+    if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+        raise ValueError(f'evidence tree contains a symlink or reparse point: {path}')
+    if not stat.S_ISREG(metadata.st_mode) and not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f'evidence tree contains a non-regular entry: {path}')
+
+
+def _assert_tree_contained(path: Path, root: Path) -> None:
+    canonical = _strip_windows_extended_prefix(path).resolve(strict=True)
+    if not _casefold_relative_to(canonical, root):
+        raise ValueError('evidence tree entry escapes its canonical root')
+
+
+def _scan_tree_safely(root: Path, *, sensitive_names: tuple[str, ...]) -> None:
+    raw_root = _strip_windows_extended_prefix(root).expanduser().absolute()
+    root_metadata = _lstat_tree_path(raw_root)
+    _reject_tree_special(raw_root, root_metadata)
+    canonical_root = raw_root.resolve(strict=True)
+    if stat.S_ISREG(root_metadata.st_mode):
+        _scan_regular_tree_file(raw_root, root_metadata, canonical_root, sensitive_names=sensitive_names)
+        return
+    stack: list[tuple[Literal['enter', 'exit'], Path, _TreeIdentity]] = [
+        ('enter', raw_root, _tree_identity(root_metadata))
+    ]
+    while stack:
+        action, directory, expected_identity = stack.pop()
+        current = _lstat_tree_path(directory)
+        _reject_tree_special(directory, current)
+        if not stat.S_ISDIR(current.st_mode) or _tree_identity(current) != expected_identity:
+            raise ValueError('evidence tree directory identity changed during scan')
+        _assert_tree_contained(directory, canonical_root)
+        if action == 'exit':
+            continue
+        _scan_versioned_text(directory.name, sensitive_names=sensitive_names)
+        try:
+            with os.scandir(_evidence_io_path(directory)) as iterator:
+                children = tuple(iterator)
+        except OSError as exc:
+            raise ValueError('evidence tree directory could not be scanned safely') from exc
+        if _tree_identity(_lstat_tree_path(directory)) != expected_identity:
+            raise ValueError('evidence tree directory changed while being enumerated')
+        stack.append(('exit', directory, expected_identity))
+        for child in sorted(children, key=lambda item: item.name, reverse=True):
+            child_path = _strip_windows_extended_prefix(Path(child.path))
+            metadata = _lstat_tree_path(child_path)
+            _reject_tree_special(child_path, metadata)
+            _assert_tree_contained(child_path, canonical_root)
+            _scan_versioned_text(child.name, sensitive_names=sensitive_names)
+            if stat.S_ISDIR(metadata.st_mode):
+                stack.append(('enter', child_path, _tree_identity(metadata)))
+            else:
+                _scan_regular_tree_file(child_path, metadata, canonical_root, sensitive_names=sensitive_names)
+    if _tree_identity(_lstat_tree_path(raw_root)) != _tree_identity(root_metadata):
+        raise ValueError('evidence tree root changed during scan')
+
+
+def _scan_regular_tree_file(
+    path: Path,
+    expected_metadata: os.stat_result,
+    canonical_root: Path,
+    *,
+    sensitive_names: tuple[str, ...],
+) -> None:
+    _reject_tree_special(path, expected_metadata)
+    _assert_tree_contained(path, canonical_root)
+    expected_identity = _tree_identity(expected_metadata)
+    expected_content_identity = _content_identity(expected_metadata)
+    try:
+        with _evidence_io_path(path).open('rb') as stream:
+            if _content_identity(os.fstat(stream.fileno())) != expected_content_identity:
+                raise ValueError('evidence file identity changed before read')
+            raw = stream.read()
+            if _content_identity(os.fstat(stream.fileno())) != expected_content_identity:
+                raise ValueError('evidence file identity changed during read')
+    except OSError as exc:
+        raise ValueError('evidence file could not be read safely') from exc
+    if _tree_identity(_lstat_tree_path(path)) != expected_identity:
+        raise ValueError('evidence file identity changed after read')
+    _scan_versioned_bytes(raw, suffix=path.suffix, sensitive_names=sensitive_names)
 
 
 def _strip_windows_extended_prefix(path: Path) -> Path:

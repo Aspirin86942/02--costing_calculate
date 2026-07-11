@@ -43,6 +43,18 @@ def test_classify_verdict_preserves_earliest_failure_layer() -> None:
     )
 
 
+def test_blank_quantity_group_key_is_an_etl_mismatch() -> None:
+    mismatch = WorkbookMismatch('成本计算单数量聚合维度', None, 'blank_group_key')
+
+    assert classify_verdict(False, 10.0, 9.0, [mismatch]) == 'ETL_MISMATCH'
+
+
+def test_duplicate_work_order_group_key_is_an_analysis_mismatch() -> None:
+    mismatch = WorkbookMismatch('成本分析工单维度', None, 'duplicate_group_key')
+
+    assert classify_verdict(False, 10.0, 9.0, [mismatch]) == 'ANALYSIS_MISMATCH'
+
+
 def test_benchmark_rejects_runtime_mismatch_even_when_workbooks_match(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -177,6 +177,8 @@ _DATA_MISMATCH_KINDS = frozenset(
         'required_header_missing',
         'unexpected_numeric_header',
         'numeric_storage_invalid',
+        'blank_group_key',
+        'duplicate_group_key',
         'shared_string_index_out_of_range',
     }
 )

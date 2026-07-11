@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
+use std::time::Instant;
 
 use costing_core::error::{CleanupFailureMeta, ErrorContext, ErrorStage, IoFailureMeta};
 use costing_core::model::{CellValue, WorkbookPayload};
@@ -17,6 +18,13 @@ const DEFAULT_SHEET_NAMES: [&str; 3] = [
 
 pub struct WriterContext {
     pub request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkbookWriteReport {
+    pub writer_populate_seconds: f64,
+    pub xlsx_save_seconds: f64,
+    pub output_size_bytes: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +56,7 @@ pub fn write_workbook(
     context: &WriterContext,
     path: &Path,
     payload: &WorkbookPayload,
-) -> Result<(), WriterError> {
+) -> Result<WorkbookWriteReport, WriterError> {
     let artifact_state = OutputArtifactState::NotCreated;
     validate_default_sheet_contract(payload).map_err(|error| {
         writer_error(
@@ -59,6 +67,7 @@ pub fn write_workbook(
         )
     })?;
 
+    let writer_populate_started = Instant::now();
     let mut workbook = Workbook::new();
     for sheet in &payload.sheet_models {
         let worksheet = workbook.add_worksheet();
@@ -153,6 +162,7 @@ pub fn write_workbook(
                 })?;
         }
     }
+    let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -183,19 +193,23 @@ pub fn write_workbook(
         })?;
     let artifact_state = OutputArtifactState::CreatedByCurrentRun;
 
-    if let Err(error) = workbook.save_to_writer(&mut file) {
-        drop(file);
-        return Err(finish_writer_failure(
-            writer_error(
-                context,
+    let xlsx_save_started = Instant::now();
+    let xlsx_save_seconds = match workbook.save_to_writer(&mut file) {
+        Ok(()) => xlsx_save_started.elapsed().as_secs_f64(),
+        Err(error) => {
+            drop(file);
+            return Err(finish_writer_failure(
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::SaveWorkbook,
+                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                ),
+                artifact_state,
                 path,
-                ErrorStage::SaveWorkbook,
-                WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-            ),
-            artifact_state,
-            path,
-        ));
-    }
+            ));
+        }
+    };
 
     if let Err(error) = file.flush() {
         drop(file);
@@ -241,7 +255,11 @@ pub fn write_workbook(
     }
     let artifact_state = OutputArtifactState::CompletedByCurrentRun;
     debug_assert_eq!(artifact_state, OutputArtifactState::CompletedByCurrentRun);
-    Ok(())
+    Ok(WorkbookWriteReport {
+        writer_populate_seconds,
+        xlsx_save_seconds,
+        output_size_bytes: metadata.len(),
+    })
 }
 
 fn writer_error(
@@ -514,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_three_sheet_workbook() {
+    fn write_workbook_reports_populate_save_and_output_size() {
         let output = unique_temp_path("three-sheet");
         let payload = payload(vec![
             sheet("成本计算单总表"),
@@ -522,7 +540,15 @@ mod tests {
             sheet("成本分析工单维度"),
         ]);
 
-        write_workbook(&writer_context(), &output, &payload).unwrap();
+        let report = write_workbook(&writer_context(), &output, &payload).unwrap();
+
+        assert!(report.writer_populate_seconds.is_finite());
+        assert!(report.writer_populate_seconds >= 0.0);
+        assert!(report.xlsx_save_seconds.is_finite());
+        assert!(report.xlsx_save_seconds >= 0.0);
+        let output_size_bytes = std::fs::metadata(&output).unwrap().len();
+        assert!(output_size_bytes > 0);
+        assert_eq!(report.output_size_bytes, output_size_bytes);
 
         let workbook = open_workbook_auto(&output).unwrap();
         assert_eq!(
@@ -573,7 +599,7 @@ mod tests {
                     ]);
                     barrier.wait();
                     match write_workbook(&writer_context(), &output, &payload) {
-                        Ok(()) => "written",
+                        Ok(_) => "written",
                         Err(WriterError {
                             primary: WriterPrimaryError::Io(source),
                             ..

@@ -193,7 +193,7 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         ("work_order_rows".to_string(), work_order_rows),
     ]);
     let workbook_path = args.output.as_ref().map(|path| path.display().to_string());
-    if !args.check_only {
+    let output_size_bytes = if !args.check_only {
         let output = args
             .output
             .as_ref()
@@ -201,7 +201,7 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         let writer_context = WriterContext {
             request_id: request_id.clone(),
         };
-        measure(&mut timings, "export", || {
+        let report = measure(&mut timings, "export", || {
             write_workbook(&writer_context, output, &payload)
                 .map_err(|error| map_xlsx_write_error(output, error))
         })
@@ -213,7 +213,12 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
                 Some(output.clone()),
             )
         })?;
-    }
+        timings.insert("writer_populate", report.writer_populate_seconds);
+        timings.insert("xlsx_save", report.xlsx_save_seconds);
+        Some(report.output_size_bytes)
+    } else {
+        None
+    };
     let mut issue_type_counts = BTreeMap::new();
     for issue in &payload.error_log {
         *issue_type_counts
@@ -222,8 +227,10 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
     }
     Ok(RunSummary {
         status: "succeeded".to_string(),
+        request_id,
         pipeline: pipeline.name.as_str().to_string(),
         output_written: !args.check_only,
+        output_size_bytes,
         workbook_path,
         sheet_count: payload.sheet_models.len(),
         error_log_count: payload.error_log_count,
@@ -769,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn run_reports_actual_stage_timings_and_exact_run_counts() {
+    fn run_omits_writer_breakdown_and_output_size_for_check_only() {
         let path = unique_temp_path(&std::env::temp_dir(), "run-reader", "xlsx");
         write_minimal_input_workbook(&path);
 
@@ -786,6 +793,17 @@ mod tests {
 
         assert_run_counts(&summary, 1, 0, 1, 1, 1, 10);
         assert_stage_timings(&summary, false, false);
+        assert!(!summary.request_id.is_empty());
+        assert_eq!(summary.output_size_bytes, None);
+        assert_eq!(
+            summary
+                .stage_timings
+                .stages
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["fact", "ingest", "normalize", "presentation", "split"]
+        );
         assert_eq!(summary.sheet_count, 3);
         assert!(summary
             .quality_metrics
@@ -794,6 +812,7 @@ mod tests {
         let serialized = serde_json::to_value(&summary).unwrap();
         assert!(serialized.get("error_log_preview").is_none());
         assert!(serialized.get("error_log_preview_truncated").is_none());
+        assert!(serialized["output_size_bytes"].is_null());
         let serialized_text = serialized.to_string();
         for sensitive_field in ["row_id", "field_name", "original_value", "reason", "action"] {
             assert!(!serialized_text.contains(sensitive_field));
@@ -803,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn run_writes_workbook_for_non_check_only_runs() {
+    fn run_reports_request_id_writer_breakdown_and_output_size_for_normal_mode() {
         let input = unique_temp_path(&std::env::temp_dir(), "run-writes-input", "xlsx");
         let output = unique_temp_path(&std::env::temp_dir(), "run-writes-output", "xlsx");
         write_minimal_input_workbook(&input);
@@ -820,8 +839,32 @@ mod tests {
         let summary = run(args).unwrap();
 
         assert!(summary.output_written);
+        assert!(!summary.request_id.is_empty());
         assert_eq!(summary.workbook_path, Some(output.display().to_string()));
         assert!(output.exists());
+        assert_eq!(
+            summary.output_size_bytes,
+            Some(std::fs::metadata(&output).unwrap().len())
+        );
+        assert!(summary.output_size_bytes.unwrap() > 0);
+        assert_eq!(
+            summary
+                .stage_timings
+                .stages
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "export",
+                "fact",
+                "ingest",
+                "normalize",
+                "presentation",
+                "split",
+                "writer_populate",
+                "xlsx_save",
+            ]
+        );
         assert_stage_timings(&summary, true, false);
         let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_file(output);

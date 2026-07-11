@@ -248,8 +248,10 @@ pub struct WorkbookPayload {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunSummary {
     pub status: String,
+    pub request_id: String,
     pub pipeline: String,
     pub output_written: bool,
+    pub output_size_bytes: Option<u64>,
     pub workbook_path: Option<String>,
     pub sheet_count: usize,
     pub error_log_count: usize,

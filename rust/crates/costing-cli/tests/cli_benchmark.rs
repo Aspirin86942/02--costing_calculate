@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
 #[test]
-fn check_only_benchmark_reports_payload_total_without_export() {
+fn check_only_benchmark_omits_writer_breakdown_and_output_size() {
     let input = unique_temp_path("check-only-input.xlsx");
     write_minimal_input_workbook(&input);
 
@@ -27,16 +27,31 @@ fn check_only_benchmark_reports_payload_total_without_export() {
 
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let stages = payload["stage_timings"]["stages"].as_object().unwrap();
+    assert!(!payload["request_id"].as_str().unwrap().is_empty());
     assert_eq!(payload["output_written"], false);
     assert!(payload["workbook_path"].is_null());
+    assert!(payload["output_size_bytes"].is_null());
+    assert_eq!(
+        stages.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "fact",
+            "ingest",
+            "normalize",
+            "presentation",
+            "split",
+            "total"
+        ]
+    );
     assert!(stages["total"].as_f64().unwrap().is_finite());
-    assert!(!stages.contains_key("export"));
+    assert!(stages
+        .values()
+        .all(|seconds| seconds.as_f64().unwrap().is_finite() && seconds.as_f64().unwrap() >= 0.0));
 
     let _ = std::fs::remove_file(input);
 }
 
 #[test]
-fn normal_benchmark_reports_export_separately() {
+fn normal_benchmark_reports_writer_breakdown_and_output_size() {
     let input = unique_temp_path("normal-input.xlsx");
     let workbook = unique_temp_path("normal-output.xlsx");
     write_minimal_input_workbook(&input);
@@ -60,9 +75,34 @@ fn normal_benchmark_reports_export_separately() {
 
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let stages = payload["stage_timings"]["stages"].as_object().unwrap();
+    assert!(!payload["request_id"].as_str().unwrap().is_empty());
     assert_eq!(payload["output_written"], true);
+    assert_eq!(
+        payload["output_size_bytes"].as_u64().unwrap(),
+        std::fs::metadata(&workbook).unwrap().len()
+    );
+    assert!(payload["output_size_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(
+        stages.keys().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "export",
+            "fact",
+            "ingest",
+            "normalize",
+            "presentation",
+            "split",
+            "total",
+            "writer_populate",
+            "xlsx_save",
+        ]
+    );
     assert!(stages["total"].as_f64().unwrap().is_finite());
     assert!(stages["export"].as_f64().unwrap().is_finite());
+    assert!(stages["writer_populate"].as_f64().unwrap().is_finite());
+    assert!(stages["xlsx_save"].as_f64().unwrap().is_finite());
+    assert!(stages
+        .values()
+        .all(|seconds| seconds.as_f64().unwrap().is_finite() && seconds.as_f64().unwrap() >= 0.0));
 
     let _ = std::fs::remove_file(input);
     let _ = std::fs::remove_file(workbook);

@@ -10,8 +10,10 @@ fn summary(
 ) -> RunSummary {
     RunSummary {
         status: "success".to_owned(),
+        request_id: "runtime-contract-test".to_owned(),
         pipeline: "gb".to_owned(),
         output_written: false,
+        output_size_bytes: None,
         workbook_path: None,
         sheet_count: 3,
         error_log_count,

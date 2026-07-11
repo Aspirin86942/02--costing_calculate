@@ -123,8 +123,13 @@ def _write_complete_raw_sample(
     role: str = 'reference',
     batch_id: str = 'b' * 64,
     global_round: int = 1,
+    exit_code: int = 0,
+    timed_out: bool = False,
+    peak_working_set_bytes: int = 12345,
+    create_workbook: bool = True,
 ) -> tuple[Path, ...]:
-    _write_minimal_xlsx(output_path)
+    if create_workbook:
+        _write_minimal_xlsx(output_path)
     result, stdout_path, stderr_path, driver_path = _raw_artifact_paths(
         request.local_root, batch_id, global_round, role
     )
@@ -144,9 +149,11 @@ def _write_complete_raw_sample(
     io_driver.write_text(
         json.dumps(
             {
-                'returncode': 0,
+                'returncode': exit_code,
                 'timed_out': False,
                 'launch_failed': False,
+                'tree_termination_failed': False,
+                'driver_reaped': True,
                 'stdout': '',
                 'stderr': '',
             }
@@ -159,10 +166,10 @@ def _write_complete_raw_sample(
         'role': role,
         'batch_id': batch_id,
         'global_round': global_round,
-        'exit_code': 0,
-        'timed_out': False,
+        'exit_code': exit_code,
+        'timed_out': timed_out,
         'external_wall_seconds': '0.125',
-        'peak_working_set_bytes': 12345,
+        'peak_working_set_bytes': peak_working_set_bytes,
         'input_sha256': phase0_harness._sha256(request.input_path),
         'binary_sha256': phase0_harness._sha256(
             request.reference_executable if role == 'reference' else request.candidate_executable
@@ -510,6 +517,7 @@ def test_pws_group_rejects_reference_nonzero(monkeypatch: pytest.MonkeyPatch, tm
         run_pws_group(request)
     assert caught.value.verdict is HarnessVerdict.REFERENCE_FAILED
     assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is caught.value.verdict
+    assert not list((tmp_path / 'data').rglob('*.xlsx'))
 
 
 def test_pws_group_rejects_candidate_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -519,6 +527,7 @@ def test_pws_group_rejects_candidate_nonzero(monkeypatch: pytest.MonkeyPatch, tm
         run_pws_group(request)
     assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
     assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is caught.value.verdict
+    assert not list((tmp_path / 'data').rglob('*.xlsx'))
 
 
 def test_pws_normal_outputs_are_unique_and_removed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -569,6 +578,56 @@ def test_pws_resume_adopts_complete_raw_sample_before_launch(monkeypatch: pytest
         'pws', missing_plan.global_round, missing_role
     )
     assert not output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ('role', 'exit_code', 'timed_out', 'verdict'),
+    (
+        ('candidate', 9, False, HarnessVerdict.CANDIDATE_FAILED),
+        ('candidate', 124, True, HarnessVerdict.CANDIDATE_FAILED),
+        ('reference', 9, False, HarnessVerdict.REFERENCE_FAILED),
+        ('reference', 124, True, HarnessVerdict.REFERENCE_FAILED),
+    ),
+)
+def test_pws_raw_failure_without_workbook_maps_role_verdict(
+    role: str,
+    exit_code: int,
+    timed_out: bool,
+    verdict: HarnessVerdict,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _group_request(tmp_path)
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    target_plan = request.plans[0]
+    for plan in request.plans:
+        for planned_role in plan.order:
+            if (plan.global_round, planned_role) != (target_plan.global_round, role):
+                _seed_recorded_pws_sample(ledger, request, plan, planned_role)
+    payload = phase0_harness._planned_output_payload(request, _identity(), target_plan.global_round, role)
+    ledger.record_planned_output('pws', target_plan.global_round, role, payload)
+    output_path = phase0_harness._planned_paths((payload,))[0]
+    _write_complete_raw_sample(
+        request.benchmark,
+        output_path,
+        schema=RuntimeSchema.BASE,
+        role=role,
+        global_round=target_plan.global_round,
+        exit_code=exit_code,
+        timed_out=timed_out,
+        peak_working_set_bytes=0,
+        create_workbook=False,
+    )
+    launches: list[object] = []
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda benchmark: _identity())
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args))
+
+    with pytest.raises(HarnessFailure) as caught:
+        run_pws_group(request)
+
+    assert caught.value.verdict is verdict
+    assert launches == []
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is verdict
 
 
 def test_recorded_pws_sample_with_residual_workbook_only_cleans_up(
@@ -629,6 +688,7 @@ def test_pws_timeout_is_internal_and_does_not_expand_parameter_surface() -> None
     assert '$ChildTimeoutSeconds = 900' in script
     assert 'taskkill.exe' in script
     assert 'timed_out' in script
+    assert 'WaitForExit()' not in script
 
 
 class _TimeoutPopen:
@@ -643,6 +703,42 @@ class _TimeoutPopen:
         if self.calls == 1:
             raise subprocess.TimeoutExpired('powershell', timeout)
         return '', ''
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+class _FailedTreeKillPopen:
+    pid = 5678
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.returncode: int | None = None
+        self.communicate_calls = 0
+        self.kill_calls = 0
+        self.wait_timeouts: list[float] = []
+
+    def communicate(self, *, timeout: float) -> tuple[str, str]:
+        self.communicate_calls += 1
+        if self.communicate_calls == 1 or self.mode == 'alive':
+            raise subprocess.TimeoutExpired('powershell', timeout)
+        if self.mode == 'second-timeout' and self.communicate_calls == 2:
+            raise subprocess.TimeoutExpired('powershell', timeout)
+        return '', ''
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        if self.mode != 'alive':
+            self.returncode = -9
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, *, timeout: float) -> int:
+        self.wait_timeouts.append(timeout)
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired('powershell', timeout)
+        return self.returncode
 
 
 def test_python_pws_driver_watchdog_kills_process_tree_without_waiting(
@@ -673,6 +769,56 @@ def test_python_pws_driver_launch_failure_is_closed_without_waiting(
         phase0_harness._launch_pws_driver(('powershell',), driver_log_path=driver_log, local_root=local_root)
 
     assert driver_log.exists()
+
+
+@pytest.mark.parametrize('mode', ('reaped', 'second-timeout'))
+def test_python_watchdog_taskkill_failure_falls_back_to_bounded_driver_kill(
+    mode: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    driver_log = local_root / 'driver.json'
+    process = _FailedTreeKillPopen(mode)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(phase0_harness, '_PWS_DRIVER_TIMEOUT_SECONDS', 0.01)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_terminate_windows_process_tree',
+        lambda pid: (_ for _ in ()).throw(OSError('taskkill nonzero')),
+    )
+
+    with pytest.raises(RustNormalProcessError):
+        phase0_harness._launch_pws_driver(('powershell',), driver_log_path=driver_log, local_root=local_root)
+
+    payload = json.loads(driver_log.read_text(encoding='utf-8'))
+    assert process.kill_calls >= 1
+    assert process.poll() is not None
+    assert payload['tree_termination_failed'] is True
+    assert payload['driver_reaped'] is True
+
+
+def test_python_watchdog_fails_closed_when_fallback_driver_remains_alive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    driver_log = local_root / 'driver.json'
+    process = _FailedTreeKillPopen('alive')
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(phase0_harness, '_PWS_DRIVER_TIMEOUT_SECONDS', 0.01)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_terminate_windows_process_tree',
+        lambda pid: (_ for _ in ()).throw(OSError('taskkill nonzero')),
+    )
+
+    with pytest.raises(RustNormalProcessError):
+        phase0_harness._launch_pws_driver(('powershell',), driver_log_path=driver_log, local_root=local_root)
+
+    payload = json.loads(driver_log.read_text(encoding='utf-8'))
+    assert process.kill_calls >= 1
+    assert process.poll() is None
+    assert process.wait_timeouts
+    assert payload['tree_termination_failed'] is True
+    assert payload['driver_reaped'] is False
 
 
 def _run_sanitized_fake_child() -> dict[str, object]:

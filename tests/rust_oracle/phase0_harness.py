@@ -1407,12 +1407,14 @@ def _parse_pws_local_result(path: Path) -> dict[str, Any]:
     timed_out = payload['timed_out']
     if not wall.is_finite() or wall <= 0:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS wall time must be finite and positive')
-    if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PeakWorkingSet64 must be a positive integer')
+    if not isinstance(peak, int) or isinstance(peak, bool) or peak < 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PeakWorkingSet64 must be a non-negative integer')
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS exit code must be an integer')
     if not isinstance(timed_out, bool):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS timed_out must be boolean')
+    if exit_code == 0 and not timed_out and peak <= 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'successful PWS sample must have a positive peak')
     if not isinstance(payload['command_arguments'], list) or not all(
         isinstance(item, str) for item in payload['command_arguments']
     ):
@@ -1430,16 +1432,21 @@ def _parse_pws_local_result(path: Path) -> dict[str, Any]:
 
 
 def _terminate_windows_process_tree(pid: int) -> None:
-    taskkill = shutil.which('taskkill.exe') or shutil.which('taskkill')
-    if taskkill is None:
+    system_root = os.environ.get('SystemRoot')
+    if not system_root:
+        raise OSError('SystemRoot is unavailable')
+    taskkill = Path(system_root) / 'System32' / 'taskkill.exe'
+    if not taskkill.is_file():
         raise OSError('taskkill.exe is unavailable')
-    subprocess.run(  # noqa: S603 - resolved Windows system utility and numeric PID only.
-        [taskkill, '/PID', str(pid), '/T', '/F'],
+    completed = subprocess.run(  # noqa: S603 - absolute Windows system utility and numeric PID only.
+        [str(taskkill), '/PID', str(pid), '/T', '/F'],
         check=False,
         capture_output=True,
         text=True,
         timeout=_PWS_DRIVER_TERMINATION_SECONDS,
     )
+    if completed.returncode != 0:
+        raise OSError(f'taskkill.exe returned {completed.returncode}')
 
 
 def _launch_pws_driver(
@@ -1464,6 +1471,8 @@ def _launch_pws_driver(
                 'returncode': None,
                 'timed_out': False,
                 'launch_failed': True,
+                'tree_termination_failed': False,
+                'driver_reaped': False,
                 'stdout': '',
                 'stderr': f'{type(exc).__name__}:{getattr(exc, "errno", None)}',
             }
@@ -1473,22 +1482,43 @@ def _launch_pws_driver(
     try:
         stdout, stderr = process.communicate(timeout=_PWS_DRIVER_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
-        termination_error = ''
+        termination_errors: list[str] = []
+        tree_termination_failed = False
         try:
             _terminate_windows_process_tree(process.pid)
         except Exception as termination_exc:
-            termination_error = f'{type(termination_exc).__name__}:{getattr(termination_exc, "errno", None)}'
+            tree_termination_failed = True
+            termination_errors.append(
+                f'tree={type(termination_exc).__name__}:{getattr(termination_exc, "errno", None)}'
+            )
+            try:
+                process.kill()
+            except Exception as kill_exc:
+                termination_errors.append(f'driver_kill={type(kill_exc).__name__}:{getattr(kill_exc, "errno", None)}')
         try:
             stdout, stderr = process.communicate(timeout=_PWS_DRIVER_TERMINATION_SECONDS)
         except subprocess.TimeoutExpired:
-            stdout, stderr = '', 'PowerShell process tree did not terminate within the watchdog grace period'
-        if termination_error:
-            stderr = f'{stderr}\nprocess_tree_termination={termination_error}'.strip()
+            stdout, stderr = '', ''
+            try:
+                process.kill()
+            except Exception as kill_exc:
+                termination_errors.append(f'driver_kill={type(kill_exc).__name__}:{getattr(kill_exc, "errno", None)}')
+            try:
+                process.wait(timeout=_PWS_DRIVER_TERMINATION_SECONDS)
+            except Exception as wait_exc:
+                termination_errors.append(f'driver_wait={type(wait_exc).__name__}:{getattr(wait_exc, "errno", None)}')
+        driver_reaped = process.poll() is not None
+        if not driver_reaped:
+            termination_errors.append('driver_reap=unconfirmed')
+        if termination_errors:
+            stderr = f'{stderr}\nprocess_termination={";".join(termination_errors)}'.strip()
         raw = _canonical_json(
             {
                 'returncode': process.returncode,
                 'timed_out': True,
                 'launch_failed': False,
+                'tree_termination_failed': tree_termination_failed,
+                'driver_reaped': driver_reaped,
                 'stdout': stdout,
                 'stderr': stderr,
             }
@@ -1500,6 +1530,8 @@ def _launch_pws_driver(
             'returncode': process.returncode,
             'timed_out': False,
             'launch_failed': False,
+            'tree_termination_failed': False,
+            'driver_reaped': process.poll() is not None,
             'stdout': stdout,
             'stderr': stderr,
         }
@@ -1520,11 +1552,14 @@ def _read_closed_driver_log(path: Path) -> dict[str, Any]:
         'returncode',
         'timed_out',
         'launch_failed',
+        'tree_termination_failed',
+        'driver_reaped',
         'stdout',
         'stderr',
     }:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver log fields are not closed')
-    if not isinstance(payload['timed_out'], bool) or not isinstance(payload['launch_failed'], bool):
+    state_flags = ('timed_out', 'launch_failed', 'tree_termination_failed', 'driver_reaped')
+    if not all(isinstance(payload[field], bool) for field in state_flags):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver state flags must be boolean')
     if not all(isinstance(payload[field], str) for field in ('stdout', 'stderr')):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver streams must be strings')
@@ -1583,7 +1618,13 @@ def _validate_complete_pws_artifacts(
     if payload['local_unversioned_log_sha256'] != combined_sha:
         raise RustNormalValidationError('PWS combined raw log SHA mismatch', combined_sha)
     driver = _read_closed_driver_log(artifacts.driver_log_path)
-    if driver['timed_out'] or driver['launch_failed'] or driver['returncode'] != payload['exit_code']:
+    if (
+        driver['timed_out']
+        or driver['launch_failed']
+        or driver['tree_termination_failed']
+        or not driver['driver_reaped']
+        or driver['returncode'] != payload['exit_code']
+    ):
         raise RustNormalValidationError('PWS driver/result state mismatch', combined_sha)
     if payload['timed_out'] or payload['exit_code'] != 0:
         raise RustNormalProcessError(payload['exit_code'] or -1, combined_sha)
@@ -1644,18 +1685,17 @@ def _invoke_pws_single_sample(
         local_log_root=artifacts.log_root,
         local_result_path=artifacts.result_path,
     )
-    raw_paths = (
+    core_paths = (
         artifacts.result_path,
         artifacts.stdout_path,
         artifacts.stderr_path,
         artifacts.driver_log_path,
-        output_path,
     )
-    present = tuple(_io_path(path).is_file() for path in raw_paths)
+    present = tuple(_io_path(path).is_file() for path in core_paths)
     if present[0]:
         if not all(present):
             raise RustNormalValidationError('PWS resume artifacts are incomplete', _artifact_audit_sha(artifacts))
-    elif any(present):
+    elif any(present) or output_path.is_file():
         raise RustNormalValidationError(
             'PWS raw collision is incomplete and cannot be rerun', _artifact_audit_sha(artifacts)
         )

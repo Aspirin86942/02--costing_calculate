@@ -38,6 +38,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $PollMilliseconds = 50
 $ChildTimeoutSeconds = 900
+$TerminationWaitMilliseconds = 5000
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $TrustedLocalRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'rust\target\perf-local'))
 $Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
@@ -187,46 +188,72 @@ $startInfo.RedirectStandardError = $true
 
 $process = New-Object System.Diagnostics.Process
 $process.StartInfo = $startInfo
-$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-if (-not $process.Start()) {
-    throw 'failed to start benchmark process'
-}
-$stdoutTask = $process.StandardOutput.ReadToEndAsync()
-$stderrTask = $process.StandardError.ReadToEndAsync()
-$peakBytes = [long] 0
-$timedOut = $false
-while (-not $process.HasExited) {
-    $process.Refresh()
-    if ($process.PeakWorkingSet64 -gt $peakBytes) {
-        $peakBytes = [long] $process.PeakWorkingSet64
-    }
-    if ($stopwatch.Elapsed.TotalSeconds -ge $ChildTimeoutSeconds) {
-        $timedOut = $true
-        $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
-        if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
-            throw 'taskkill.exe is unavailable for timed-out process-tree termination'
-        }
-        & $taskkill /PID $process.Id /T /F | Out-Null
-        $process.WaitForExit()
-        break
-    }
-    Start-Sleep -Milliseconds $PollMilliseconds
-}
-$process.WaitForExit()
-$stopwatch.Stop()
 try {
-    $process.Refresh()
-    if ($process.PeakWorkingSet64 -gt $peakBytes) {
-        $peakBytes = [long] $process.PeakWorkingSet64
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    if (-not $process.Start()) {
+        throw 'failed to start benchmark process'
     }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $peakBytes = [long] 0
+    $timedOut = $false
+    while (-not $process.HasExited) {
+        $process.Refresh()
+        if ($process.PeakWorkingSet64 -gt $peakBytes) {
+            $peakBytes = [long] $process.PeakWorkingSet64
+        }
+        if ($stopwatch.Elapsed.TotalSeconds -ge $ChildTimeoutSeconds) {
+            $timedOut = $true
+            $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+            if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
+                throw 'taskkill.exe is unavailable for timed-out process-tree termination'
+            }
+            & $taskkill /PID $process.Id /T /F | Out-Null
+            $treeKillExitCode = $LASTEXITCODE
+            $exited = $process.WaitForExit($TerminationWaitMilliseconds)
+            if (-not $exited) {
+                try {
+                    $process.Kill()
+                }
+                catch {
+                    throw "timed-out driver fallback kill failed: $($_.Exception.GetType().Name)"
+                }
+                $exited = $process.WaitForExit($TerminationWaitMilliseconds)
+            }
+            if (-not $exited -or -not $process.HasExited) {
+                throw 'timed-out driver termination could not be confirmed'
+            }
+            if ($treeKillExitCode -ne 0) {
+                throw "taskkill tree termination failed with exit code $treeKillExitCode; descendant state is unproven"
+            }
+            break
+        }
+        Start-Sleep -Milliseconds $PollMilliseconds
+    }
+    if (-not $process.WaitForExit($TerminationWaitMilliseconds)) {
+        $process.Kill()
+        if (-not $process.WaitForExit($TerminationWaitMilliseconds)) {
+            throw 'driver did not exit within the bounded termination wait'
+        }
+        throw 'driver required direct fallback termination after its main loop'
+    }
+    $stopwatch.Stop()
+    try {
+        $process.Refresh()
+        if ($process.PeakWorkingSet64 -gt $peakBytes) {
+            $peakBytes = [long] $process.PeakWorkingSet64
+        }
+    }
+    catch {
+        # PeakWorkingSet64 is a kernel-maintained cumulative peak; the last successful refresh remains authoritative.
+    }
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    $exitCode = if ($timedOut) { 124 } else { $process.ExitCode }
 }
-catch {
-    # PeakWorkingSet64 is a kernel-maintained cumulative peak; the last successful refresh remains authoritative.
+finally {
+    $process.Dispose()
 }
-$stdout = $stdoutTask.Result
-$stderr = $stderrTask.Result
-$exitCode = if ($timedOut) { 124 } else { $process.ExitCode }
-$process.Dispose()
 
 $stdoutSha256 = Write-CreateNewUtf8 $stdoutPath $stdout
 $stderrSha256 = Write-CreateNewUtf8 $stderrPath $stderr

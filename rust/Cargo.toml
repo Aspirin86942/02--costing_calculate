@@ -17,7 +17,9 @@ calamine = "0.26"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 rust_decimal = { version = "1", features = ["serde"] }
-rust_xlsxwriter = "0"
+rust_xlsxwriter = { git = "https://github.com/Aspirin86942/rust_xlsxwriter.git", rev = "f4e4e99f920937709d6dacb4680c60ea3f80486f", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "1"
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

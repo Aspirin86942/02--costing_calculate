@@ -3,11 +3,19 @@ name = "costing-xlsx"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+low-memory = ["rust_xlsxwriter/constant_memory", "dep:tempfile", "dep:windows-sys"]
+zlib = ["rust_xlsxwriter/zlib"]
+zmij = ["rust_xlsxwriter/zmij"]
+
 [dependencies]
 calamine.workspace = true
 costing-core = { path = "../costing-core" }
 rust_decimal.workspace = true
 rust_xlsxwriter.workspace = true
+tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
+windows-sys = { workspace = true, optional = true }
 
 [dev-dependencies]

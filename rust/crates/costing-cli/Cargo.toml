@@ -3,6 +3,12 @@ name = "costing-calculate"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+low-memory = ["costing-xlsx/low-memory"]
+zlib = ["costing-xlsx/zlib"]
+zmij = ["costing-xlsx/zmij"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
@@ -11,4 +17,4 @@ costing-xlsx = { path = "../costing-xlsx" }
 serde_json.workspace = true
 
 [dev-dependencies]
-rust_xlsxwriter = "0"
+rust_xlsxwriter.workspace = true

@@ -1,0 +1,22 @@
+{
+  "upstream_url": "https://github.com/jmcnamara/rust_xlsxwriter.git",
+  "upstream_tag": "v0.96.0",
+  "upstream_base_revision": "9134de25afadaee955d0f821862338e3d046a338",
+  "crates_io_checksum": "dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14",
+  "pre_pin_costing_commit": "000d7c3867600908b1d2631fb5033b5092883c14",
+  "fork_url": "https://github.com/Aspirin86942/rust_xlsxwriter.git",
+  "fork_revision": "f4e4e99f920937709d6dacb4680c60ea3f80486f",
+  "allowed_diff_files": [
+    "src/packager.rs",
+    "src/workbook.rs",
+    "src/workbook/tests.rs",
+    "src/worksheet.rs",
+    "src/worksheet/tests.rs"
+  ],
+  "xmlwriter_fallback_used": false,
+  "xmlwriter_fallback_trigger_test": null,
+  "diff_sha256": "22f1fd7d16d72f026ea515ae428068a014945ec9f2bce8ded5cfaf8bc09c01b7",
+  "local_unversioned_log_sha256": "d168e93640c5c5d7b83806d08c627472c2f63c9e39ce4ddf0d5a3eb23119d325",
+  "upstream_pr_url": null,
+  "verdict": "VALIDATED"
+}

@@ -157,6 +157,41 @@ def _group(
     )
 
 
+def _replace_round_window(group: MetricGroup, *, start: int, count: int) -> MetricGroup:
+    template = group.rounds[0]
+    rounds = []
+    for global_round in range(start, start + count):
+        order = ('reference', 'candidate') if global_round % 2 else ('candidate', 'reference')
+        rounds.append(
+            replace(
+                template,
+                plan=replace(template.plan, global_round=global_round, order=order),
+                reference=replace(template.reference, global_round=global_round),
+                candidate=replace(template.candidate, global_round=global_round),
+            )
+        )
+    return replace(group, global_round_start=start, rounds=tuple(rounds))
+
+
+def _replace_metric_values(
+    group: MetricGroup, *, reference_values: tuple[str, ...], candidate_values: tuple[str, ...]
+) -> MetricGroup:
+    assert len(group.rounds) == len(reference_values) == len(candidate_values)
+    return replace(
+        group,
+        rounds=tuple(
+            replace(
+                paired,
+                reference=replace(paired.reference, metric_value=Decimal(reference_value)),
+                candidate=replace(paired.candidate, metric_value=Decimal(candidate_value)),
+            )
+            for paired, reference_value, candidate_value in zip(
+                group.rounds, reference_values, candidate_values, strict=True
+            )
+        ),
+    )
+
+
 def _calibration_group(
     *,
     metric: str,
@@ -259,6 +294,16 @@ def test_validate_group_rejects_duplicate_round() -> None:
         validate_metric_group(replace(group, rounds=group.rounds[:-1] + (duplicate,)))
 
 
+def test_validate_group_rejects_rounds_two_through_six() -> None:
+    with pytest.raises(ValueError, match='round window'):
+        validate_metric_group(_replace_round_window(_group(), start=2, count=5))
+
+
+def test_validate_group_rejects_ten_rounds_six_through_fifteen() -> None:
+    with pytest.raises(ValueError, match='round window'):
+        validate_metric_group(_replace_round_window(_group(), start=6, count=10))
+
+
 def test_validate_group_rejects_unbalanced_order() -> None:
     group = _group()
     wrong_plan = replace(group.rounds[1].plan, order=('reference', 'candidate'))
@@ -327,6 +372,19 @@ def test_wall_and_pws_must_share_machine_fingerprint() -> None:
         assert_same_benchmark_batch(_group(metric='wall'), _group(metric='pws', machine_sha='other'))
 
 
+def test_wall_and_pws_must_share_git_head() -> None:
+    with pytest.raises(ValueError, match='Git'):
+        assert_same_benchmark_batch(_group(metric='wall'), _group(metric='pws', git_head='other-head'))
+
+
+def test_wall_and_pws_must_share_repository_state() -> None:
+    with pytest.raises(ValueError, match='repository state'):
+        assert_same_benchmark_batch(
+            _group(metric='wall'),
+            _group(metric='pws', repository_state_sha='other-state'),
+        )
+
+
 def test_calibration_group_requires_five_reference_only_rounds() -> None:
     group = _calibration_group(metric='wall', pipeline='sk')
     validate_calibration_group(group)
@@ -361,6 +419,25 @@ def test_conflicting_five_round_groups_are_inconclusive() -> None:
     first = _group(start=1, candidate_value='0.9')
     second = _group(start=6, candidate_value='1.1')
     assert groups_have_conflicting_direction(first, second)
+
+
+def test_direction_uses_ratio_of_group_medians_for_non_uniform_samples() -> None:
+    first = _replace_metric_values(
+        _group(start=1),
+        reference_values=('1', '100', '101', '102', '103'),
+        candidate_values=('99', '101', '102', '1', '1'),
+    )
+    second = _group(start=6, reference_value='1', candidate_value='0.9')
+
+    # median(candidate) / median(reference) is 99/101 (<1) for the first group.
+    # The median of per-pair ratios is >1, so this is a regression discriminator.
+    assert not groups_have_conflicting_direction(first, second)
+
+
+def test_group_join_rejects_ten_round_first_group() -> None:
+    first = merge_metric_groups(_group(start=1, candidate_value='0.9'), _group(start=6, candidate_value='0.8'))
+    with pytest.raises(ValueError, match='five-round'):
+        groups_have_conflicting_direction(first, _group(start=6, candidate_value='0.7'))
 
 
 def test_non_conflicting_groups_merge_to_global_rounds_one_through_ten() -> None:

@@ -431,6 +431,8 @@ def validate_metric_group(group: MetricGroup) -> None:
         raise ValueError('group uses an unsupported pipeline or metric')
     if len(group.rounds) not in (5, 10):
         raise ValueError('metric group rounds must contain exactly five or ten samples')
+    if (len(group.rounds), group.global_round_start) not in ((5, 1), (5, 6), (10, 1)):
+        raise ValueError('metric group uses an invalid round window')
 
     # 先校验每一轮的 AB/BA，避免重复轮次掩盖顺序失衡。
     for paired in group.rounds:
@@ -522,6 +524,18 @@ def assert_same_benchmark_batch(wall: MetricGroup, pws: MetricGroup) -> None:
         raise ValueError('wall and PWS must share N and the same global rounds')
     if _group_hashes(wall) != _group_hashes(pws):
         raise ValueError('wall and PWS must share input and binary hashes')
+    wall_git_heads = tuple((item.reference.git_head, item.candidate.git_head) for item in wall.rounds)
+    pws_git_heads = tuple((item.reference.git_head, item.candidate.git_head) for item in pws.rounds)
+    if wall_git_heads != pws_git_heads:
+        raise ValueError('wall and PWS must share Git HEAD')
+    wall_repository_states = tuple(
+        (item.reference.repository_state_sha256, item.candidate.repository_state_sha256) for item in wall.rounds
+    )
+    pws_repository_states = tuple(
+        (item.reference.repository_state_sha256, item.candidate.repository_state_sha256) for item in pws.rounds
+    )
+    if wall_repository_states != pws_repository_states:
+        raise ValueError('wall and PWS must share repository state')
     wall_machines = tuple(item.reference.machine_fingerprint_sha256 for item in wall.rounds)
     pws_machines = tuple(item.reference.machine_fingerprint_sha256 for item in pws.rounds)
     if wall_machines != pws_machines:
@@ -540,18 +554,22 @@ def requires_mandatory_expansion(*, measured: Decimal, limit: Decimal) -> bool:
 
 def _median_ratio(group: MetricGroup) -> Decimal:
     validate_metric_group(group)
-    ratios = []
-    for paired in group.rounds:
-        _require_positive_finite(paired.reference.metric_value, 'reference sample')
-        ratios.append(paired.candidate.metric_value / paired.reference.metric_value)
-    return median(ratios)
+    reference_median = median(paired.reference.metric_value for paired in group.rounds)
+    candidate_median = median(paired.candidate.metric_value for paired in group.rounds)
+    _require_positive_finite(reference_median, 'reference median')
+    _require_positive_finite(candidate_median, 'candidate median')
+    return candidate_median / reference_median
 
 
 def _assert_groups_join(first: MetricGroup, second: MetricGroup) -> None:
+    if len(first.rounds) != 5 or len(second.rounds) != 5:
+        raise ValueError('only two five-round metric groups may be joined')
     if first.batch_id != second.batch_id or first.pipeline != second.pipeline or first.metric != second.metric:
         raise ValueError('metric groups must share batch, pipeline, and metric')
     if first.global_round_start != 1 or second.global_round_start != 6:
         raise ValueError('metric groups must cover global rounds one and six')
+    validate_metric_group(first)
+    validate_metric_group(second)
     first_samples = first.rounds[0]
     second_samples = second.rounds[0]
     for left, right in (

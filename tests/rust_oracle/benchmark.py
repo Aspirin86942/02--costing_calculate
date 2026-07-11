@@ -14,6 +14,7 @@ from pathlib import Path
 from tests.rust_oracle.oracle_runner import (
     REQUIRED_RUST_PAYLOAD_STAGES,
     TimedPayloadRun,
+    _prepare_local_path,
     assert_runtime_contract_matches,
     build_rust_cli_release,
     run_python_check_only_payload,
@@ -413,32 +414,21 @@ def write_local_check_only_result(
     output_path: Path,
 ) -> None:
     root = repo_root().resolve()
-    destination = output_path.resolve()
-    allowed_roots = ((root / 'rust' / 'target').resolve(), (root / 'data' / 'processed').resolve())
-    if not any(_is_path_below(destination, allowed) for allowed in allowed_roots):
-        raise AssertionError('local check-only results must stay below rust/target or data/processed')
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    _reject_reparse_components(destination.parent, allowed_roots)
+    destination = _prepare_local_path(
+        output_path,
+        allowed_roots=(root / 'rust' / 'target', root / 'data' / 'processed'),
+        purpose='local check-only results must stay below rust/target or data/processed',
+        create_parent=False,
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = _prepare_local_path(
+        destination,
+        allowed_roots=(root / 'rust' / 'target', root / 'data' / 'processed'),
+        purpose='local check-only results must stay below rust/target or data/processed',
+        create_parent=False,
+    )
     with destination.open('x', encoding='utf-8', newline='\n') as stream:
         json.dump(dataclasses.asdict(result), stream, ensure_ascii=False, indent=2)
-
-
-def _is_path_below(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
-
-
-def _reject_reparse_components(path: Path, allowed_roots: tuple[Path, Path]) -> None:
-    root = next(item for item in allowed_roots if _is_path_below(path, item))
-    current = root
-    for part in path.relative_to(root).parts:
-        current /= part
-        attributes = getattr(current.stat(), 'st_file_attributes', 0)
-        if attributes & 0x400:
-            raise AssertionError(f'local result path contains a reparse point: {current}')
 
 
 def write_check_only_benchmark_result(result: CheckOnlyBenchmarkResult, output_path: Path) -> None:

@@ -589,3 +589,21 @@ def test_local_check_only_writer_rejects_destination_outside_local_roots(
     monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
     with pytest.raises(AssertionError, match='rust/target or data/processed'):
         benchmark.write_local_check_only_result(object(), tmp_path / 'docs' / 'evidence.json')  # type: ignore[arg-type]
+
+
+def test_local_check_only_writer_rejects_raw_symlink_component(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
+    real_directory = tmp_path / 'outside'
+    real_directory.mkdir()
+    link = tmp_path / 'rust' / 'target' / 'linked'
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(real_directory, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'symlink creation is unavailable: {exc}')
+
+    with pytest.raises(AssertionError, match='reparse|symlink'):
+        benchmark.write_local_check_only_result(object(), link / 'result.json')  # type: ignore[arg-type]

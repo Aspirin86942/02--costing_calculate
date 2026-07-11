@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,15 @@ from tests.rust_oracle.oracle_runner import (
 )
 
 MISSING_STAGE = object()
+
+
+def _write_minimal_xlsx(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('[Content_Types].xml', '<Types/>')
+        archive.writestr('_rels/.rels', '<Relationships/>')
+        archive.writestr('xl/workbook.xml', '<workbook/>')
+        archive.writestr('xl/worksheets/sheet1.xml', '<worksheet/>')
 
 
 def valid_rust_check_only_payload() -> dict[str, Any]:
@@ -117,6 +127,22 @@ def test_runtime_parser_rejects_unexpected_workbook_path_in_check_only() -> None
     payload['output_written'] = False
     with pytest.raises(AssertionError, match='workbook_path'):
         parse_runtime_payload(payload, schema=RuntimeSchema.BASE)
+
+
+@pytest.mark.parametrize('schema', tuple(RuntimeSchema))
+def test_runtime_parser_rejects_unknown_stage_for_every_schema(schema: RuntimeSchema) -> None:
+    payload = valid_runtime_payload()
+    if schema is not RuntimeSchema.BASE:
+        payload['stage_timings']['stages'].update(writer_populate=0.2, xlsx_save=0.3)
+    payload['stage_timings']['stages']['future_unknown_stage'] = 0.1
+
+    with pytest.raises(AssertionError, match='unexpected'):
+        parse_runtime_payload(payload, schema=schema)
+
+
+def test_runtime_parser_rejects_string_schema() -> None:
+    with pytest.raises(AssertionError, match='RuntimeSchema'):
+        parse_runtime_payload(valid_runtime_payload(), schema='base')  # type: ignore[arg-type]
 
 
 def test_cargo_target_directory_comes_from_metadata(
@@ -535,7 +561,7 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
     executable.write_bytes(b'rust-binary')
     input_path = tmp_path / 'input.xlsx'
     input_path.write_bytes(b'input-workbook')
-    output_path = tmp_path / 'normal-output.xlsx'
+    output_path = tmp_path / 'data' / 'processed' / 'normal-output.xlsx'
     local_log_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs'
     monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
     counter = iter((1.0, 2.25))
@@ -552,7 +578,7 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
             str(output_path.resolve()),
             '--benchmark',
         ]
-        output_path.write_bytes(b'workbook')
+        _write_minimal_xlsx(output_path)
         payload = valid_rust_check_only_payload()
         payload['output_written'] = True
         payload['workbook_path'] = str(output_path.resolve())
@@ -576,7 +602,7 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
     )
 
     assert result.normal_run.external_wall_seconds == Decimal('1.25')
-    assert result.normal_run.runtime.output_size_bytes == len(b'workbook')
+    assert result.normal_run.runtime.output_size_bytes == output_path.stat().st_size
     assert output_path.exists()  # 上层 wall runner 负责在校验后立即清理。
     assert [path.name for path in local_log_root.glob('*.json')] == [f'{result.local_unversioned_log_sha256}.json']
 
@@ -620,7 +646,7 @@ def test_run_rust_normal_captured_rejects_output_collisions_before_subprocess(
     assert executable.read_bytes() == b'rust-binary'
 
 
-def test_run_rust_normal_captured_leaves_partial_output_for_outer_cleanup(
+def test_run_rust_normal_captured_maps_launch_exception_and_leaves_partial_output_for_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -628,16 +654,17 @@ def test_run_rust_normal_captured_leaves_partial_output_for_outer_cleanup(
     executable.write_bytes(b'rust-binary')
     input_path = tmp_path / 'input.xlsx'
     input_path.write_bytes(b'input-workbook')
-    output_path = tmp_path / 'normal-output.xlsx'
+    output_path = tmp_path / 'data' / 'processed' / 'normal-output.xlsx'
 
     def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b'partial-workbook')
         raise RuntimeError('subprocess launch failed after creating output')
 
     monkeypatch.setattr(oracle_runner.subprocess, 'run', fake_run)
     monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
 
-    with pytest.raises(RuntimeError, match='subprocess launch failed'):
+    with pytest.raises(oracle_runner.RustNormalProcessError) as caught:
         oracle_runner.run_rust_normal_captured(
             executable,
             'gb',
@@ -648,6 +675,93 @@ def test_run_rust_normal_captured_leaves_partial_output_for_outer_cleanup(
         )
 
     assert output_path.read_bytes() == b'partial-workbook'
+    assert len(caught.value.log_sha256) == 64
+
+
+def test_run_rust_normal_captured_rejects_versioned_output_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / 'costing-calculate.exe'
+    executable.write_bytes(b'rust')
+    input_path = tmp_path / 'input.xlsx'
+    input_path.write_bytes(b'input')
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
+    monkeypatch.setattr(
+        oracle_runner.subprocess,
+        'run',
+        lambda *args, **kwargs: pytest.fail('invalid output must be rejected before subprocess'),
+    )
+
+    with pytest.raises(AssertionError, match='data/processed or rust/target'):
+        oracle_runner.run_rust_normal_captured(
+            executable,
+            'gb',
+            input_path,
+            tmp_path / 'docs' / 'evidence.xlsx',
+            schema=RuntimeSchema.BASE,
+            local_log_root=tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs',
+        )
+
+
+def test_run_rust_normal_captured_rejects_raw_symlink_component(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / 'costing-calculate.exe'
+    executable.write_bytes(b'rust')
+    input_path = tmp_path / 'input.xlsx'
+    input_path.write_bytes(b'input')
+    real_directory = tmp_path / 'outside'
+    real_directory.mkdir()
+    link = tmp_path / 'data' / 'processed' / 'linked'
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(real_directory, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'symlink creation is unavailable: {exc}')
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
+
+    with pytest.raises(AssertionError, match='reparse|symlink'):
+        oracle_runner.run_rust_normal_captured(
+            executable,
+            'gb',
+            input_path,
+            link / 'output.xlsx',
+            schema=RuntimeSchema.BASE,
+            local_log_root=tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs',
+        )
+
+
+def test_run_rust_normal_captured_rejects_malformed_xlsx_with_log_sha(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / 'costing-calculate.exe'
+    executable.write_bytes(b'rust')
+    input_path = tmp_path / 'input.xlsx'
+    input_path.write_bytes(b'input')
+    output_path = tmp_path / 'data' / 'processed' / 'malformed.xlsx'
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b'workbook')
+        payload = valid_runtime_payload()
+        payload['workbook_path'] = str(output_path.resolve())
+        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout=json.dumps(payload), stderr='')
+
+    monkeypatch.setattr(oracle_runner.subprocess, 'run', fake_run)
+    with pytest.raises(oracle_runner.RustNormalValidationError) as caught:
+        oracle_runner.run_rust_normal_captured(
+            executable,
+            'gb',
+            input_path,
+            output_path,
+            schema=RuntimeSchema.BASE,
+            local_log_root=tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs',
+        )
+    assert len(caught.value.log_sha256) == 64
 
 
 def test_runtime_contract_match_accepts_equal_summaries() -> None:

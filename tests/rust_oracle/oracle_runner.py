@@ -5,8 +5,10 @@ import json
 import math
 import os
 import shutil
+import stat
 import subprocess
 import time
+import zipfile
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -64,6 +66,12 @@ class RustNormalProcessError(AssertionError):
     def __init__(self, returncode: int, log_sha256: str) -> None:
         super().__init__(f'Rust normal benchmark exited with code {returncode}; raw log sha256={log_sha256}')
         self.returncode = returncode
+        self.log_sha256 = log_sha256
+
+
+class RustNormalValidationError(AssertionError):
+    def __init__(self, message: str, log_sha256: str) -> None:
+        super().__init__(message)
         self.log_sha256 = log_sha256
 
 
@@ -279,12 +287,23 @@ def run_rust_normal_captured(
     *,
     schema: RuntimeSchema,
     local_log_root: Path,
+    workbook_oracle_fn: Any | None = None,
 ) -> CapturedNormalRun:
+    root = repo_root()
     input_path = input_path.resolve()
     executable = executable.resolve()
-    output_path = output_path.resolve()
-    local_log_root = local_log_root.resolve()
-    _require_local_raw_log_root(local_log_root)
+    output_path = _prepare_local_path(
+        output_path,
+        allowed_roots=(root / 'data' / 'processed', root / 'rust' / 'target'),
+        purpose='normal output must stay below data/processed or rust/target',
+        create_parent=False,
+    )
+    local_log_root = _prepare_local_path(
+        local_log_root,
+        allowed_roots=(root / 'rust' / 'target' / 'perf-local',),
+        purpose='raw logs must stay below rust/target/perf-local',
+        create_parent=True,
+    )
     if output_path in (input_path, executable):
         raise AssertionError('normal benchmark output must differ from input and executable')
     input_sha256 = _file_sha256(input_path)
@@ -309,13 +328,17 @@ def run_rust_normal_captured(
             encoding='utf-8',
             errors='replace',
         )
-    except OSError as exc:
+    except Exception as exc:
         raw_log = json.dumps(
-            {'exception': type(exc).__name__, 'errno': exc.errno, 'winerror': getattr(exc, 'winerror', None)},
+            {
+                'exception': type(exc).__name__,
+                'errno': getattr(exc, 'errno', None),
+                'winerror': getattr(exc, 'winerror', None),
+            },
             separators=(',', ':'),
         ).encode('utf-8')
         log_sha256 = hashlib.sha256(raw_log).hexdigest()
-        _write_create_new(local_log_root / f'{log_sha256}.json', raw_log)
+        _write_create_new(local_log_root / f'{log_sha256}.json', raw_log, allowed_root=local_log_root)
         raise RustNormalProcessError(-1, log_sha256) from exc
     wall_seconds = Decimal(str(time.perf_counter() - started))
     raw_log = json.dumps(
@@ -324,46 +347,140 @@ def run_rust_normal_captured(
         separators=(',', ':'),
     ).encode('utf-8')
     log_sha256 = hashlib.sha256(raw_log).hexdigest()
-    _write_create_new(local_log_root / f'{log_sha256}.json', raw_log)
+    _write_create_new(local_log_root / f'{log_sha256}.json', raw_log, allowed_root=local_log_root)
     if completed.returncode != 0:
         raise RustNormalProcessError(completed.returncode, log_sha256)
 
-    payload = _load_rust_summary_payload(completed.stdout)
-    if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
-        raise AssertionError('Rust normal benchmark reported an invalid status or pipeline')
-    if payload.get('output_written') is not True or payload.get('sheet_count') != 3:
-        raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
-    if Path(str(payload.get('workbook_path'))).resolve() != output_path:
-        raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
-    if not output_path.is_file():
-        raise AssertionError('Rust normal benchmark did not create its workbook')
-    payload['output_size_bytes'] = output_path.stat().st_size
-    runtime = parse_runtime_payload(payload, schema=schema)
-    if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:
-        raise AssertionError('normal benchmark input or executable changed during capture')
+    try:
+        payload = _load_rust_summary_payload(completed.stdout)
+        if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
+            raise AssertionError('Rust normal benchmark reported an invalid status or pipeline')
+        if payload.get('output_written') is not True or payload.get('sheet_count') != 3:
+            raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
+        if Path(str(payload.get('workbook_path'))).resolve() != output_path:
+            raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
+        if not output_path.is_file():
+            raise AssertionError('Rust normal benchmark did not create its workbook')
+        payload['output_size_bytes'] = output_path.stat().st_size
+        runtime = parse_runtime_payload(payload, schema=schema)
+        oracle_sha256 = (workbook_oracle_fn or workbook_oracle)(output_path)
+        if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:
+            raise AssertionError('normal benchmark input or executable changed during capture')
+    except Exception as exc:
+        if isinstance(exc, RustNormalValidationError):
+            raise
+        raise RustNormalValidationError('Rust normal runtime or workbook validation failed', log_sha256) from exc
     return CapturedNormalRun(
         normal_run=NormalRunEvidence(
             external_wall_seconds=wall_seconds,
             peak_working_set_bytes=None,
             runtime=runtime,
-            workbook_oracle_sha256=_file_sha256(output_path),
+            workbook_oracle_sha256=oracle_sha256,
         ),
         exit_code=0,
         local_unversioned_log_sha256=log_sha256,
     )
 
 
-def _require_local_raw_log_root(path: Path) -> None:
-    allowed = (repo_root() / 'rust' / 'target' / 'perf-local').resolve()
+def workbook_oracle(path: Path) -> str:
+    required = {'[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml'}
+    root = repo_root()
+    safe_path = _prepare_local_path(
+        path,
+        allowed_roots=(root / 'data' / 'processed', root / 'rust' / 'target'),
+        purpose='workbook oracle input must stay below data/processed or rust/target',
+        create_parent=False,
+    )
     try:
-        path.relative_to(allowed)
-    except ValueError as exc:
-        raise AssertionError(f'raw logs must stay below {allowed}') from exc
-    path.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(_io_path(safe_path)) as archive:
+            names = set(archive.namelist())
+            missing = required - names
+            if missing or not any(name.startswith('xl/worksheets/') and name.endswith('.xml') for name in names):
+                raise AssertionError(f'XLSX package structure is incomplete: {sorted(missing)!r}')
+            digest = hashlib.sha256()
+            for name in sorted(names):
+                encoded_name = name.encode('utf-8')
+                content = archive.read(name)
+                digest.update(len(encoded_name).to_bytes(8, 'big'))
+                digest.update(encoded_name)
+                digest.update(len(content).to_bytes(8, 'big'))
+                digest.update(content)
+            return digest.hexdigest()
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        raise AssertionError('workbook is not a readable XLSX ZIP package') from exc
 
 
-def _write_create_new(path: Path, payload: bytes) -> None:
+def _prepare_local_path(
+    path: Path,
+    *,
+    allowed_roots: tuple[Path, ...],
+    purpose: str,
+    create_parent: bool,
+) -> Path:
+    raw = _normal_path(path).expanduser()
+    if '..' in raw.parts:
+        raise AssertionError(f'{purpose}; parent traversal is forbidden')
+    raw_absolute = raw.absolute()
+    raw_roots = tuple(root.expanduser().absolute() for root in allowed_roots)
+    lexical_root = next((root for root in raw_roots if _is_relative_to(raw_absolute, root)), None)
+    if lexical_root is None:
+        raise AssertionError(purpose)
+    _reject_existing_reparse_components(raw_absolute)
+    parent = raw_absolute if create_parent else raw_absolute.parent
+    if create_parent:
+        _io_path(parent).mkdir(parents=True, exist_ok=True)
+    _reject_existing_reparse_components(parent)
+    canonical = raw_absolute.resolve(strict=False)
+    canonical_root = lexical_root.resolve(strict=False)
+    if not _is_relative_to(canonical, canonical_root):
+        raise AssertionError(f'{purpose}; canonical path escapes through a reparse point')
+    return canonical
+
+
+def _io_path(path: Path) -> Path:
+    normal = _normal_path(path).absolute()
+    if os.name != 'nt':
+        return normal
+    return Path(f'\\\\?\\{normal}')
+
+
+def _normal_path(path: Path) -> Path:
+    text = str(path)
+    if os.name == 'nt' and text.startswith('\\\\?\\'):
+        return Path(text[4:])
+    return path
+
+
+def _reject_existing_reparse_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        if not os.path.lexists(current):
+            continue
+        metadata = os.lstat(current)
+        attributes = getattr(metadata, 'st_file_attributes', 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+            raise AssertionError(f'path contains a symlink or reparse point: {current}')
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _write_create_new(path: Path, payload: bytes, *, allowed_root: Path) -> None:
+    raw = _prepare_local_path(
+        path,
+        allowed_roots=(allowed_root,),
+        purpose='local raw log escaped its validated root',
+        create_parent=False,
+    )
+    path = _io_path(raw)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_existing_reparse_components(raw.parent)
     try:
         with path.open('xb') as stream:
             stream.write(payload)
@@ -395,6 +512,8 @@ def parse_rust_run_summary(stdout: str) -> OracleRunSummary:
 
 
 def parse_runtime_payload(payload: dict[str, Any], *, schema: RuntimeSchema) -> RuntimeEvidence:
+    if not isinstance(schema, RuntimeSchema):
+        raise AssertionError('schema must be a RuntimeSchema value')
     if payload.get('status') != 'succeeded':
         raise AssertionError("Rust runtime must report status='succeeded'")
     pipeline = payload.get('pipeline')
@@ -480,10 +599,9 @@ def _parse_runtime_stages(payload: dict[str, Any], *, schema: RuntimeSchema) -> 
     missing = sorted(required - parsed.keys())
     if missing:
         raise AssertionError(f'Rust runtime stages missing: {missing!r}')
-    if schema is RuntimeSchema.BASE:
-        forbidden = {'writer_populate', 'xlsx_save'} & parsed.keys()
-        if forbidden:
-            raise AssertionError(f'base runtime schema forbids writer breakdown: {sorted(forbidden)!r}')
+    unexpected = sorted(parsed.keys() - required)
+    if unexpected:
+        raise AssertionError(f'Rust runtime stages contain unexpected keys: {unexpected!r}')
     return parsed
 
 

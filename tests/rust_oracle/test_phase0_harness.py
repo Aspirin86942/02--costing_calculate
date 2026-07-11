@@ -85,6 +85,25 @@ def _runtime(pipeline: str = 'gb') -> RuntimeEvidence:
     )
 
 
+_APPROVED_TEST_DIMENSIONS = ('A1:B2', 'A1:C3', 'A1:D4')
+
+
+def _write_approved_test_workbook(path: Path) -> None:
+    from openpyxl import Workbook
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    try:
+        for index, (sheet, dimension) in enumerate(zip(ApprovedSheet, _APPROVED_TEST_DIMENSIONS, strict=True)):
+            worksheet = workbook.active if index == 0 else workbook.create_sheet()
+            worksheet.title = sheet.value
+            worksheet['A1'] = 'start'
+            worksheet[dimension.split(':')[1]] = 'end'
+        workbook.save(path)
+    finally:
+        workbook.close()
+
+
 def _request(tmp_path: Path) -> PairedBenchmarkRequest:
     input_path = tmp_path / 'input.xlsx'
     reference = tmp_path / 'reference.exe'
@@ -606,10 +625,14 @@ def test_phase0a_pws_uses_trusted_raw_root(monkeypatch: pytest.MonkeyPatch, tmp_
         assert phase0_harness._is_sha256(kwargs['batch_id'])
         output = kwargs['output_path']
         assert isinstance(output, Path)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b'workbook')
+        _write_approved_test_workbook(output)
         return CapturedNormalRun(
-            NormalRunEvidence(Decimal('1'), 123, _runtime('gb'), '8' * 64),
+            NormalRunEvidence(
+                Decimal('1'),
+                123,
+                replace(_runtime('gb'), sheet_dimensions=_APPROVED_TEST_DIMENSIONS),
+                '8' * 64,
+            ),
             0,
             '7' * 64,
         )
@@ -624,6 +647,91 @@ def test_phase0a_pws_uses_trusted_raw_root(monkeypatch: pytest.MonkeyPatch, tmp_
         machine=machine,
     )
     assert len(group.rounds) == 5
+
+
+def test_phase0a_group_fills_empty_runtime_dimensions_from_actual_workbook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_path = tmp_path / 'synthetic.xlsx'
+    executable = tmp_path / 'reference.exe'
+    input_path.write_bytes(b'input')
+    executable.write_bytes(b'executable')
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'phase0a'
+    machine = MachineEvidence('build', 'x86_64', 'cpu', 1, 1, 'UNKNOWN', 1, '6' * 64)
+    monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '4' * 40)
+    monkeypatch.setattr(phase0_harness, '_capture_machine_evidence', lambda: machine)
+
+    def fake_capture(
+        executable: Path, pipeline: str, input_path: Path, output_path: Path, **kwargs: object
+    ) -> CapturedNormalRun:
+        del executable, input_path, kwargs
+        _write_approved_test_workbook(output_path)
+        return CapturedNormalRun(
+            NormalRunEvidence(Decimal('1'), None, replace(_runtime(pipeline), sheet_dimensions=()), '8' * 64),
+            0,
+            '7' * 64,
+        )
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
+    group = phase0_harness._capture_phase0a_group(
+        pipeline='gb',
+        metric='wall',
+        input_path=input_path,
+        executable=executable,
+        local_root=local_root,
+        machine=machine,
+    )
+
+    assert all(item.reference.normal_run.runtime.sheet_dimensions == _APPROVED_TEST_DIMENSIONS for item in group.rounds)
+    sk_wall = _calibration_group('sk', 'wall', 8)
+    sk_pws = _calibration_group('sk', 'pws', 8)
+    payload = phase0_harness._phase0a_payload(
+        phase0_harness.Phase0AManifest(
+            '1' * 64,
+            'a' * 40,
+            '4' * 40,
+            machine,
+            group,
+            replace(group, metric='pws'),
+            sk_wall,
+            sk_pws,
+        ),
+        _phase0a_request(tmp_path),
+    )
+    assert payload['pipelines']['gb']['sheet_dimensions'] == list(_APPROVED_TEST_DIMENSIONS)
+
+
+def test_phase0a_group_rejects_runtime_dimensions_that_differ_from_actual_workbook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_path = tmp_path / 'synthetic.xlsx'
+    executable = tmp_path / 'reference.exe'
+    input_path.write_bytes(b'input')
+    executable.write_bytes(b'executable')
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'phase0a'
+    machine = MachineEvidence('build', 'x86_64', 'cpu', 1, 1, 'UNKNOWN', 1, '6' * 64)
+    monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '4' * 40)
+    monkeypatch.setattr(phase0_harness, '_capture_machine_evidence', lambda: machine)
+
+    def fake_capture(
+        executable: Path, pipeline: str, input_path: Path, output_path: Path, **kwargs: object
+    ) -> CapturedNormalRun:
+        del executable, input_path, kwargs
+        _write_approved_test_workbook(output_path)
+        return CapturedNormalRun(NormalRunEvidence(Decimal('1'), None, _runtime(pipeline), '8' * 64), 0, '7' * 64)
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._capture_phase0a_group(
+            pipeline='gb',
+            metric='wall',
+            input_path=input_path,
+            executable=executable,
+            local_root=local_root,
+            machine=machine,
+        )
+    assert caught.value.verdict is HarnessVerdict.CORRECTNESS_FAILED
 
 
 def _phase0a_request(tmp_path: Path) -> Phase0ARequest:
@@ -798,9 +906,17 @@ def test_phase0a_rechecks_machine_evidence_after_each_capture(monkeypatch: pytes
         executable: Path, pipeline: str, input_path: Path, output_path: Path, **kwargs: object
     ) -> CapturedNormalRun:
         del executable, input_path, kwargs
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b'workbook')
-        return CapturedNormalRun(NormalRunEvidence(Decimal('1'), None, _runtime(pipeline), '8' * 64), 0, '7' * 64)
+        _write_approved_test_workbook(output_path)
+        return CapturedNormalRun(
+            NormalRunEvidence(
+                Decimal('1'),
+                None,
+                replace(_runtime(pipeline), sheet_dimensions=_APPROVED_TEST_DIMENSIONS),
+                '8' * 64,
+            ),
+            0,
+            '7' * 64,
+        )
 
     monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
 

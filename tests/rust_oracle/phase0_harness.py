@@ -10,7 +10,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from statistics import median
@@ -1580,6 +1580,30 @@ def _workbook_sheet_names(path: Path) -> tuple[str, ...]:
             workbook.close()
     except (OSError, KeyError, ValueError) as exc:
         raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'smoke workbook package is invalid') from exc
+
+
+def _with_actual_workbook_dimensions(captured: CapturedNormalRun, output: Path) -> CapturedNormalRun:
+    try:
+        workbook = load_workbook(_io_path(output), read_only=True, data_only=True)
+        try:
+            expected_names = tuple(item.value for item in ApprovedSheet)
+            if tuple(workbook.sheetnames) != expected_names:
+                raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A Sheet contract mismatch')
+            actual = tuple(workbook[name].calculate_dimension() for name in expected_names)
+        finally:
+            workbook.close()
+    except HarnessFailure:
+        raise
+    except Exception as exc:
+        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A workbook dimensions are unreadable') from exc
+    reported = captured.normal_run.runtime.sheet_dimensions
+    if reported and reported != actual:
+        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A runtime dimensions mismatch workbook')
+    if reported:
+        return captured
+    runtime = replace(captured.normal_run.runtime, sheet_dimensions=actual)
+    normal_run = replace(captured.normal_run, runtime=runtime)
+    return replace(captured, normal_run=normal_run)
 
 
 def _canonical_json(payload: object) -> bytes:
@@ -3397,7 +3421,7 @@ def _capture_phase0a_group(
         output = local_root / 'outputs' / pipeline / metric / f'{suffix}.xlsx'
         cleanup.append(output)
         if metric == 'wall':
-            return run_rust_normal_captured(
+            captured = run_rust_normal_captured(
                 executable,
                 pipeline,
                 input_path,
@@ -3405,29 +3429,31 @@ def _capture_phase0a_group(
                 schema=RuntimeSchema.BASE,
                 local_log_root=local_root / 'raw-logs',
             )
-        sample_batch_id = hashlib.sha256(f'{batch_id}|warmup'.encode()).hexdigest() if warmup else batch_id
-        artifacts = _pws_local_artifact_paths(
-            _trusted_local_root(), sample_batch_id, 1 if warmup else round_number, 'reference'
-        )
-        cleanup.extend(
-            (
-                artifacts.result_path,
-                artifacts.stdout_path,
-                artifacts.stderr_path,
-                artifacts.driver_log_path,
+        else:
+            sample_batch_id = hashlib.sha256(f'{batch_id}|warmup'.encode()).hexdigest() if warmup else batch_id
+            artifacts = _pws_local_artifact_paths(
+                _trusted_local_root(), sample_batch_id, 1 if warmup else round_number, 'reference'
             )
-        )
-        return _invoke_pws_single_sample(
-            executable=executable,
-            pipeline=pipeline,
-            input_path=input_path,
-            output_path=output,
-            role='reference',
-            batch_id=sample_batch_id,
-            global_round=1 if warmup else round_number,
-            schema=RuntimeSchema.BASE,
-            local_root=_trusted_local_root(),
-        )
+            cleanup.extend(
+                (
+                    artifacts.result_path,
+                    artifacts.stdout_path,
+                    artifacts.stderr_path,
+                    artifacts.driver_log_path,
+                )
+            )
+            captured = _invoke_pws_single_sample(
+                executable=executable,
+                pipeline=pipeline,
+                input_path=input_path,
+                output_path=output,
+                role='reference',
+                batch_id=sample_batch_id,
+                global_round=1 if warmup else round_number,
+                schema=RuntimeSchema.BASE,
+                local_root=_trusted_local_root(),
+            )
+        return _with_actual_workbook_dimensions(captured, output)
 
     primary: BaseException | None = None
     rounds: list[CalibrationRound] = []

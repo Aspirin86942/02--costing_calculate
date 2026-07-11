@@ -37,6 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PollMilliseconds = 50
+$ChildTimeoutSeconds = 900
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $TrustedLocalRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'rust\target\perf-local'))
 $Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
@@ -54,7 +55,23 @@ function Assert-TrustedLocalPath([string] $Path, [string] $Label) {
     if (-not $full.StartsWith($rootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "$Label must stay below the trusted ignored local root"
     }
+    Assert-NoReparseComponents $full $Label
     return $full
+}
+
+function Assert-NoReparseComponents([string] $Path, [string] $Label) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $current = [System.IO.Path]::GetPathRoot($full)
+    foreach ($part in $full.Substring($current.Length).Split('\', [System.StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $part
+        if (-not [System.IO.Directory]::Exists($current) -and -not [System.IO.File]::Exists($current)) {
+            break
+        }
+        $attributes = [System.IO.File]::GetAttributes($current)
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label contains a junction or reparse point"
+        }
+    }
 }
 
 function ConvertTo-WindowsCommandLineArgument([string] $Value) {
@@ -109,7 +126,9 @@ function Get-FileSha256([string] $Path) {
 function Write-CreateNewUtf8([string] $Path, [string] $Content) {
     $parent = Split-Path -Parent $Path
     if ($parent) {
+        Assert-NoReparseComponents $parent 'create-new artifact parent'
         [void] (New-Item -ItemType Directory -Force -Path $parent)
+        Assert-NoReparseComponents $parent 'create-new artifact parent'
     }
     $bytes = $Utf8NoBom.GetBytes($Content)
     $stream = New-Object System.IO.FileStream(
@@ -175,10 +194,21 @@ if (-not $process.Start()) {
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 $peakBytes = [long] 0
+$timedOut = $false
 while (-not $process.HasExited) {
     $process.Refresh()
     if ($process.PeakWorkingSet64 -gt $peakBytes) {
         $peakBytes = [long] $process.PeakWorkingSet64
+    }
+    if ($stopwatch.Elapsed.TotalSeconds -ge $ChildTimeoutSeconds) {
+        $timedOut = $true
+        $taskkill = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+        if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
+            throw 'taskkill.exe is unavailable for timed-out process-tree termination'
+        }
+        & $taskkill /PID $process.Id /T /F | Out-Null
+        $process.WaitForExit()
+        break
     }
     Start-Sleep -Milliseconds $PollMilliseconds
 }
@@ -195,7 +225,7 @@ catch {
 }
 $stdout = $stdoutTask.Result
 $stderr = $stderrTask.Result
-$exitCode = $process.ExitCode
+$exitCode = if ($timedOut) { 124 } else { $process.ExitCode }
 $process.Dispose()
 
 $stdoutSha256 = Write-CreateNewUtf8 $stdoutPath $stdout
@@ -209,6 +239,7 @@ $result = [ordered]@{
     batch_id = $BatchId
     global_round = $GlobalRound
     exit_code = $exitCode
+    timed_out = $timedOut
     external_wall_seconds = $stopwatch.Elapsed.TotalSeconds.ToString('R', [System.Globalization.CultureInfo]::InvariantCulture)
     peak_working_set_bytes = $peakBytes
     input_sha256 = $inputSha256
@@ -221,6 +252,9 @@ $result = [ordered]@{
 $resultJson = $result | ConvertTo-Json -Depth 4 -Compress
 [void] (Write-CreateNewUtf8 $localResult $resultJson)
 
+if ($timedOut) {
+    exit 124
+}
 if ($exitCode -ne 0) {
     exit $exitCode
 }

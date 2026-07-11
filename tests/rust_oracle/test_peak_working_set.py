@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
+import zipfile
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -10,16 +13,24 @@ from uuid import uuid4
 
 import pytest
 
-from tests.rust_oracle import phase0_harness
+from tests.rust_oracle import oracle_runner, phase0_harness
 from tests.rust_oracle.benchmark_protocol import (
+    CalibrationGroup,
+    CalibrationRound,
     ClosedBinaryLabel,
     ComparisonProfile,
     HarnessVerdict,
+    MachineEvidence,
+    MetricSample,
     NormalRunEvidence,
+    Phase0AManifest,
+    RoundPlan,
     RuntimeEvidence,
+    RuntimeSchema,
+    approved_phase0a_output_bytes,
     build_round_plan,
 )
-from tests.rust_oracle.oracle_runner import CapturedNormalRun, RustNormalProcessError
+from tests.rust_oracle.oracle_runner import CapturedNormalRun, RustNormalProcessError, RustNormalValidationError
 from tests.rust_oracle.phase0_harness import (
     AppendOnlyAttemptLedger,
     BenchmarkIdentity,
@@ -34,9 +45,10 @@ from tests.rust_oracle.phase0_harness import (
 @pytest.fixture(autouse=True)
 def _trusted_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
 
 
-def _runtime(pipeline: str = 'gb') -> RuntimeEvidence:
+def _runtime(pipeline: str = 'gb', *, output_size_bytes: int | None = None) -> RuntimeEvidence:
     return RuntimeEvidence(
         pipeline=pipeline,  # type: ignore[arg-type]
         output_written=True,
@@ -50,10 +62,120 @@ def _runtime(pipeline: str = 'gb') -> RuntimeEvidence:
             (name, Decimal('0.1'))
             for name in ('ingest', 'normalize', 'split', 'fact', 'presentation', 'total', 'export')
         ),
-        output_size_bytes=8,
+        output_size_bytes=output_size_bytes,
         sheet_dimensions=('1x1', '1x1', '1x1'),
         reader_snapshot_sha256='',
     )
+
+
+def _write_minimal_xlsx(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, 'w') as archive:
+        archive.writestr('[Content_Types].xml', '<Types/>')
+        archive.writestr('_rels/.rels', '<Relationships/>')
+        archive.writestr('xl/workbook.xml', '<workbook/>')
+        archive.writestr('xl/worksheets/sheet1.xml', '<worksheet/>')
+
+
+def _runtime_payload(output_path: Path, *, schema: RuntimeSchema) -> dict[str, object]:
+    stages = dict.fromkeys(('ingest', 'normalize', 'split', 'fact', 'presentation', 'total', 'export'), 0.1)
+    if schema is RuntimeSchema.INSTRUMENTED:
+        stages.update({'writer_populate': 0.1, 'xlsx_save': 0.1})
+    return {
+        'status': 'succeeded',
+        'pipeline': 'gb',
+        'output_written': True,
+        'workbook_path': str(output_path.resolve()),
+        'sheet_count': 3,
+        'error_log_count': 0,
+        'issue_type_counts': {},
+        'quality_metrics': [],
+        'run_counts': {
+            'reader_rows': 1,
+            'detail_rows': 1,
+            'qty_rows': 1,
+            'qty_sheet_rows': 1,
+            'quality_metric_count': 1,
+            'work_order_rows': 1,
+        },
+        'stage_timings': {'stages': stages},
+        'sheet_dimensions': ['1x1', '1x1', '1x1'],
+        'request_id': 'request-id',
+    }
+
+
+def _raw_artifact_paths(local_root: Path, batch_id: str, global_round: int, role: str) -> tuple[Path, ...]:
+    result = local_root / 'pws-results' / batch_id / str(global_round) / f'{role}.json'
+    log_dir = local_root / 'pws-logs' / batch_id / str(global_round)
+    return (
+        result,
+        log_dir / f'{role}.stdout.log',
+        log_dir / f'{role}.stderr.log',
+        result.with_suffix('.powershell.json'),
+    )
+
+
+def _write_complete_raw_sample(
+    request: PairedBenchmarkRequest,
+    output_path: Path,
+    *,
+    schema: RuntimeSchema,
+    role: str = 'reference',
+    batch_id: str = 'b' * 64,
+    global_round: int = 1,
+) -> tuple[Path, ...]:
+    _write_minimal_xlsx(output_path)
+    result, stdout_path, stderr_path, driver_path = _raw_artifact_paths(
+        request.local_root, batch_id, global_round, role
+    )
+    io_result = phase0_harness._io_path(result)
+    io_stdout = phase0_harness._io_path(stdout_path)
+    io_stderr = phase0_harness._io_path(stderr_path)
+    io_driver = phase0_harness._io_path(driver_path)
+    io_stdout.parent.mkdir(parents=True, exist_ok=True)
+    io_result.parent.mkdir(parents=True, exist_ok=True)
+    stdout_bytes = json.dumps(_runtime_payload(output_path, schema=schema)).encode('utf-8')
+    stderr_bytes = b''
+    io_stdout.write_bytes(stdout_bytes)
+    io_stderr.write_bytes(stderr_bytes)
+    stdout_sha = hashlib.sha256(stdout_bytes).hexdigest()
+    stderr_sha = hashlib.sha256(stderr_bytes).hexdigest()
+    combined_sha = hashlib.sha256(f'{stdout_sha}\n{stderr_sha}'.encode()).hexdigest()
+    io_driver.write_text(
+        json.dumps(
+            {
+                'returncode': 0,
+                'timed_out': False,
+                'launch_failed': False,
+                'stdout': '',
+                'stderr': '',
+            }
+        ),
+        encoding='utf-8',
+    )
+    payload = {
+        'mode': 'Normal',
+        'pipeline': 'gb',
+        'role': role,
+        'batch_id': batch_id,
+        'global_round': global_round,
+        'exit_code': 0,
+        'timed_out': False,
+        'external_wall_seconds': '0.125',
+        'peak_working_set_bytes': 12345,
+        'input_sha256': phase0_harness._sha256(request.input_path),
+        'binary_sha256': phase0_harness._sha256(
+            request.reference_executable if role == 'reference' else request.candidate_executable
+        ),
+        'command_arguments': list(
+            build_pws_cli_arguments('Normal', 'gb', request.input_path.resolve(), output_path.resolve())
+        ),
+        'stdout_log_sha256': stdout_sha,
+        'stderr_log_sha256': stderr_sha,
+        'local_unversioned_log_sha256': combined_sha,
+    }
+    io_result.write_text(json.dumps(payload), encoding='utf-8')
+    return result, stdout_path, stderr_path, driver_path
 
 
 def _identity() -> BenchmarkIdentity:
@@ -138,6 +260,33 @@ def _install_runner(
     return calls
 
 
+def _seed_recorded_pws_sample(
+    ledger: AppendOnlyAttemptLedger,
+    request: MetricGroupRequest,
+    plan: RoundPlan,
+    role: str,
+) -> Path:
+    identity = _identity()
+    payload = phase0_harness._planned_output_payload(request, identity, plan.global_round, role)
+    ledger.record_planned_output('pws', plan.global_round, role, payload)
+    output = phase0_harness._planned_paths((payload,))[0]
+    normal = NormalRunEvidence(
+        external_wall_seconds=Decimal('1.25'),
+        peak_working_set_bytes=123456,
+        runtime=_runtime(),
+        workbook_oracle_sha256='oracle',
+    )
+    sample = phase0_harness._metric_sample(
+        role,
+        plan,
+        identity,
+        (normal, 'l' * 64),
+        metric_value=Decimal(123456),
+    )
+    ledger.record_sample('pws', plan.global_round, role, phase0_harness._sample_to_payload(sample))
+    return output
+
+
 def test_pws_normal_command_does_not_include_check_only(tmp_path: Path) -> None:
     args = build_pws_cli_arguments('Normal', 'gb', tmp_path / '输入 文件.xlsx', tmp_path / '输出 文件.xlsx')
     assert '--check-only' not in args
@@ -195,6 +344,165 @@ def test_pws_local_result_must_be_under_ignored_root(tmp_path: Path) -> None:
         phase0_harness._pws_local_result_path(tmp_path / 'outside', 'b' * 64, 1, 'reference')
 
 
+def test_pws_raw_log_paths_reject_reparse_components(tmp_path: Path) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    local_root.mkdir(parents=True)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    linked = local_root / 'pws-logs'
+    try:
+        linked.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'symlink creation is unavailable: {exc}')
+    with pytest.raises(HarnessFailure, match='reparse|symlink'):
+        phase0_harness._pws_local_artifact_paths(local_root, 'b' * 64, 1, 'reference')
+
+
+@pytest.mark.parametrize('schema', (RuntimeSchema.BASE, RuntimeSchema.INSTRUMENTED))
+def test_invoke_pws_injects_actual_output_size_when_runtime_omits_it(
+    schema: RuntimeSchema, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _request(tmp_path)
+    output_path = tmp_path / 'data' / 'processed' / 'gb' / 'resume.xlsx'
+    _write_complete_raw_sample(request, output_path, schema=schema)
+    launches: list[object] = []
+    monkeypatch.setattr(
+        phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args), raising=False
+    )
+
+    captured = phase0_harness._invoke_pws_single_sample(
+        executable=request.reference_executable,
+        pipeline='gb',
+        input_path=request.input_path,
+        output_path=output_path,
+        role='reference',
+        batch_id='b' * 64,
+        global_round=1,
+        schema=schema,
+        local_root=request.local_root,
+    )
+
+    assert launches == []
+    assert captured.normal_run.runtime.output_size_bytes == output_path.stat().st_size > 0
+
+
+def test_phase0a_approved_bytes_can_use_equal_wall_and_pws_resumed_samples(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _request(tmp_path)
+    output_path = tmp_path / 'data' / 'processed' / 'gb' / 'resume.xlsx'
+    _write_complete_raw_sample(request, output_path, schema=RuntimeSchema.BASE)
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', pytest.fail)
+    captured = phase0_harness._invoke_pws_single_sample(
+        executable=request.reference_executable,
+        pipeline='gb',
+        input_path=request.input_path,
+        output_path=output_path,
+        role='reference',
+        batch_id='b' * 64,
+        global_round=1,
+        schema=RuntimeSchema.BASE,
+        local_root=request.local_root,
+    )
+
+    def calibration(metric: str) -> CalibrationGroup:
+        rounds = tuple(
+            CalibrationRound(
+                global_round,
+                MetricSample(
+                    role='reference',
+                    global_round=global_round,
+                    metric_value=(
+                        Decimal(captured.normal_run.peak_working_set_bytes or 0)
+                        if metric == 'pws'
+                        else captured.normal_run.external_wall_seconds
+                    ),
+                    exit_code=0,
+                    input_sha256='1' * 64,
+                    binary_sha256='2' * 64,
+                    git_head='head',
+                    repository_state_sha256='3' * 64,
+                    machine_fingerprint_sha256='4' * 64,
+                    local_unversioned_log_sha256='5' * 64,
+                    normal_run=captured.normal_run,
+                ),
+            )
+            for global_round in range(1, 6)
+        )
+        return CalibrationGroup('b' * 64, 'gb', metric, True, rounds)  # type: ignore[arg-type]
+
+    wall = calibration('wall')
+    pws = calibration('pws')
+    manifest = Phase0AManifest(
+        reference_exe_sha256='2' * 64,
+        fork_revision='fork',
+        git_head='head',
+        machine=MachineEvidence('build', 'x86_64', 'cpu', 1, 1, 'SSD', 1, '4' * 64),
+        gb_wall=wall,
+        gb_pws=pws,
+        sk_wall=wall,
+        sk_pws=pws,
+    )
+    assert approved_phase0a_output_bytes(manifest, 'gb') == output_path.stat().st_size
+
+
+@pytest.mark.parametrize('damage', ('tampered-stdout', 'missing-workbook'))
+def test_invoke_pws_rejects_incomplete_or_tampered_resume_without_launch(
+    damage: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _request(tmp_path)
+    output_path = tmp_path / 'data' / 'processed' / 'gb' / 'resume.xlsx'
+    _, stdout_path, _, _ = _write_complete_raw_sample(request, output_path, schema=RuntimeSchema.BASE)
+    if damage == 'tampered-stdout':
+        phase0_harness._io_path(stdout_path).write_bytes(b'tampered')
+    else:
+        output_path.unlink()
+    launches: list[object] = []
+    monkeypatch.setattr(
+        phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args), raising=False
+    )
+
+    with pytest.raises(RustNormalValidationError):
+        phase0_harness._invoke_pws_single_sample(
+            executable=request.reference_executable,
+            pipeline='gb',
+            input_path=request.input_path,
+            output_path=output_path,
+            role='reference',
+            batch_id='b' * 64,
+            global_round=1,
+            schema=RuntimeSchema.BASE,
+            local_root=request.local_root,
+        )
+    assert launches == []
+
+
+def test_invoke_pws_rejects_driver_log_collision_without_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _request(tmp_path)
+    output_path = tmp_path / 'data' / 'processed' / 'gb' / 'resume.xlsx'
+    _, _, _, driver_path = _raw_artifact_paths(request.local_root, 'b' * 64, 1, 'reference')
+    phase0_harness._io_path(driver_path).parent.mkdir(parents=True, exist_ok=True)
+    phase0_harness._io_path(driver_path).write_bytes(b'collision')
+    launches: list[object] = []
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args))
+
+    with pytest.raises(RustNormalValidationError, match='collision'):
+        phase0_harness._invoke_pws_single_sample(
+            executable=request.reference_executable,
+            pipeline='gb',
+            input_path=request.input_path,
+            output_path=output_path,
+            role='reference',
+            batch_id='b' * 64,
+            global_round=1,
+            schema=RuntimeSchema.BASE,
+            local_root=request.local_root,
+        )
+    assert launches == []
+
+
 def test_pws_group_rejects_reference_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     request = _group_request(tmp_path)
     _install_runner(monkeypatch, tmp_path, fail_role='reference')
@@ -219,6 +527,70 @@ def test_pws_normal_outputs_are_unique_and_removed(monkeypatch: pytest.MonkeyPat
     outputs = [output for _, _, output in calls]
     assert len(outputs) == len(set(outputs)) == 10
     assert not any(output.exists() for output in outputs)
+
+
+def test_pws_resume_adopts_complete_raw_sample_before_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    request = _group_request(tmp_path)
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    missing_plan = request.plans[0]
+    missing_role = missing_plan.order[0]
+    for plan in request.plans:
+        for role in plan.order:
+            if (plan.global_round, role) != (missing_plan.global_round, missing_role):
+                _seed_recorded_pws_sample(ledger, request, plan, role)
+    payload = phase0_harness._planned_output_payload(request, _identity(), missing_plan.global_round, missing_role)
+    ledger.record_planned_output('pws', missing_plan.global_round, missing_role, payload)
+    output_path = phase0_harness._planned_paths((payload,))[0]
+    executable = (
+        request.benchmark.reference_executable
+        if missing_role == 'reference'
+        else request.benchmark.candidate_executable
+    )
+    _write_complete_raw_sample(
+        request.benchmark,
+        output_path,
+        schema=RuntimeSchema.BASE,
+        role=missing_role,
+        global_round=missing_plan.global_round,
+    )
+    launches: list[object] = []
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda benchmark: _identity())
+    monkeypatch.setattr(
+        phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args), raising=False
+    )
+    monkeypatch.setattr(phase0_harness, 'workbook_oracle', lambda path: 'oracle')
+
+    group = run_pws_group(request)
+
+    assert executable.exists()
+    assert launches == []
+    assert len(group.rounds) == 5
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).sample_payload(
+        'pws', missing_plan.global_round, missing_role
+    )
+    assert not output_path.exists()
+
+
+def test_recorded_pws_sample_with_residual_workbook_only_cleans_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    request = _group_request(tmp_path)
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    residual: Path | None = None
+    for plan in request.plans:
+        for role in plan.order:
+            output = _seed_recorded_pws_sample(ledger, request, plan, role)
+            if residual is None:
+                residual = output
+    assert residual is not None
+    residual.parent.mkdir(parents=True, exist_ok=True)
+    residual.write_bytes(b'residual workbook')
+    commands = _install_runner(monkeypatch, tmp_path)
+
+    run_pws_group(request)
+
+    assert commands == []
+    assert not residual.exists()
 
 
 def test_pws_interruption_uses_planned_ledger_for_outer_cleanup(
@@ -248,6 +620,59 @@ def test_pws_script_parses_with_powershell() -> None:
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_pws_timeout_is_internal_and_does_not_expand_parameter_surface() -> None:
+    script = Path(__file__).with_name('measure_peak_working_set.ps1').read_text(encoding='utf-8')
+    parameter_block = script[script.index('param(') : script.index('$ErrorActionPreference')]
+    assert 'Timeout' not in parameter_block
+    assert '$ChildTimeoutSeconds = 900' in script
+    assert 'taskkill.exe' in script
+    assert 'timed_out' in script
+
+
+class _TimeoutPopen:
+    pid = 1234
+    returncode = 124
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def communicate(self, *, timeout: float) -> tuple[str, str]:
+        self.calls += 1
+        if self.calls == 1:
+            raise subprocess.TimeoutExpired('powershell', timeout)
+        return '', ''
+
+
+def test_python_pws_driver_watchdog_kills_process_tree_without_waiting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    driver_log = local_root / 'driver.json'
+    killed: list[int] = []
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: _TimeoutPopen())
+    monkeypatch.setattr(phase0_harness, '_PWS_DRIVER_TIMEOUT_SECONDS', 0.01, raising=False)
+    monkeypatch.setattr(phase0_harness, '_terminate_windows_process_tree', killed.append, raising=False)
+
+    with pytest.raises(RustNormalProcessError):
+        phase0_harness._launch_pws_driver(('powershell',), driver_log_path=driver_log, local_root=local_root)
+
+    assert killed == [1234]
+    assert driver_log.exists()
+
+
+def test_python_pws_driver_launch_failure_is_closed_without_waiting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    driver_log = local_root / 'driver.json'
+    monkeypatch.setattr(subprocess, 'Popen', lambda *args, **kwargs: (_ for _ in ()).throw(OSError('launch failed')))
+
+    with pytest.raises(RustNormalProcessError):
+        phase0_harness._launch_pws_driver(('powershell',), driver_log_path=driver_log, local_root=local_root)
+
+    assert driver_log.exists()
 
 
 def _run_sanitized_fake_child() -> dict[str, object]:
@@ -331,6 +756,115 @@ def test_pws_single_sample_smoke_reports_positive_peak() -> None:
     assert payload['peak_working_set_bytes'] > 0
 
 
+def test_pws_timeout_kills_child_tree_and_cleanup_removes_workbook() -> None:
+    powershell = shutil.which('powershell')
+    if powershell is None:
+        pytest.skip('Windows PowerShell is unavailable')
+    root = Path(__file__).parents[2]
+    fixture_root = root / 'rust' / 'target' / 'perf-local' / f'pytest pws timeout {uuid4().hex}'
+    fixture_root.mkdir(parents=True)
+    executable = fixture_root / 'sleep-child.exe'
+    input_path = fixture_root / 'input.xlsx'
+    output_path = fixture_root / 'output.xlsx'
+    result_path = fixture_root / 'result.json'
+    pid_path = fixture_root / 'pids.txt'
+    timeout_script = Path(__file__).with_name(f'.timeout-{uuid4().hex}.ps1')
+    input_path.write_bytes(b'sanitized timeout input')
+    source = (
+        'using System; using System.Diagnostics; using System.IO; using System.Threading; '
+        'public class P { public static int Main(string[] args) { '
+        'string p = Environment.GetEnvironmentVariable("PWS_TIMEOUT_PID_FILE"); '
+        'if (Array.IndexOf(args, "--grandchild") >= 0) { '
+        'File.AppendAllText(p, Process.GetCurrentProcess().Id + Environment.NewLine); '
+        'Thread.Sleep(30000); return 0; } '
+        'int i = Array.IndexOf(args, "--output"); '
+        'if (i >= 0) File.WriteAllBytes(args[i + 1], new byte[] { 1, 2, 3 }); '
+        'Process c = Process.Start(new ProcessStartInfo { '
+        'FileName = Process.GetCurrentProcess().MainModule.FileName, Arguments = "--grandchild", '
+        'UseShellExecute = false }); '
+        'File.AppendAllText(p, Process.GetCurrentProcess().Id + Environment.NewLine + c.Id + Environment.NewLine); '
+        'Thread.Sleep(30000); return 0; } }'
+    )
+    compile_command = (
+        f"$code='{source}'; Add-Type -TypeDefinition $code "
+        f"-OutputAssembly '{executable}' -OutputType ConsoleApplication"
+    )
+    original_script = Path(__file__).with_name('measure_peak_working_set.ps1').read_text(encoding='utf-8')
+    timeout_script.write_text(
+        original_script.replace('$ChildTimeoutSeconds = 900', '$ChildTimeoutSeconds = 1'),
+        encoding='utf-8',
+        newline='\n',
+    )
+    environment = dict(os.environ)
+    environment['PWS_TIMEOUT_PID_FILE'] = str(pid_path)
+    try:
+        compiled = subprocess.run(  # noqa: S603 - fixed local PowerShell compiles a sanitized fixture.
+            [powershell, '-NoProfile', '-Command', compile_command],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert compiled.returncode == 0, compiled.stderr
+        completed = subprocess.run(  # noqa: S603 - fixed local PowerShell runs the temporary timeout script.
+            [
+                powershell,
+                '-NoProfile',
+                '-File',
+                str(timeout_script),
+                '-Mode',
+                'Normal',
+                '-Pipeline',
+                'gb',
+                '-InputPath',
+                str(input_path),
+                '-Executable',
+                str(executable),
+                '-Role',
+                'reference',
+                '-BatchId',
+                'b' * 64,
+                '-GlobalRound',
+                '1',
+                '-OutputPath',
+                str(output_path),
+                '-LocalLogRoot',
+                str(fixture_root / 'logs'),
+                '-LocalResultPath',
+                str(result_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=15,
+        )
+        assert completed.returncode == 124, completed.stderr
+        payload = json.loads(result_path.read_text(encoding='utf-8'))
+        assert payload['timed_out'] is True
+        assert payload['exit_code'] == 124
+        assert output_path.exists()
+        pids = {int(value) for value in pid_path.read_text(encoding='utf-8').splitlines() if value}
+        assert len(pids) >= 2
+        for pid in pids:
+            probe = subprocess.run(  # noqa: S603 - fixed PowerShell checks only the numeric fixture PID.
+                [
+                    powershell,
+                    '-NoProfile',
+                    '-Command',
+                    f'if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }} else {{ exit 0 }}',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert probe.returncode == 0, f'timed-out fixture process remains alive: {pid}'
+        phase0_harness._remove_workbook(output_path)
+        assert not output_path.exists()
+    finally:
+        timeout_script.unlink(missing_ok=True)
+        shutil.rmtree(fixture_root, ignore_errors=True)
+
+
 def test_pws_result_parser_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     path = tmp_path / 'result.json'
     path.write_text('{"mode":"Normal","mode":"CheckOnly"}', encoding='utf-8')
@@ -346,6 +880,7 @@ def test_pws_result_parser_accepts_positive_peak(tmp_path: Path) -> None:
         'batch_id': 'b' * 64,
         'global_round': 1,
         'exit_code': 0,
+        'timed_out': False,
         'external_wall_seconds': '0.125',
         'peak_working_set_bytes': 12345,
         'input_sha256': '1' * 64,
@@ -393,6 +928,14 @@ def test_pws_group_rejects_sha_or_git_drift(field: str, monkeypatch: pytest.Monk
 def test_pws_cleanup_failure_deletes_batch_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     request = _group_request(tmp_path)
     _install_runner(monkeypatch, tmp_path)
+    runner = phase0_harness._invoke_pws_single_sample
+
+    def create_partial_evidence(**kwargs: object) -> CapturedNormalRun:
+        request.benchmark.evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        request.benchmark.evidence_path.write_bytes(b'partial batch evidence')
+        return runner(**kwargs)
+
+    monkeypatch.setattr(phase0_harness, '_invoke_pws_single_sample', create_partial_evidence)
     monkeypatch.setattr(
         phase0_harness,
         '_remove_workbook',

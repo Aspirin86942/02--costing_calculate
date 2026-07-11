@@ -45,6 +45,9 @@ from tests.rust_oracle.oracle_runner import (
 )
 from tests.rust_oracle.repo_paths import repo_root
 
+_PWS_DRIVER_TIMEOUT_SECONDS = 930.0
+_PWS_DRIVER_TERMINATION_SECONDS = 30.0
+
 
 class HarnessFailure(AssertionError):
     def __init__(
@@ -146,6 +149,15 @@ class Phase0ARequest:
     fork_revision: str
     local_root: Path
     output_path: Path
+
+
+@dataclass(frozen=True)
+class PwsLocalArtifacts:
+    result_path: Path
+    stdout_path: Path
+    stderr_path: Path
+    driver_log_path: Path
+    log_root: Path
 
 
 @dataclass
@@ -1136,6 +1148,17 @@ def _remove_workbook(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
+def _remove_new_batch_evidence(path: Path) -> None:
+    root = repo_root() / 'docs' / 'performance'
+    safe_path = _safe_harness_path(
+        path,
+        allowed_roots=(root,),
+        purpose='batch evidence escaped docs/performance',
+        create_parent=False,
+    )
+    safe_path.unlink(missing_ok=True)
+
+
 def _safe_harness_path(
     path: Path,
     *,
@@ -1300,17 +1323,42 @@ def _build_pws_script_command(
 
 
 def _pws_local_result_path(local_root: Path, batch_id: str, global_round: int, role: BinaryRole) -> Path:
+    return _pws_local_artifact_paths(local_root, batch_id, global_round, role).result_path
+
+
+def _pws_local_artifact_paths(
+    local_root: Path,
+    batch_id: str,
+    global_round: int,
+    role: BinaryRole,
+) -> PwsLocalArtifacts:
     trusted = _trusted_local_root()
     if _normal_path(local_root).absolute() != trusted:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS result root must equal trusted local root')
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS raw root must equal trusted local root')
     if not _is_sha256(batch_id) or global_round not in range(1, 11) or role not in ('reference', 'candidate'):
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local result identity is invalid')
-    return _safe_harness_path(
-        trusted / 'pws-results' / batch_id / str(global_round) / f'{role}.json',
-        allowed_roots=(trusted,),
-        purpose='PWS result escaped trusted local root',
-        create_parent=True,
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local artifact identity is invalid')
+    result = trusted / 'pws-results' / batch_id / str(global_round) / f'{role}.json'
+    log_root = trusted / 'pws-logs'
+    log_directory = log_root / batch_id / str(global_round)
+    raw_paths = (
+        result,
+        log_directory / f'{role}.stdout.log',
+        log_directory / f'{role}.stderr.log',
+        result.with_suffix('.powershell.json'),
     )
+    validated = tuple(
+        _safe_harness_path(
+            path,
+            allowed_roots=(trusted,),
+            purpose='PWS raw artifact escaped trusted local root',
+            create_parent=False,
+        )
+        for path in raw_paths
+    )
+    for parent in {path.parent for path in validated}:
+        _io_path(parent).mkdir(parents=True, exist_ok=True)
+        _reject_existing_reparse_components(parent)
+    return PwsLocalArtifacts(*validated, log_root)
 
 
 def _reject_duplicate_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1338,6 +1386,7 @@ def _parse_pws_local_result(path: Path) -> dict[str, Any]:
         'batch_id',
         'global_round',
         'exit_code',
+        'timed_out',
         'external_wall_seconds',
         'peak_working_set_bytes',
         'input_sha256',
@@ -1355,12 +1404,15 @@ def _parse_pws_local_result(path: Path) -> dict[str, Any]:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS wall time is invalid') from exc
     peak = payload['peak_working_set_bytes']
     exit_code = payload['exit_code']
+    timed_out = payload['timed_out']
     if not wall.is_finite() or wall <= 0:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS wall time must be finite and positive')
     if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PeakWorkingSet64 must be a positive integer')
     if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS exit code must be an integer')
+    if not isinstance(timed_out, bool):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS timed_out must be boolean')
     if not isinstance(payload['command_arguments'], list) or not all(
         isinstance(item, str) for item in payload['command_arguments']
     ):
@@ -1377,6 +1429,196 @@ def _parse_pws_local_result(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _terminate_windows_process_tree(pid: int) -> None:
+    taskkill = shutil.which('taskkill.exe') or shutil.which('taskkill')
+    if taskkill is None:
+        raise OSError('taskkill.exe is unavailable')
+    subprocess.run(  # noqa: S603 - resolved Windows system utility and numeric PID only.
+        [taskkill, '/PID', str(pid), '/T', '/F'],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_PWS_DRIVER_TERMINATION_SECONDS,
+    )
+
+
+def _launch_pws_driver(
+    command: tuple[str, ...],
+    *,
+    driver_log_path: Path,
+    local_root: Path,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        process = subprocess.Popen(  # noqa: S603 - closed local PowerShell/script/typed arguments.
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=repo_root(),
+            encoding='utf-8',
+            errors='replace',
+            text=True,
+        )
+    except OSError as exc:
+        raw = _canonical_json(
+            {
+                'returncode': None,
+                'timed_out': False,
+                'launch_failed': True,
+                'stdout': '',
+                'stderr': f'{type(exc).__name__}:{getattr(exc, "errno", None)}',
+            }
+        )
+        _write_create_new(driver_log_path, raw, allowed_root=local_root)
+        raise RustNormalProcessError(-1, hashlib.sha256(raw).hexdigest()) from exc
+    try:
+        stdout, stderr = process.communicate(timeout=_PWS_DRIVER_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        termination_error = ''
+        try:
+            _terminate_windows_process_tree(process.pid)
+        except Exception as termination_exc:
+            termination_error = f'{type(termination_exc).__name__}:{getattr(termination_exc, "errno", None)}'
+        try:
+            stdout, stderr = process.communicate(timeout=_PWS_DRIVER_TERMINATION_SECONDS)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = '', 'PowerShell process tree did not terminate within the watchdog grace period'
+        if termination_error:
+            stderr = f'{stderr}\nprocess_tree_termination={termination_error}'.strip()
+        raw = _canonical_json(
+            {
+                'returncode': process.returncode,
+                'timed_out': True,
+                'launch_failed': False,
+                'stdout': stdout,
+                'stderr': stderr,
+            }
+        )
+        _write_create_new(driver_log_path, raw, allowed_root=local_root)
+        raise RustNormalProcessError(-1, hashlib.sha256(raw).hexdigest()) from exc
+    raw = _canonical_json(
+        {
+            'returncode': process.returncode,
+            'timed_out': False,
+            'launch_failed': False,
+            'stdout': stdout,
+            'stderr': stderr,
+        }
+    )
+    _write_create_new(driver_log_path, raw, allowed_root=local_root)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _read_closed_driver_log(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(
+            _io_path(path).read_text(encoding='utf-8'),
+            object_pairs_hook=_reject_duplicate_json_object,
+        )
+    except Exception as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver log is unreadable') from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        'returncode',
+        'timed_out',
+        'launch_failed',
+        'stdout',
+        'stderr',
+    }:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver log fields are not closed')
+    if not isinstance(payload['timed_out'], bool) or not isinstance(payload['launch_failed'], bool):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver state flags must be boolean')
+    if not all(isinstance(payload[field], str) for field in ('stdout', 'stderr')):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver streams must be strings')
+    if payload['returncode'] is not None and (
+        not isinstance(payload['returncode'], int) or isinstance(payload['returncode'], bool)
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS driver returncode must be integer or null')
+    return payload
+
+
+def _artifact_audit_sha(artifacts: PwsLocalArtifacts) -> str:
+    hashes: list[str] = []
+    for path in (artifacts.result_path, artifacts.stdout_path, artifacts.stderr_path, artifacts.driver_log_path):
+        io_path = _io_path(path)
+        hashes.append(_sha256(io_path) if io_path.is_file() else 'missing')
+    return hashlib.sha256('\n'.join(hashes).encode()).hexdigest()
+
+
+def _validate_complete_pws_artifacts(
+    *,
+    artifacts: PwsLocalArtifacts,
+    executable: Path,
+    pipeline: PipelineName,
+    input_path: Path,
+    output_path: Path,
+    role: BinaryRole,
+    batch_id: str,
+    global_round: int,
+    schema: RuntimeSchema,
+) -> CapturedNormalRun:
+    payload = _parse_pws_local_result(_io_path(artifacts.result_path))
+    log_sha = payload['local_unversioned_log_sha256']
+    expected = {
+        'mode': 'Normal',
+        'pipeline': pipeline,
+        'role': role,
+        'batch_id': batch_id,
+        'global_round': global_round,
+        'input_sha256': _sha256(input_path),
+        'binary_sha256': _sha256(executable),
+        'command_arguments': list(
+            build_pws_cli_arguments('Normal', pipeline, input_path.resolve(), output_path.resolve())
+        ),
+    }
+    for field_name, expected_value in expected.items():
+        if payload[field_name] != expected_value:
+            raise RustNormalValidationError(f'PWS result {field_name} mismatch', log_sha)
+
+    stdout_io = _io_path(artifacts.stdout_path)
+    stderr_io = _io_path(artifacts.stderr_path)
+    stdout_sha = _sha256(stdout_io)
+    stderr_sha = _sha256(stderr_io)
+    combined_sha = hashlib.sha256(f'{stdout_sha}\n{stderr_sha}'.encode()).hexdigest()
+    if payload['stdout_log_sha256'] != stdout_sha or payload['stderr_log_sha256'] != stderr_sha:
+        raise RustNormalValidationError('PWS raw log SHA mismatch', combined_sha)
+    if payload['local_unversioned_log_sha256'] != combined_sha:
+        raise RustNormalValidationError('PWS combined raw log SHA mismatch', combined_sha)
+    driver = _read_closed_driver_log(artifacts.driver_log_path)
+    if driver['timed_out'] or driver['launch_failed'] or driver['returncode'] != payload['exit_code']:
+        raise RustNormalValidationError('PWS driver/result state mismatch', combined_sha)
+    if payload['timed_out'] or payload['exit_code'] != 0:
+        raise RustNormalProcessError(payload['exit_code'] or -1, combined_sha)
+
+    try:
+        stdout = stdout_io.read_text(encoding='utf-8')
+        runtime_payload = json.loads(stdout, object_pairs_hook=_reject_duplicate_json_object)
+        if not isinstance(runtime_payload, dict):
+            raise AssertionError('Rust runtime stdout must be one JSON object')
+        reported_path = _normal_path(Path(str(runtime_payload.get('workbook_path')))).resolve()
+        expected_path = _normal_path(output_path).resolve()
+        if reported_path != expected_path:
+            raise AssertionError('Rust PWS runtime reported an unexpected workbook path')
+        if not output_path.is_file():
+            raise AssertionError('Rust PWS runtime did not create its workbook')
+        output_size = output_path.stat().st_size
+        if output_size <= 0:
+            raise AssertionError('Rust PWS workbook must contain positive bytes')
+        runtime_payload['output_size_bytes'] = output_size
+        runtime = parse_runtime_payload(runtime_payload, schema=schema)
+        oracle_sha256 = workbook_oracle(output_path)
+    except Exception as exc:
+        raise RustNormalValidationError('Rust PWS runtime or workbook validation failed', combined_sha) from exc
+    return CapturedNormalRun(
+        NormalRunEvidence(
+            external_wall_seconds=Decimal(payload['external_wall_seconds']),
+            peak_working_set_bytes=payload['peak_working_set_bytes'],
+            runtime=runtime,
+            workbook_oracle_sha256=oracle_sha256,
+        ),
+        0,
+        combined_sha,
+    )
+
+
 def _invoke_pws_single_sample(
     *,
     executable: Path,
@@ -1389,13 +1631,7 @@ def _invoke_pws_single_sample(
     schema: RuntimeSchema,
     local_root: Path,
 ) -> CapturedNormalRun:
-    result_path = _pws_local_result_path(local_root, batch_id, global_round, role)
-    log_root = _safe_harness_path(
-        local_root / 'pws-logs',
-        allowed_roots=(local_root,),
-        purpose='PWS logs escaped trusted local root',
-        create_parent=True,
-    )
+    artifacts = _pws_local_artifact_paths(local_root, batch_id, global_round, role)
     command = _build_pws_script_command(
         mode='Normal',
         pipeline=pipeline,
@@ -1405,81 +1641,61 @@ def _invoke_pws_single_sample(
         batch_id=batch_id,
         global_round=global_round,
         output_path=output_path,
-        local_log_root=log_root,
-        local_result_path=result_path,
+        local_log_root=artifacts.log_root,
+        local_result_path=artifacts.result_path,
     )
-    completed = subprocess.run(  # noqa: S603 - closed local PowerShell/script/typed arguments.
-        command,
-        check=False,
-        capture_output=True,
-        cwd=repo_root(),
-        encoding='utf-8',
-        errors='replace',
+    raw_paths = (
+        artifacts.result_path,
+        artifacts.stdout_path,
+        artifacts.stderr_path,
+        artifacts.driver_log_path,
+        output_path,
     )
-    driver_log = _canonical_json(
-        {'returncode': completed.returncode, 'stdout': completed.stdout, 'stderr': completed.stderr}
-    )
-    driver_log_path = result_path.with_suffix('.powershell.json')
-    _write_create_new(driver_log_path, driver_log, allowed_root=local_root)
-    driver_log_sha = hashlib.sha256(driver_log).hexdigest()
-    if not result_path.exists():
-        raise RustNormalProcessError(completed.returncode or -1, driver_log_sha)
-
-    payload = _parse_pws_local_result(result_path)
-    expected_arguments = build_pws_cli_arguments('Normal', pipeline, input_path.resolve(), output_path.resolve())
-    expected_binary_sha = _sha256(executable)
-    expected_input_sha = _sha256(input_path)
-    expected = {
-        'mode': 'Normal',
-        'pipeline': pipeline,
-        'role': role,
-        'batch_id': batch_id,
-        'global_round': global_round,
-        'input_sha256': expected_input_sha,
-        'binary_sha256': expected_binary_sha,
-        'command_arguments': list(expected_arguments),
-    }
-    for field_name, expected_value in expected.items():
-        if payload[field_name] != expected_value:
-            raise RustNormalValidationError(
-                f'PWS result {field_name} mismatch', payload['local_unversioned_log_sha256']
-            )
-    if completed.returncode != 0 or payload['exit_code'] != 0:
-        raise RustNormalProcessError(
-            payload['exit_code'] or completed.returncode, payload['local_unversioned_log_sha256']
+    present = tuple(_io_path(path).is_file() for path in raw_paths)
+    if present[0]:
+        if not all(present):
+            raise RustNormalValidationError('PWS resume artifacts are incomplete', _artifact_audit_sha(artifacts))
+    elif any(present):
+        raise RustNormalValidationError(
+            'PWS raw collision is incomplete and cannot be rerun', _artifact_audit_sha(artifacts)
         )
-
-    stdout_path = log_root / batch_id / str(global_round) / f'{role}.stdout.log'
+    else:
+        _launch_pws_driver(
+            command,
+            driver_log_path=artifacts.driver_log_path,
+            local_root=local_root,
+        )
+        if not _io_path(artifacts.result_path).is_file():
+            raise RustNormalProcessError(-1, _artifact_audit_sha(artifacts))
+    artifacts = _pws_local_artifact_paths(local_root, batch_id, global_round, role)
     try:
-        stdout = stdout_path.read_text(encoding='utf-8')
-        runtime_payload = json.loads(stdout, object_pairs_hook=_reject_duplicate_json_object)
-        if not isinstance(runtime_payload, dict):
-            raise AssertionError('Rust runtime stdout must be one JSON object')
-        if Path(str(runtime_payload.get('workbook_path'))).resolve() != output_path.resolve():
-            raise AssertionError('Rust PWS runtime reported an unexpected workbook path')
-        if not output_path.is_file():
-            raise AssertionError('Rust PWS runtime did not create its workbook')
-        runtime = parse_runtime_payload(runtime_payload, schema=schema)
-        oracle_sha256 = workbook_oracle(output_path)
-    except RustNormalValidationError:
+        return _validate_complete_pws_artifacts(
+            artifacts=artifacts,
+            executable=executable,
+            pipeline=pipeline,
+            input_path=input_path,
+            output_path=output_path,
+            role=role,
+            batch_id=batch_id,
+            global_round=global_round,
+            schema=schema,
+        )
+    except (RustNormalProcessError, RustNormalValidationError):
         raise
     except Exception as exc:
-        raise RustNormalValidationError(
-            'Rust PWS runtime or workbook validation failed', payload['local_unversioned_log_sha256']
-        ) from exc
-    normal_run = NormalRunEvidence(
-        external_wall_seconds=Decimal(payload['external_wall_seconds']),
-        peak_working_set_bytes=payload['peak_working_set_bytes'],
-        runtime=runtime,
-        workbook_oracle_sha256=oracle_sha256,
-    )
-    return CapturedNormalRun(normal_run, 0, payload['local_unversioned_log_sha256'])
+        raise RustNormalValidationError('PWS raw artifacts failed closed', _artifact_audit_sha(artifacts)) from exc
 
 
 def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
     if request.metric != 'pws':
         raise ValueError('PWS runner accepts pws metric only')
     _validate_trusted_request_paths(request.benchmark)
+    _safe_harness_path(
+        request.benchmark.evidence_path,
+        allowed_roots=(repo_root() / 'docs' / 'performance',),
+        purpose='PWS batch evidence escaped docs/performance',
+        create_parent=False,
+    )
     identity = _capture_identity(request.benchmark)
     ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, identity)
     if ledger.terminal_verdict is not None:
@@ -1496,7 +1712,9 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
         'reference': rule.reference_schema,
         'candidate': rule.candidate_schema,
     }
-    cleanup_paths = list(_planned_paths(ledger.all_planned_output_payloads()))
+    evidence_existed_before = request.benchmark.evidence_path.exists()
+    planned_payloads = ledger.all_planned_output_payloads()
+    cleanup_paths = list(_planned_paths(planned_payloads))
     if ledger.cleanup_only:
         cleanup_errors = _cleanup_all(cleanup_paths)
         if cleanup_errors:
@@ -1515,7 +1733,12 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
     pairs: list[PairedRound] = []
     result_group: MetricGroup | None = None
     primary_error: HarnessFailure | None = None
-    initial_cleanup_errors = _cleanup_all(cleanup_paths)
+    recorded_cleanup_paths = [
+        _planned_paths((payload,))[0]
+        for payload in planned_payloads
+        if ledger.sample_payload(payload['metric'], payload['global_round'], payload['role']) is not None
+    ]
+    initial_cleanup_errors = _cleanup_all(recorded_cleanup_paths)
     if initial_cleanup_errors:
         primary_error = HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'historical workbook cleanup was transient')
     else:
@@ -1524,14 +1747,22 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
                 captured: dict[BinaryRole, MetricSample] = {}
                 for role in plan.order:
                     _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
-                    existing = ledger.sample_payload(request.metric, plan.global_round, role)
-                    if existing is not None:
-                        captured[role] = _sample_from_payload(existing)
-                        continue
                     payload = _planned_output_payload(request, identity, plan.global_round, role)
                     ledger.record_planned_output(request.metric, plan.global_round, role, payload)
                     output = next(iter(_planned_paths((payload,))))
-                    cleanup_paths.append(output)
+                    if output not in cleanup_paths:
+                        cleanup_paths.append(output)
+                    existing = ledger.sample_payload(request.metric, plan.global_round, role)
+                    if existing is not None:
+                        captured[role] = _sample_from_payload(existing)
+                        try:
+                            _remove_workbook(output)
+                        except OSError as exc:
+                            raise HarnessFailure(
+                                HarnessVerdict.ENVIRONMENT_DRIFT,
+                                'recorded PWS sample residual workbook cleanup failed',
+                            ) from exc
+                        continue
                     try:
                         capture = _invoke_pws_single_sample(
                             executable=role_executables[role],
@@ -1610,6 +1841,11 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
             validate_metric_group(result_group)
         except (KeyboardInterrupt, SystemExit) as interruption:
             cleanup_errors = _cleanup_all(cleanup_paths)
+            if not evidence_existed_before:
+                try:
+                    _remove_new_batch_evidence(request.benchmark.evidence_path)
+                except OSError as exc:
+                    cleanup_errors = (*cleanup_errors, f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
             if cleanup_errors:
                 ledger.finish(HarnessVerdict.CLEANUP_FAILED)
                 raise HarnessFailure(
@@ -1624,6 +1860,11 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
             primary_error.__cause__ = exc
 
     cleanup_errors = _cleanup_all(cleanup_paths)
+    if not evidence_existed_before:
+        try:
+            _remove_new_batch_evidence(request.benchmark.evidence_path)
+        except OSError as exc:
+            cleanup_errors = (*cleanup_errors, f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
     final_error = primary_error
     if cleanup_errors:
         final_error = HarnessFailure(

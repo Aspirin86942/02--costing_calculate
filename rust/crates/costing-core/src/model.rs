@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::error::ErrorCode;
+use crate::error::{CostingError, ErrorCode, ErrorDetails};
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, IndexedTable};
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -265,4 +265,130 @@ pub struct ErrorSummary {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+    pub request_id: Option<String>,
+    pub details: Option<ErrorDetails>,
+}
+
+impl ErrorSummary {
+    pub fn from_error(error: &CostingError) -> Self {
+        let (request_id, details) = error
+            .context()
+            .map(|context| {
+                (
+                    Some(context.request_id.clone()),
+                    Some(context.details.clone()),
+                )
+            })
+            .unwrap_or((None, None));
+        Self {
+            status: "failed".to_string(),
+            code: error.code(),
+            message: error.message().to_string(),
+            retryable: error.retryable(),
+            request_id,
+            details,
+        }
+    }
+}
+
+#[cfg(test)]
+mod error_summary_tests {
+    use std::path::PathBuf;
+
+    use crate::error::{CostingError, ErrorCode, ErrorContext, ErrorStage, IoKindCode};
+
+    use super::ErrorSummary;
+
+    #[test]
+    fn error_summary_serializes_context_and_flattened_io_metadata() {
+        let contextual = CostingError::io_with_source(
+            ErrorCode::OutputNotWritable,
+            "write failed",
+            std::io::Error::from_raw_os_error(112),
+        )
+        .with_context(ErrorContext::new(
+            "costing-test-1",
+            ErrorStage::SaveWorkbook,
+            Some(PathBuf::from("output.xlsx")),
+        ));
+
+        let summary = ErrorSummary::from_error(&contextual);
+
+        assert_eq!(summary.request_id.as_deref(), Some("costing-test-1"));
+        let details = summary.details.as_ref().expect("structured details");
+        assert_eq!(details.stage, ErrorStage::SaveWorkbook);
+        assert_eq!(details.path, Some(PathBuf::from("output.xlsx")));
+        assert_eq!(
+            details.io_meta.as_ref().expect("I/O metadata").kind,
+            IoKindCode::StorageFull
+        );
+        assert_eq!(
+            details.io_meta.as_ref().expect("I/O metadata").raw_os_error,
+            Some(112)
+        );
+
+        let json = serde_json::to_value(summary).expect("serialize error summary");
+        assert_eq!(json["request_id"], "costing-test-1");
+        assert_eq!(json["details"]["stage"], "SaveWorkbook");
+        assert_eq!(json["details"]["path"], "output.xlsx");
+        assert_eq!(json["details"]["io_kind"], "StorageFull");
+        assert_eq!(json["details"]["raw_os_error"], 112);
+        assert_eq!(json["details"]["final_output_valid"], false);
+        assert!(json["details"]["partial_output_removed"].is_null());
+        assert_eq!(json["details"]["cleanup_failures"], serde_json::json!([]));
+        assert!(json["details"].get("io_meta").is_none());
+    }
+
+    #[test]
+    fn error_stage_has_exact_approved_serialization_set() {
+        let stages = [
+            ErrorStage::ValidateCliRequest,
+            ErrorStage::ResolveCliPaths,
+            ErrorStage::IngestWorkbook,
+            ErrorStage::Normalize,
+            ErrorStage::Split,
+            ErrorStage::BuildFact,
+            ErrorStage::BuildPresentation,
+            ErrorStage::PrepareOutputDirectory,
+            ErrorStage::CheckDiskSpace,
+            ErrorStage::CreateTempWorkspace,
+            ErrorStage::PlanSheet,
+            ErrorStage::InitializeLowMemoryTempWriter,
+            ErrorStage::PopulateWorkbook,
+            ErrorStage::CreateFinalOutput,
+            ErrorStage::SaveWorkbook,
+            ErrorStage::RemovePartialOutput,
+            ErrorStage::CleanupTempWorkspace,
+            ErrorStage::ReadOutputMetadata,
+        ];
+        let serialized = stages
+            .iter()
+            .map(|stage| serde_json::to_value(stage).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(stages.len(), 18);
+        assert_eq!(
+            serde_json::Value::Array(serialized),
+            serde_json::json!([
+                "ValidateCliRequest",
+                "ResolveCliPaths",
+                "IngestWorkbook",
+                "Normalize",
+                "Split",
+                "BuildFact",
+                "BuildPresentation",
+                "PrepareOutputDirectory",
+                "CheckDiskSpace",
+                "CreateTempWorkspace",
+                "PlanSheet",
+                "InitializeLowMemoryTempWriter",
+                "PopulateWorkbook",
+                "CreateFinalOutput",
+                "SaveWorkbook",
+                "RemovePartialOutput",
+                "CleanupTempWorkspace",
+                "ReadOutputMetadata"
+            ])
+        );
+    }
 }

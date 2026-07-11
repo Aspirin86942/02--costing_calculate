@@ -28,7 +28,38 @@ fn missing_arguments_use_stable_json_error_model() {
         .expect("run costing-calculate binary");
 
     assert!(!output.status.success());
-    assert_error_json(&output.stderr, "INVALID_INPUT");
+    let payload = error_json(&output.stderr);
+    assert_eq!(payload["code"], "INVALID_INPUT");
+    assert!(payload["request_id"].is_null());
+    assert!(payload["details"].is_null());
+}
+
+#[test]
+fn accepted_arguments_fail_with_request_id_and_closed_stage() {
+    let binary_path = locate_costing_binary();
+    let output = Command::new(&binary_path)
+        .args([
+            "gb",
+            "--input",
+            "does-not-exist-contextual-costing-cli-test.xlsx",
+            "--check-only",
+        ])
+        .output()
+        .expect("run costing-calculate binary");
+
+    assert!(!output.status.success());
+    let payload = error_json(&output.stderr);
+    assert_eq!(payload["code"], "FILE_NOT_FOUND");
+    assert!(payload["request_id"]
+        .as_str()
+        .is_some_and(|request_id| request_id.starts_with("costing-")));
+    assert_eq!(payload["details"]["stage"], "ValidateCliRequest");
+    assert_eq!(
+        payload["details"]["path"],
+        "does-not-exist-contextual-costing-cli-test.xlsx"
+    );
+    assert!(payload["details"]["io_kind"].is_null());
+    assert!(payload["details"]["raw_os_error"].is_null());
 }
 
 #[test]

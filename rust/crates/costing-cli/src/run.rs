@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use costing_core::error::{ErrorContext, ErrorStage};
 use costing_core::fact::build_fact_bundle;
 use costing_core::model::MonthRange;
 use costing_core::normalize::{build_month_range, normalize_workbook};
@@ -23,42 +24,98 @@ struct ResolvedCliPaths {
 }
 
 pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
-    let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())?;
+    let request_id = new_request_id();
+    let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
+        .map_err(|error| {
+            error.with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::ValidateCliRequest,
+                None,
+            ))
+        })?;
     let base_dir = std::env::current_dir().map_err(|error| {
-        CostingError::io(
+        CostingError::io_with_source(
             ErrorCode::InvalidInput,
             format!("无法获取当前工作目录: {error}"),
-            PathBuf::from("."),
+            error,
         )
+        .with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::ResolveCliPaths,
+            Some(PathBuf::from(".")),
+        ))
     })?;
-    let paths = resolve_cli_paths(&args, &base_dir, month_range.as_ref())?;
+    let resolve_path = args.input.clone().unwrap_or_else(|| {
+        base_dir
+            .join("data")
+            .join("raw")
+            .join(args.pipeline.as_str())
+    });
+    let paths = resolve_cli_paths(&args, &base_dir, month_range.as_ref()).map_err(|error| {
+        error.with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::ResolveCliPaths,
+            Some(resolve_path),
+        ))
+    })?;
     args.input = Some(paths.input);
     args.output = paths.output;
-    validate_cli_request(&args)?;
+    validate_cli_request(&args).map_err(|error| {
+        error.with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::ValidateCliRequest,
+            args.input.clone(),
+        ))
+    })?;
     let month_filter_requested = month_range.is_some();
     let pipeline = PipelineConfig::for_name(args.pipeline);
     let mut timings = StageTimings::default();
     let input = args
         .input
         .as_ref()
-        .expect("resolve_cli_paths always supplies an input path");
+        .expect("resolve_cli_paths always supplies an input path")
+        .clone();
     let total_started = args.benchmark.then(Instant::now);
 
     let (raw, reader_rows) = measure(&mut timings, "ingest", || {
-        let raw = read_raw_workbook(input).map_err(|error| map_xlsx_read_error(input, error))?;
+        let raw = read_raw_workbook(&input).map_err(|error| map_xlsx_read_error(&input, error))?;
         let reader_rows = raw.rows.len();
         Ok::<_, CostingError>((raw, reader_rows))
+    })
+    .map_err(|error| {
+        error.with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::IngestWorkbook,
+            Some(input.clone()),
+        ))
     })?;
     let normalized = measure(&mut timings, "normalize", || {
-        Ok::<_, anyhow::Error>(normalize_workbook(raw, &pipeline, month_range)?)
+        normalize_workbook(raw, &pipeline, month_range)
+    })
+    .map_err(|error| {
+        error.with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::Normalize,
+            Some(input.clone()),
+        ))
     })?;
     let month_filter_empty_result = month_filter_requested && normalized.is_empty();
-    let split = measure(&mut timings, "split", || {
-        Ok::<_, anyhow::Error>(split_detail_and_qty(normalized)?)
-    })?;
-    let bundle = measure(&mut timings, "fact", || {
-        Ok::<_, anyhow::Error>(build_fact_bundle(split, &pipeline)?)
-    })?;
+    let split =
+        measure(&mut timings, "split", || split_detail_and_qty(normalized)).map_err(|error| {
+            error.with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::Split,
+                Some(input.clone()),
+            ))
+        })?;
+    let bundle =
+        measure(&mut timings, "fact", || build_fact_bundle(split, &pipeline)).map_err(|error| {
+            error.with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::BuildFact,
+                Some(input.clone()),
+            ))
+        })?;
     let payload_timings = timings.clone();
     let payload = measure(&mut timings, "presentation", || {
         build_workbook_payload(
@@ -67,15 +124,32 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
             payload_timings,
             month_filter_empty_result,
         )
+    })
+    .map_err(|error| {
+        error.with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::BuildPresentation,
+            Some(input.clone()),
+        ))
     })?;
 
     if let Some(started) = total_started {
         timings.insert("total", started.elapsed().as_secs_f64());
     }
 
-    let detail_rows = required_quality_count(&payload.quality_metrics, "成本明细输入行数")?;
-    let qty_rows = required_quality_count(&payload.quality_metrics, "产品数量统计输出行数")?;
-    let work_order_rows = required_quality_count(&payload.quality_metrics, "工单异常分析输出行数")?;
+    let presentation_context = || {
+        ErrorContext::new(
+            &request_id,
+            ErrorStage::BuildPresentation,
+            Some(input.clone()),
+        )
+    };
+    let detail_rows = required_quality_count(&payload.quality_metrics, "成本明细输入行数")
+        .map_err(|error| error.with_context(presentation_context()))?;
+    let qty_rows = required_quality_count(&payload.quality_metrics, "产品数量统计输出行数")
+        .map_err(|error| error.with_context(presentation_context()))?;
+    let work_order_rows = required_quality_count(&payload.quality_metrics, "工单异常分析输出行数")
+        .map_err(|error| error.with_context(presentation_context()))?;
     let qty_sheet_rows = payload
         .sheet_models
         .iter()
@@ -83,7 +157,8 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         .ok_or_else(|| CostingError::Internal {
             code: ErrorCode::InternalError,
             message: "workbook payload is missing quantity sheet".to_string(),
-        })?
+        })
+        .map_err(|error| error.with_context(presentation_context()))?
         .rows
         .len();
     let run_counts = BTreeMap::from([
@@ -105,6 +180,13 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
             .expect("resolve_cli_paths supplies output for non check-only runs");
         measure(&mut timings, "export", || {
             write_workbook(output, &payload).map_err(|error| map_xlsx_write_error(output, error))
+        })
+        .map_err(|error| {
+            error.with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::SaveWorkbook,
+                Some(output.clone()),
+            ))
         })?;
     }
     let mut issue_type_counts = BTreeMap::new();
@@ -125,6 +207,14 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
         run_counts,
         stage_timings: timings,
     })
+}
+
+fn new_request_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("costing-{}-{nanos}", std::process::id())
 }
 
 fn required_quality_count(

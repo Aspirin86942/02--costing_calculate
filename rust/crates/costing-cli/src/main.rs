@@ -26,6 +26,8 @@ fn main() -> ExitCode {
                 code: ErrorCode::InvalidInput,
                 message: error.to_string(),
                 retryable: false,
+                request_id: None,
+                details: None,
             });
         }
     };
@@ -40,17 +42,14 @@ fn main() -> ExitCode {
         Err(error) => {
             let error_summary = error
                 .downcast_ref::<CostingError>()
-                .map(|cause| ErrorSummary {
-                    status: "failed".to_string(),
-                    code: cause.code(),
-                    message: cause.message().to_string(),
-                    retryable: cause.retryable(),
-                })
+                .map(ErrorSummary::from_error)
                 .unwrap_or_else(|| ErrorSummary {
                     status: "failed".to_string(),
                     code: ErrorCode::InternalError,
                     message: error.to_string(),
                     retryable: false,
+                    request_id: None,
+                    details: None,
                 });
             emit_error(error_summary)
         }

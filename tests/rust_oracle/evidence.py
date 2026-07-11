@@ -39,6 +39,7 @@ FORK_URL = 'https://github.com/Aspirin86942/rust_xlsxwriter.git'
 FORK_BRANCH = 'costing-fallible-temp-io-v0.96.0'
 CRATE_VERSION = '0.96.0'
 DEPENDENCY_MANIFEST_RELATIVE_PATH = Path('docs/performance/dependencies/2026-07-11-rust-xlsxwriter-0.96.0.json')
+PHASE0A_BASELINE_RELATIVE_PATH = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a.json')
 LOCAL_LOG_ROOT_RELATIVE_PATH = Path('rust/target/perf/local-logs')
 
 MANDATORY_DIFF_FILES = (
@@ -1218,8 +1219,14 @@ class EvidenceSanitizer:
     def scan_tree(self, root: Path, *, sensitive_names: tuple[str, ...] = ()) -> None:
         _scan_tree_safely(root, sensitive_names=sensitive_names)
 
-    def scan_staged(self, *, sensitive_names: tuple[str, ...] = ()) -> None:
-        entries = _staged_index_entries(repo_root().resolve(strict=True))
+    def scan_staged(self, *, root: Path | None = None, sensitive_names: tuple[str, ...] = ()) -> None:
+        repository_root = repo_root().resolve(strict=True)
+        selected_root = None if root is None else _resolve_repository_scan_root(root, repository_root=repository_root)
+        entries = _staged_index_entries(repository_root)
+        if selected_root is not None:
+            entries = tuple(
+                entry for entry in entries if _casefold_relative_to(repository_root / entry.path, selected_root)
+            )
         for entry in entries:
             _scan_versioned_bytes(entry.content, suffix=entry.path.suffix, sensitive_names=sensitive_names)
             _scan_versioned_text(entry.path.name, sensitive_names=sensitive_names)
@@ -1855,8 +1862,8 @@ def _validate_staged_batch_markers(
     if not entries:
         return
     by_path = {item.path: item for item in entries}
-    legacy = DEPENDENCY_MANIFEST_RELATIVE_PATH
-    nonlegacy = {path for path in by_path if path != legacy}
+    singletons = {DEPENDENCY_MANIFEST_RELATIVE_PATH, PHASE0A_BASELINE_RELATIVE_PATH}
+    nonlegacy = {path for path in by_path if path not in singletons}
     marker_pattern = re.compile(r'^batch-([0-9a-f]{16})\.commit\.json$')
     markers = tuple(item for item in entries if marker_pattern.fullmatch(item.path.name))
     bound: set[Path] = set()
@@ -2316,6 +2323,15 @@ def _reject_parent_traversal(path: Path, name: str) -> None:
         raise ValueError(f'{name} path must not contain parent traversal')
 
 
+def _resolve_repository_scan_root(path: Path, *, repository_root: Path | None = None) -> Path:
+    _reject_parent_traversal(path, 'scan root')
+    root = repo_root().resolve(strict=True) if repository_root is None else repository_root
+    resolved = _strip_windows_extended_prefix(path).expanduser().absolute().resolve(strict=False)
+    if not _casefold_relative_to(resolved, root):
+        raise ValueError('scan root must stay within the repository')
+    return resolved
+
+
 def _resolve_exact_repo_path(path: Path, expected: Path, name: str, *, require_file: bool = False) -> Path:
     _reject_parent_traversal(path, name)
     resolved = path.resolve(strict=False)
@@ -2660,6 +2676,7 @@ def _argument_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest='command', required=True)
     dependency = subparsers.add_parser('dependency')
     verify = subparsers.add_parser('verify-dependency')
+    scan = subparsers.add_parser('scan')
     for command in (dependency, verify):
         command.add_argument('--fork-checkout', type=Path, required=True)
         command.add_argument('--cargo-manifest', type=Path, required=True)
@@ -2668,6 +2685,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     dependency.add_argument('--local-log-root', type=Path, required=True)
     dependency.add_argument('--output', type=Path, required=True)
     verify.add_argument('--dependency-manifest', type=Path, required=True)
+    scan.add_argument('--root', type=Path, required=True)
+    scan.add_argument('--staged', action='store_true')
     return parser
 
 
@@ -2682,7 +2701,7 @@ def main() -> None:
             local_log_root=args.local_log_root,
             output=args.output,
         )
-    else:
+    elif args.command == 'verify-dependency':
         verify_dependency_manifest(
             fork_checkout=args.fork_checkout,
             cargo_manifest=args.cargo_manifest,
@@ -2690,6 +2709,12 @@ def main() -> None:
             pre_pin_commit=args.pre_pin_commit,
             dependency_manifest=args.dependency_manifest,
         )
+    else:
+        policy = EvidenceSanitizer.closed_policy()
+        if args.staged:
+            policy.scan_staged(root=args.root)
+        else:
+            policy.scan_tree(_resolve_repository_scan_root(args.root))
 
 
 if __name__ == '__main__':

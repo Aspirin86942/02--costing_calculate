@@ -5,6 +5,7 @@ import math
 import shutil
 import socket
 import subprocess
+import sys
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -1287,6 +1288,169 @@ def test_scan_staged_reads_sensitive_index_blob_not_worktree(monkeypatch: pytest
 
     with pytest.raises(ValueError, match='sensitive'):
         EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_scan_staged_accepts_exact_standalone_phase0a_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a.json')
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_scan_staged_reads_phase0a_sensitive_content_from_index_blob(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a.json')
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{"value":"actual=unknown-canary"}\n', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+    path.write_text('{"value":"safe"}\n', encoding='utf-8')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_scan_staged_rejects_similarly_named_phase0a_orphan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a-copy.json')
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError) as exc_info:
+        EvidenceSanitizer.closed_policy().scan_staged()
+    assert str(exc_info.value) == 'staged evidence contains an orphan or uncommitted batch artifact'
+
+
+def test_scan_cli_staged_scopes_entries_to_requested_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    baseline = root / 'docs' / 'performance' / 'baselines' / '2026-07-11-windows-x64-phase0a.json'
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text('{}\n', encoding='utf-8')
+    outside_scope = root / evidence.DEPENDENCY_MANIFEST_RELATIVE_PATH
+    outside_scope.parent.mkdir(parents=True)
+    outside_scope.write_text('{"value":"actual=outside-scope"}\n', encoding='utf-8')
+    _git(root, 'add', '--', 'docs/performance')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        ['evidence', 'scan', '--root', 'docs/performance/baselines', '--staged'],
+    )
+
+    evidence.main()
+
+
+def test_scan_cli_scans_only_requested_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    selected = root / 'docs' / 'performance' / 'selected'
+    selected.mkdir(parents=True)
+    (selected / 'safe.json').write_text('{}\n', encoding='utf-8')
+    sibling = root / 'docs' / 'performance' / 'outside'
+    sibling.mkdir()
+    (sibling / 'sensitive.json').write_text('{"value":"actual=outside-scope"}\n', encoding='utf-8')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(sys, 'argv', ['evidence', 'scan', '--root', 'docs/performance/selected'])
+
+    evidence.main()
+
+
+@pytest.mark.parametrize('staged', (False, True))
+def test_scan_cli_rejects_root_outside_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    staged: bool,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'safe.json').write_text('{}\n', encoding='utf-8')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+    argv = ['evidence', 'scan', '--root', str(outside)]
+    if staged:
+        argv.append('--staged')
+    monkeypatch.setattr(sys, 'argv', argv)
+
+    with pytest.raises(ValueError, match='repository'):
+        evidence.main()
+
+
+@pytest.mark.parametrize(
+    ('command', 'specific_args', 'target_name', 'expected_key'),
+    (
+        (
+            'dependency',
+            ('--local-log-root', 'rust/target/perf/local-logs', '--output', 'dependency.json'),
+            'generate_dependency_manifest',
+            'output',
+        ),
+        (
+            'verify-dependency',
+            ('--dependency-manifest', 'dependency.json'),
+            'verify_dependency_manifest',
+            'dependency_manifest',
+        ),
+    ),
+)
+def test_existing_dependency_cli_subcommands_still_parse_and_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    specific_args: tuple[str, ...],
+    target_name: str,
+    expected_key: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(evidence, target_name, lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        sys,
+        'argv',
+        [
+            'evidence',
+            command,
+            '--fork-checkout',
+            'fork',
+            '--cargo-manifest',
+            'rust/Cargo.toml',
+            '--cargo-lock',
+            'rust/Cargo.lock',
+            '--pre-pin-commit',
+            _PRE_PIN_COMMIT,
+            *specific_args,
+        ],
+    )
+
+    evidence.main()
+
+    assert len(calls) == 1
+    assert isinstance(calls[0][expected_key], Path)
 
 
 def test_staged_index_parser_preserves_special_filename(tmp_path: Path) -> None:

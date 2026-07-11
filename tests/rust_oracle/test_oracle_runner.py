@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
+import shutil
 import subprocess
 import zipfile
 from decimal import Decimal
@@ -31,6 +33,20 @@ def _write_minimal_xlsx(path: Path) -> None:
         archive.writestr('_rels/.rels', '<Relationships/>')
         archive.writestr('xl/workbook.xml', '<workbook/>')
         archive.writestr('xl/worksheets/sheet1.xml', '<worksheet/>')
+
+
+def _long_output_path(tmp_path: Path) -> Path:
+    path = tmp_path / 'data' / 'processed' / ('a' * 120) / ('b' * 120) / 'normal-output.xlsx'
+    resolved = path.resolve()
+    assert len(str(resolved)) > 260
+    assert not str(resolved).startswith('\\\\?\\')
+    return resolved
+
+
+def _remove_long_output_tree(tmp_path: Path) -> None:
+    data_io = oracle_runner._io_path(tmp_path / 'data')
+    if data_io.exists():
+        shutil.rmtree(data_io)
 
 
 def valid_rust_check_only_payload() -> dict[str, Any]:
@@ -606,6 +622,100 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
     assert result.normal_run.runtime.output_size_bytes == output_path.stat().st_size
     assert output_path.exists()  # 上层 wall runner 负责在校验后立即清理。
     assert [path.name for path in local_log_root.glob('*.json')] == [f'{result.local_unversioned_log_sha256}.json']
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+def test_run_rust_normal_captured_accepts_long_logical_output_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / 'costing-calculate.exe'
+    executable.write_bytes(b'rust-binary')
+    input_path = tmp_path / 'input.xlsx'
+    input_path.write_bytes(b'input-workbook')
+    output_path = _long_output_path(tmp_path)
+    output_io = oracle_runner._io_path(output_path)
+    local_log_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs'
+    oracle_paths: list[Path] = []
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = args[0]
+        assert command == [
+            str(executable.resolve()),
+            'gb',
+            '--input',
+            str(input_path.resolve()),
+            '--output',
+            str(output_path),
+            '--benchmark',
+        ]
+        _write_minimal_xlsx(output_io)
+        assert not output_path.is_file()
+        assert output_io.is_file()
+        payload = valid_rust_check_only_payload()
+        payload['output_written'] = True
+        payload['workbook_path'] = str(output_path)
+        payload['stage_timings']['stages']['export'] = 0.5
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload), '')
+
+    def fake_workbook_oracle(path: Path) -> str:
+        oracle_paths.append(path)
+        return 'oracle-sha256'
+
+    monkeypatch.setattr(oracle_runner.subprocess, 'run', fake_run)
+    try:
+        result = oracle_runner.run_rust_normal_captured(
+            executable,
+            'gb',
+            input_path,
+            output_path,
+            schema=RuntimeSchema.BASE,
+            local_log_root=local_log_root,
+            workbook_oracle_fn=fake_workbook_oracle,
+        )
+
+        assert result.normal_run.runtime.output_size_bytes == output_io.stat().st_size > 0
+        assert oracle_paths == [output_path]
+    finally:
+        _remove_long_output_tree(tmp_path)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+def test_run_rust_normal_captured_rejects_preexisting_long_output_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / 'costing-calculate.exe'
+    executable.write_bytes(b'rust-binary')
+    input_path = tmp_path / 'input.xlsx'
+    input_path.write_bytes(b'input-workbook')
+    output_path = _long_output_path(tmp_path)
+    output_io = oracle_runner._io_path(output_path)
+    _write_minimal_xlsx(output_io)
+    assert not output_path.is_file()
+    assert output_io.is_file()
+    monkeypatch.setattr(oracle_runner, 'repo_root', lambda: tmp_path)
+    monkeypatch.setattr(
+        oracle_runner.subprocess,
+        'run',
+        lambda *args, **kwargs: pytest.fail('pre-existing long output must be rejected before subprocess'),
+    )
+
+    try:
+        with pytest.raises(AssertionError, match='normal benchmark output already exists') as caught:
+            oracle_runner.run_rust_normal_captured(
+                executable,
+                'gb',
+                input_path,
+                output_path,
+                schema=RuntimeSchema.BASE,
+                local_log_root=tmp_path / 'rust' / 'target' / 'perf-local' / 'raw-logs',
+            )
+        assert str(output_path) in str(caught.value)
+        assert '\\\\?\\' not in str(caught.value)
+    finally:
+        _remove_long_output_tree(tmp_path)
 
 
 def test_old_normal_capture_cannot_write_raw_cli_payload() -> None:

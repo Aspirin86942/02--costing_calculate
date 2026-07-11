@@ -2031,9 +2031,10 @@ def _validate_complete_pws_artifacts(
         expected_path = _normal_path(output_path).resolve()
         if reported_path != expected_path:
             raise AssertionError('Rust PWS runtime reported an unexpected workbook path')
-        if not output_path.is_file():
+        output_io = _io_path(output_path)
+        if not output_io.is_file():
             raise AssertionError('Rust PWS runtime did not create its workbook')
-        output_size = output_path.stat().st_size
+        output_size = output_io.stat().st_size
         if output_size <= 0:
             raise AssertionError('Rust PWS workbook must contain positive bytes')
         runtime_payload['output_size_bytes'] = output_size
@@ -2085,10 +2086,11 @@ def _invoke_pws_single_sample(
         artifacts.driver_log_path,
     )
     present = tuple(_io_path(path).is_file() for path in core_paths)
+    output_io = _io_path(output_path)
     if present[0]:
         if not all(present):
             raise RustNormalValidationError('PWS resume artifacts are incomplete', _artifact_audit_sha(artifacts))
-    elif any(present) or output_path.is_file():
+    elif any(present) or output_io.is_file():
         raise RustNormalValidationError(
             'PWS raw collision is incomplete and cannot be rerun', _artifact_audit_sha(artifacts)
         )

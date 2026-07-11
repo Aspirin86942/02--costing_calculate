@@ -77,6 +77,20 @@ def _write_minimal_xlsx(path: Path) -> None:
         archive.writestr('xl/worksheets/sheet1.xml', '<worksheet/>')
 
 
+def _long_output_path(tmp_path: Path) -> Path:
+    path = tmp_path / 'data' / 'processed' / ('a' * 120) / ('b' * 120) / 'pws-output.xlsx'
+    resolved = path.resolve()
+    assert len(str(resolved)) > 260
+    assert not str(resolved).startswith('\\\\?\\')
+    return resolved
+
+
+def _remove_long_output_tree(tmp_path: Path) -> None:
+    data_io = phase0_harness._io_path(tmp_path / 'data')
+    if data_io.exists():
+        shutil.rmtree(data_io)
+
+
 def _runtime_payload(output_path: Path, *, schema: RuntimeSchema) -> dict[str, object]:
     stages = dict.fromkeys(('ingest', 'normalize', 'split', 'fact', 'presentation', 'total', 'export'), 0.1)
     if schema is RuntimeSchema.INSTRUMENTED:
@@ -391,6 +405,71 @@ def test_invoke_pws_injects_actual_output_size_when_runtime_omits_it(
 
     assert launches == []
     assert captured.normal_run.runtime.output_size_bytes == output_path.stat().st_size > 0
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+def test_invoke_pws_accepts_complete_artifacts_for_long_logical_output_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    output_path = _long_output_path(tmp_path)
+    output_io = phase0_harness._io_path(output_path)
+    _write_complete_raw_sample(request, output_path, schema=RuntimeSchema.BASE, create_workbook=False)
+    _write_minimal_xlsx(output_io)
+    assert not output_path.is_file()
+    assert output_io.is_file()
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', pytest.fail)
+
+    try:
+        captured = phase0_harness._invoke_pws_single_sample(
+            executable=request.reference_executable,
+            pipeline='gb',
+            input_path=request.input_path,
+            output_path=output_path,
+            role='reference',
+            batch_id='b' * 64,
+            global_round=1,
+            schema=RuntimeSchema.BASE,
+            local_root=request.local_root,
+        )
+
+        assert captured.normal_run.runtime.output_size_bytes == output_io.stat().st_size > 0
+        assert len(captured.normal_run.workbook_oracle_sha256) == 64
+    finally:
+        _remove_long_output_tree(tmp_path)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+def test_invoke_pws_rejects_residual_long_workbook_before_driver_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    output_path = _long_output_path(tmp_path)
+    output_io = phase0_harness._io_path(output_path)
+    _write_minimal_xlsx(output_io)
+    assert not output_path.is_file()
+    assert output_io.is_file()
+    launches: list[object] = []
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append((args, kwargs)))
+
+    try:
+        with pytest.raises(RustNormalValidationError, match='PWS raw collision'):
+            phase0_harness._invoke_pws_single_sample(
+                executable=request.reference_executable,
+                pipeline='gb',
+                input_path=request.input_path,
+                output_path=output_path,
+                role='reference',
+                batch_id='b' * 64,
+                global_round=1,
+                schema=RuntimeSchema.BASE,
+                local_root=request.local_root,
+            )
+        assert launches == []
+    finally:
+        _remove_long_output_tree(tmp_path)
 
 
 def test_phase0a_approved_bytes_can_use_equal_wall_and_pws_resumed_samples(

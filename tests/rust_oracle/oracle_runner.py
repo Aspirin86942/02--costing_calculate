@@ -306,9 +306,10 @@ def run_rust_normal_captured(
     )
     if output_path in (input_path, executable):
         raise AssertionError('normal benchmark output must differ from input and executable')
+    output_io = _io_path(output_path)
     input_sha256 = _file_sha256(input_path)
     binary_sha256 = _file_sha256(executable)
-    if output_path.exists():
+    if output_io.exists():
         raise AssertionError(f'normal benchmark output already exists: {output_path}')
     command_arguments = (
         pipeline,
@@ -359,9 +360,9 @@ def run_rust_normal_captured(
             raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
         if Path(str(payload.get('workbook_path'))).resolve() != output_path:
             raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
-        if not output_path.is_file():
+        if not output_io.is_file():
             raise AssertionError('Rust normal benchmark did not create its workbook')
-        payload['output_size_bytes'] = output_path.stat().st_size
+        payload['output_size_bytes'] = output_io.stat().st_size
         runtime = parse_runtime_payload(payload, schema=schema)
         oracle_sha256 = (workbook_oracle_fn or workbook_oracle)(output_path)
         if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:

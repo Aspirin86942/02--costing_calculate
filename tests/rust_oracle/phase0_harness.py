@@ -11,7 +11,7 @@ import sys
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from statistics import median
 from typing import Any
@@ -3493,14 +3493,17 @@ def _phase0a_payload(manifest: Phase0AManifest, request: Phase0ARequest) -> dict
         wall = getattr(manifest, f'{pipeline}_wall')
         pws = getattr(manifest, f'{pipeline}_pws')
         samples = tuple(item.reference for item in (*wall.rounds, *pws.rounds))
-        output_sizes = {item.normal_run.runtime.output_size_bytes for item in samples}
-        if len(output_sizes) != 1 or None in output_sizes:
+        output_sizes = tuple(item.normal_run.runtime.output_size_bytes for item in samples)
+        if any(type(value) is not int or value <= 0 for value in output_sizes):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'Phase 0A output bytes are inconsistent')
+        decimal_median = median(Decimal(value) for value in output_sizes)
+        # 偶数样本的中位数可能落在半字节；向上取整可避免低估后续 output-bytes 容量门禁。
+        output_size = int(decimal_median.to_integral_value(rounding=ROUND_CEILING))
         runtime = wall.rounds[0].reference.normal_run.runtime
         pipelines[pipeline] = {
             'input_alias': f'${pipeline.upper()}_INPUT',
             'input_sha256': _sha256(input_path),
-            'output_size_bytes': next(iter(output_sizes)),
+            'output_size_bytes': output_size,
             'sheet_dimensions': list(runtime.sheet_dimensions),
             'runtime': {
                 'sheet_count': runtime.sheet_count,

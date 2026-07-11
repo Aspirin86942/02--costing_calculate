@@ -271,6 +271,28 @@ def _calibration_group(pipeline: str, metric: str, output_size: int) -> Calibrat
     return CalibrationGroup(f'{pipeline}-{metric}', pipeline, metric, True, rounds)  # type: ignore[arg-type]
 
 
+def _with_calibration_output_sizes(
+    group: CalibrationGroup,
+    output_sizes: tuple[int | None, ...],
+) -> CalibrationGroup:
+    return replace(
+        group,
+        rounds=tuple(
+            replace(
+                item,
+                reference=replace(
+                    item.reference,
+                    normal_run=replace(
+                        item.reference.normal_run,
+                        runtime=replace(item.reference.normal_run.runtime, output_size_bytes=output_size),
+                    ),
+                ),
+            )
+            for item, output_size in zip(group.rounds, output_sizes, strict=True)
+        ),
+    )
+
+
 def test_sanitized_fixture_contains_no_erp_or_host_canary(tmp_path: Path) -> None:
     spec = importlib.util.find_spec('tests.rust_oracle.sanitized_fixture')
     assert spec is not None, 'sanitized fixture builder is required'
@@ -479,6 +501,52 @@ def test_phase0a_manifest_uses_external_output_size_for_base_reference(
     payload = json.loads(request.output_path.read_text(encoding='utf-8'))
     assert payload['pipelines']['gb']['output_size_bytes'] == 321
     assert payload['pipelines']['sk']['output_size_bytes'] == 654
+
+
+def test_phase0a_manifest_uses_conservative_decimal_median_for_one_byte_output_variation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+
+    def variable_group(*, pipeline: str, metric: str, **kwargs: object) -> CalibrationGroup:
+        del kwargs
+        base = 3_813_018 if pipeline == 'gb' else 654
+        sizes = (base,) * 5 if metric == 'wall' else (base + 1,) * 5
+        return _with_calibration_output_sizes(_calibration_group(pipeline, metric, base), sizes)
+
+    monkeypatch.setattr(phase0_harness, '_capture_phase0a_group', variable_group)
+
+    phase0_harness.capture_phase0a(request)
+
+    payload = json.loads(request.output_path.read_text(encoding='utf-8'))
+    assert payload['pipelines']['gb']['output_size_bytes'] == 3_813_019
+    assert payload['pipelines']['sk']['output_size_bytes'] == 655
+
+
+@pytest.mark.parametrize('invalid_size', (None, 0, -1, True))
+def test_phase0a_manifest_rejects_missing_non_positive_or_boolean_output_size(
+    invalid_size: int | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+
+    def invalid_group(*, pipeline: str, metric: str, **kwargs: object) -> CalibrationGroup:
+        del kwargs
+        group = _calibration_group(pipeline, metric, 321 if pipeline == 'gb' else 654)
+        if pipeline == 'gb' and metric == 'pws':
+            return _with_calibration_output_sizes(group, (invalid_size,) * 5)
+        return group
+
+    monkeypatch.setattr(phase0_harness, '_capture_phase0a_group', invalid_group)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.capture_phase0a(request)
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert not request.output_path.exists()
 
 
 def test_phase0a_manifest_contains_gb_sk_wall_pws_runtime_and_sheet_dimensions(

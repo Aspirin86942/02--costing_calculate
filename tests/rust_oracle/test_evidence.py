@@ -940,6 +940,11 @@ def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers
     assert all(math.isfinite(float(value)) for value in artifact.numeric_values)
 
 
+def test_benchmark_schema_version_rejects_boolean_integer_alias() -> None:
+    with pytest.raises(ValueError, match='schema version'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_evidence(schema_version=True))
+
+
 def test_each_allowed_string_field_rejects_unknown_canary() -> None:
     policy = EvidenceSanitizer.closed_policy()
     benchmark_value = _benchmark_manifest_evidence()
@@ -1497,3 +1502,172 @@ def test_scan_tree_rejects_nested_junction_escape(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match='reparse|symlink|escape'):
         EvidenceSanitizer.closed_policy().scan_tree(root)
+
+
+def _committed_synthetic_batch(root: Path) -> tuple[Path, tuple[object, object]]:
+    _init_git_repo(root)
+    destination = root / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    artifacts = _two_command_artifacts()
+    EvidenceSanitizer.closed_policy().write_batch(
+        destination_root=destination,
+        artifacts=artifacts,
+        cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        scan_staged=False,
+    )
+    _git(root, 'add', '--', 'docs/performance')
+    _git(root, 'commit', '--quiet', '-m', 'synthetic evidence batch')
+    return destination, artifacts
+
+
+@pytest.mark.parametrize('deleted_entry', ('marker', 'artifact'))
+def test_scan_staged_rejects_deleted_batch_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    deleted_entry: str,
+) -> None:
+    root = tmp_path / 'repo'
+    destination, artifacts = _committed_synthetic_batch(root)
+    target = next(destination.glob('batch-*.commit.json'))
+    if deleted_entry == 'artifact':
+        target = destination / artifacts[0].file_name
+    target.unlink()
+    _git(root, 'add', '-u', '--', 'docs/performance')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='delet|missing|batch'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_all_seven_staged_readers_round_trip_typed_sources() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    readers = {
+        'benchmark_manifest': policy.read_benchmark_manifest,
+        'command_transcript': policy.read_command_transcript,
+        'smoke': policy.read_smoke,
+        'pe_imports': policy.read_pe_imports,
+        'fork_provenance': policy.read_fork_provenance,
+        'cargo_feature_tree': policy.read_cargo_feature_tree,
+        'text_report': policy.read_text_report,
+    }
+    for name, value in _all_new_artifact_values():
+        artifact = getattr(policy, f'build_{name}')(value)
+        source = readers[name](artifact.file_name, artifact.content.encode('utf-8'))
+        rebuilt = getattr(policy, f'build_{name}')(source)
+        assert rebuilt.file_name == artifact.file_name
+        assert rebuilt.content == artifact.content
+
+
+def test_scan_staged_rejects_old_marker_without_artifact_kind(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    destination = root / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    artifact = EvidenceSanitizer.closed_policy().build_command_transcript(_command_transcript_evidence())
+    (destination / artifact.file_name).write_text(artifact.content, encoding='utf-8')
+    marker_name, marker_content = evidence._batch_commit_marker((artifact,))
+    payload = json.loads(marker_content)
+    payload['artifacts'][0].pop('kind', None)
+    basis = {'schema_version': 1, 'artifacts': payload['artifacts']}
+    payload['batch_sha256'] = evidence._sha256_bytes(
+        json.dumps(basis, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    )
+    old_marker = destination / marker_name
+    old_marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    _git(root, 'add', '--', 'docs/performance')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='kind|schema'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def _stage_manual_batch(
+    root: Path,
+    *,
+    kind: evidence.EvidenceKind,
+    file_name: str,
+    content: str,
+) -> None:
+    _init_git_repo(root)
+    destination = root / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    (destination / file_name).write_text(content, encoding='utf-8')
+    records = [
+        {
+            'kind': kind.value,
+            'file_name': file_name,
+            'sha256': evidence._sha256_bytes(content.encode('utf-8')),
+        }
+    ]
+    basis = {'schema_version': 1, 'artifacts': records}
+    batch_sha = evidence._sha256_bytes(json.dumps(basis, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+    marker = {**basis, 'batch_sha256': batch_sha}
+    (destination / f'batch-{batch_sha[:16]}.commit.json').write_text(
+        json.dumps(marker, ensure_ascii=False, indent=2) + '\n',
+        encoding='utf-8',
+    )
+    _git(root, 'add', '--', 'docs/performance')
+
+
+@pytest.mark.parametrize('mutation', ('handwritten', 'extra', 'missing', 'wrong_kind', 'wrong_filename'))
+def test_scan_staged_rejects_non_typed_or_misbound_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    valid = EvidenceSanitizer.closed_policy().build_command_transcript(_command_transcript_evidence())
+    payload = json.loads(valid.content)
+    kind = evidence.EvidenceKind.COMMAND
+    file_name = valid.file_name
+    if mutation == 'handwritten':
+        payload = {'safe': 'yes'}
+    elif mutation == 'extra':
+        payload['extra'] = 'safe'
+    elif mutation == 'missing':
+        payload.pop('verdict')
+    elif mutation == 'wrong_kind':
+        kind = evidence.EvidenceKind.SMOKE
+    else:
+        file_name = 'command-phase0h-smoke.json'
+    content = json.dumps(payload, ensure_ascii=False, indent=2) + '\n'
+    root = tmp_path / 'repo'
+    _stage_manual_batch(root, kind=kind, file_name=file_name, content=content)
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='schema|filename|typed|closed'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_marker_replacement_before_post_scan_preserves_winner_and_rolls_back_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifacts = _two_command_artifacts()
+    real_link = evidence.os.link
+    calls = 0
+    winner_path: Path | None = None
+
+    def replace_marker(source: object, target: object) -> None:
+        nonlocal calls, winner_path
+        calls += 1
+        real_link(source, target)
+        if calls == len(artifacts) + 1:
+            winner_path = Path(str(target).removeprefix('\\\\?\\'))
+            winner_path.unlink()
+            winner_path.write_text('winner marker', encoding='utf-8')
+
+    monkeypatch.setattr(evidence.os, 'link', replace_marker)
+    with pytest.raises(OSError, match='marker identity'):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=artifacts,
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+            scan_staged=False,
+        )
+
+    assert winner_path is not None
+    assert winner_path.read_text(encoding='utf-8') == 'winner marker'
+    assert all(not (destination / artifact.file_name).exists() for artifact in artifacts)

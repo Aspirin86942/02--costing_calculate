@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.rust_oracle.benchmark_protocol import PipelineName
 from tests.rust_oracle.oracle_runner import (
     REQUIRED_RUST_PAYLOAD_STAGES,
     TimedPayloadRun,
@@ -24,7 +25,7 @@ from tests.rust_oracle.oracle_runner import (
     run_rust_cli_release_check_only,
 )
 from tests.rust_oracle.repo_paths import repo_root
-from tests.rust_oracle.workbook_compare import compare_workbooks
+from tests.rust_oracle.workbook_compare import WorkbookMismatch, compare_workbooks
 
 CHECK_ONLY_WARMUPS = 1
 CHECK_ONLY_ROUNDS = 5
@@ -96,7 +97,12 @@ class CheckOnlyBenchmarkResult:
     validation_failures: tuple[ValidationFailure, ...] = ()
 
 
-def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, repeats: int = 3) -> BenchmarkResult:
+def run_same_machine_benchmark(
+    pipeline: PipelineName,
+    input_path: Path,
+    tmp_path: Path,
+    repeats: int = 3,
+) -> BenchmarkResult:
     python_seconds: list[float] = []
     rust_seconds: list[float] = []
     validation_failures: list[ValidationFailure] = []
@@ -124,13 +130,12 @@ def run_same_machine_benchmark(pipeline: str, input_path: Path, tmp_path: Path, 
                 )
             )
 
-        report = compare_workbooks(python_output, rust_output)
-        if not report['passed']:
-            workbook_errors = [str(error) for error in report['errors']]
+        report = compare_workbooks(python_output, rust_output, pipeline=pipeline)
+        if not report.passed:
             validation_failures.append(
                 ValidationFailure(
-                    verdict=classify_validation_errors(workbook_errors),
-                    message=f'iteration {idx} workbook mismatch: {workbook_errors!r}',
+                    verdict=classify_validation_errors(report.mismatches),
+                    message=f'iteration {idx} workbook mismatch: {report.mismatches!r}',
                 )
             )
 
@@ -154,7 +159,7 @@ def classify_verdict(
     validation_passed: bool,
     python_median: float,
     rust_median: float,
-    validation_errors: list[str] | tuple[str, ...] | None = None,
+    validation_errors: list[str | WorkbookMismatch] | tuple[str | WorkbookMismatch, ...] | None = None,
 ) -> str:
     if not validation_passed:
         return classify_validation_errors(validation_errors or [])
@@ -163,20 +168,38 @@ def classify_verdict(
     return 'VALIDATED'
 
 
-def classify_validation_errors(errors: list[str] | tuple[str, ...]) -> str:
+_DATA_MISMATCH_KINDS = frozenset(
+    {
+        'value_mismatch',
+        'storage_type_mismatch',
+        'column_total_mismatch',
+        'group_total_mismatch',
+        'required_header_missing',
+        'unexpected_numeric_header',
+        'numeric_storage_invalid',
+        'shared_string_index_out_of_range',
+    }
+)
+
+
+def classify_validation_errors(
+    errors: list[str | WorkbookMismatch] | tuple[str | WorkbookMismatch, ...],
+) -> str:
     for error in errors:
+        if isinstance(error, WorkbookMismatch):
+            if error.mismatch_kind not in _DATA_MISMATCH_KINDS:
+                continue
+            if error.sheet == '成本分析工单维度':
+                return 'ANALYSIS_MISMATCH'
+            if error.sheet in {'成本计算单总表', '成本计算单数量聚合维度'}:
+                return 'ETL_MISMATCH'
+            continue
         lowered = error.lower()
         if 'reader snapshot' in lowered or 'reader mismatch' in lowered:
             return 'READER_MISMATCH'
-        if error.startswith('value mismatch 成本分析工单维度') or 'anomaly mismatch' in lowered:
+        if 'anomaly mismatch' in lowered:
             return 'ANALYSIS_MISMATCH'
-        if (
-            error.startswith('value mismatch 成本计算单总表')
-            or error.startswith('value mismatch 成本计算单数量聚合维度')
-            or 'normalized row mismatch' in lowered
-            or 'fact mismatch' in lowered
-            or 'qty mismatch' in lowered
-        ):
+        if 'normalized row mismatch' in lowered or 'fact mismatch' in lowered or 'qty mismatch' in lowered:
             return 'ETL_MISMATCH'
     return 'WORKBOOK_MISMATCH'
 

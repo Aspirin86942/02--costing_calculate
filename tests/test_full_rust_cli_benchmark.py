@@ -8,6 +8,7 @@ from tests.rust_oracle import benchmark
 from tests.rust_oracle.benchmark import classify_verdict, run_same_machine_benchmark
 from tests.rust_oracle.oracle_runner import OracleRunSummary
 from tests.rust_oracle.repo_paths import require_benchmark_sample
+from tests.rust_oracle.workbook_compare import WorkbookComparisonReport, WorkbookMismatch
 
 
 def test_classify_verdict_requires_validation_and_no_regression() -> None:
@@ -18,9 +19,28 @@ def test_classify_verdict_requires_validation_and_no_regression() -> None:
 
 def test_classify_verdict_preserves_earliest_failure_layer() -> None:
     assert classify_verdict(False, 10.0, 9.0, ['reader snapshot mismatch: row 1']) == 'READER_MISMATCH'
-    assert classify_verdict(False, 10.0, 9.0, ['value mismatch 成本计算单数量聚合维度!2,1']) == 'ETL_MISMATCH'
-    assert classify_verdict(False, 10.0, 9.0, ['value mismatch 成本分析工单维度!2,35']) == 'ANALYSIS_MISMATCH'
-    assert classify_verdict(False, 10.0, 9.0, ['freeze panes mismatch 成本计算单总表']) == 'WORKBOOK_MISMATCH'
+    assert (
+        classify_verdict(
+            False,
+            10.0,
+            9.0,
+            [WorkbookMismatch('成本计算单数量聚合维度', 'A2', 'value_mismatch', 'n', 'n')],
+        )
+        == 'ETL_MISMATCH'
+    )
+    assert (
+        classify_verdict(
+            False,
+            10.0,
+            9.0,
+            [WorkbookMismatch('成本分析工单维度', 'AI2', 'value_mismatch', 'n', 'n')],
+        )
+        == 'ANALYSIS_MISMATCH'
+    )
+    assert (
+        classify_verdict(False, 10.0, 9.0, [WorkbookMismatch('成本计算单总表', None, 'freeze_panes_mismatch')])
+        == 'WORKBOOK_MISMATCH'
+    )
 
 
 def test_benchmark_rejects_runtime_mismatch_even_when_workbooks_match(
@@ -41,7 +61,11 @@ def test_benchmark_rejects_runtime_mismatch_even_when_workbooks_match(
     monkeypatch.setattr(benchmark, 'build_rust_cli_release', lambda: tmp_path / 'costing-calculate')
     monkeypatch.setattr(benchmark, 'run_python_oracle', lambda *_args: python_summary)
     monkeypatch.setattr(benchmark, 'run_rust_cli_release', lambda *_args: rust_summary)
-    monkeypatch.setattr(benchmark, 'compare_workbooks', lambda *_args: {'passed': True, 'errors': []})
+    monkeypatch.setattr(
+        benchmark,
+        'compare_workbooks',
+        lambda *_args, **_kwargs: WorkbookComparisonReport(passed=True, mismatches=()),
+    )
 
     result = run_same_machine_benchmark('gb', tmp_path / 'input.xlsx', tmp_path, repeats=1)
 

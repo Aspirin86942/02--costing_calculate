@@ -40,8 +40,8 @@ def test_rust_gb_workbook_matches_python_oracle(tmp_path: Path) -> None:
     python_summary = run_python_oracle('gb', input_path, python_output)
     rust_summary = run_rust_cli('gb', input_path, rust_output)
 
-    report = compare_workbooks(python_output, rust_output)
-    assert report['passed'], report['errors']
+    report = compare_workbooks(python_output, rust_output, pipeline='gb')
+    assert report.passed, report.mismatches
     assert_runtime_contract_matches(python_summary, rust_summary)
 
 
@@ -55,6 +55,6 @@ def test_rust_sk_workbook_matches_python_oracle(tmp_path: Path) -> None:
     python_summary = run_python_oracle('sk', input_path, python_output)
     rust_summary = run_rust_cli('sk', input_path, rust_output)
 
-    report = compare_workbooks(python_output, rust_output)
-    assert report['passed'], report['errors']
+    report = compare_workbooks(python_output, rust_output, pipeline='sk')
+    assert report.passed, report.mismatches
     assert_runtime_contract_matches(python_summary, rust_summary)

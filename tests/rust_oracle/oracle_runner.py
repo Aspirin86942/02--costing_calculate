@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from src.config.pipelines import PIPELINES
 from src.etl.runner import _build_request
 from src.services import costing_service
 from src.services.costing_service import ServiceStatus, run_costing_request
+from tests.rust_oracle.benchmark_protocol import NormalRunEvidence, RuntimeEvidence, RuntimeSchema
 from tests.rust_oracle.repo_paths import repo_root
 
 REQUIRED_RUST_PAYLOAD_STAGES = (
@@ -49,6 +51,20 @@ class TimedPayloadRun:
     stage_timings: dict[str, float]
     runtime_summary: OracleRunSummary
     run_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CapturedNormalRun:
+    normal_run: NormalRunEvidence
+    exit_code: int
+    local_unversioned_log_sha256: str
+
+
+class RustNormalProcessError(AssertionError):
+    def __init__(self, returncode: int, log_sha256: str) -> None:
+        super().__init__(f'Rust normal benchmark exited with code {returncode}; raw log sha256={log_sha256}')
+        self.returncode = returncode
+        self.log_sha256 = log_sha256
 
 
 def run_python_oracle(pipeline: str, input_path: Path, output_path: Path) -> OracleRunSummary:
@@ -255,80 +271,105 @@ def run_rust_cli_release_check_only(
     return result
 
 
-def capture_rust_normal_benchmark_evidence(
+def run_rust_normal_captured(
     executable: Path,
     pipeline: str,
     input_path: Path,
     output_path: Path,
-    evidence_path: Path,
-) -> None:
+    *,
+    schema: RuntimeSchema,
+    local_log_root: Path,
+) -> CapturedNormalRun:
     input_path = input_path.resolve()
     executable = executable.resolve()
     output_path = output_path.resolve()
-    evidence_path = evidence_path.resolve()
-    if evidence_path in (input_path, executable, output_path):
-        raise AssertionError(
-            f'normal benchmark evidence path must differ from input, executable, and output: {evidence_path}'
-        )
+    local_log_root = local_log_root.resolve()
+    _require_local_raw_log_root(local_log_root)
+    if output_path in (input_path, executable):
+        raise AssertionError('normal benchmark output must differ from input and executable')
     input_sha256 = _file_sha256(input_path)
     binary_sha256 = _file_sha256(executable)
     if output_path.exists():
         raise AssertionError(f'normal benchmark output already exists: {output_path}')
+    command_arguments = (
+        pipeline,
+        '--input',
+        str(input_path),
+        '--output',
+        str(output_path),
+        '--benchmark',
+    )
+    started = time.perf_counter()
     try:
         completed = subprocess.run(  # noqa: S603 - fixed local executable and arguments.
-            [
-                str(executable),
-                pipeline,
-                '--input',
-                str(input_path),
-                '--output',
-                str(output_path),
-                '--benchmark',
-            ],
+            [str(executable), *command_arguments],
             check=False,
             capture_output=True,
             cwd=repo_root(),
             encoding='utf-8',
             errors='replace',
         )
-        if completed.returncode != 0:
-            raise AssertionError(
-                f'Rust normal benchmark failed\nSTDOUT:\n{completed.stdout}\nSTDERR:\n{completed.stderr}'
-            )
-        payload = _load_rust_summary_payload(completed.stdout)
-        if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
-            raise AssertionError('Rust normal benchmark reported an invalid status or pipeline')
-        if payload.get('output_written') is not True or payload.get('sheet_count') != 3:
-            raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
-        if Path(str(payload.get('workbook_path'))).resolve() != output_path:
-            raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
-        _parse_rust_stage_timings(payload, require_export=True)
-        _parse_rust_run_counts(payload)
-        summary = _oracle_summary_from_rust_payload(payload)
-        if sum(summary.issue_type_counts.values()) != summary.error_log_count:
-            raise AssertionError('Rust normal benchmark issue counts do not sum to error_log_count')
-        if not output_path.is_file():
-            raise AssertionError('Rust normal benchmark did not create its workbook')
-        if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:
-            raise AssertionError('normal benchmark input or executable changed during capture')
-        payload['input_sha256'] = input_sha256
-        payload['rust_binary_sha256'] = binary_sha256
-        payload['working_directory'] = str(repo_root())
-        payload['command_arguments'] = [
-            pipeline,
-            '--input',
-            str(input_path),
-            '--output',
-            str(output_path),
-            '--benchmark',
-        ]
-        evidence_path.parent.mkdir(parents=True, exist_ok=True)
-        evidence_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding='utf-8',
-        )
-    finally:
-        output_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raw_log = json.dumps(
+            {'exception': type(exc).__name__, 'errno': exc.errno, 'winerror': getattr(exc, 'winerror', None)},
+            separators=(',', ':'),
+        ).encode('utf-8')
+        log_sha256 = hashlib.sha256(raw_log).hexdigest()
+        _write_create_new(local_log_root / f'{log_sha256}.json', raw_log)
+        raise RustNormalProcessError(-1, log_sha256) from exc
+    wall_seconds = Decimal(str(time.perf_counter() - started))
+    raw_log = json.dumps(
+        {'returncode': completed.returncode, 'stdout': completed.stdout, 'stderr': completed.stderr},
+        ensure_ascii=False,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    log_sha256 = hashlib.sha256(raw_log).hexdigest()
+    _write_create_new(local_log_root / f'{log_sha256}.json', raw_log)
+    if completed.returncode != 0:
+        raise RustNormalProcessError(completed.returncode, log_sha256)
+
+    payload = _load_rust_summary_payload(completed.stdout)
+    if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
+        raise AssertionError('Rust normal benchmark reported an invalid status or pipeline')
+    if payload.get('output_written') is not True or payload.get('sheet_count') != 3:
+        raise AssertionError('Rust normal benchmark must write one three-sheet workbook')
+    if Path(str(payload.get('workbook_path'))).resolve() != output_path:
+        raise AssertionError('Rust normal benchmark reported an unexpected workbook path')
+    if not output_path.is_file():
+        raise AssertionError('Rust normal benchmark did not create its workbook')
+    payload['output_size_bytes'] = output_path.stat().st_size
+    runtime = parse_runtime_payload(payload, schema=schema)
+    if _file_sha256(input_path) != input_sha256 or _file_sha256(executable) != binary_sha256:
+        raise AssertionError('normal benchmark input or executable changed during capture')
+    return CapturedNormalRun(
+        normal_run=NormalRunEvidence(
+            external_wall_seconds=wall_seconds,
+            peak_working_set_bytes=None,
+            runtime=runtime,
+            workbook_oracle_sha256=_file_sha256(output_path),
+        ),
+        exit_code=0,
+        local_unversioned_log_sha256=log_sha256,
+    )
+
+
+def _require_local_raw_log_root(path: Path) -> None:
+    allowed = (repo_root() / 'rust' / 'target' / 'perf-local').resolve()
+    try:
+        path.relative_to(allowed)
+    except ValueError as exc:
+        raise AssertionError(f'raw logs must stay below {allowed}') from exc
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _write_create_new(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open('xb') as stream:
+            stream.write(payload)
+    except FileExistsError:
+        if path.read_bytes() != payload:
+            raise AssertionError(f'create-new artifact collision: {path}') from None
 
 
 def _load_rust_summary_payload(stdout: str) -> dict[str, Any]:
@@ -351,6 +392,99 @@ def _oracle_summary_from_rust_payload(payload: dict[str, Any]) -> OracleRunSumma
 
 def parse_rust_run_summary(stdout: str) -> OracleRunSummary:
     return _oracle_summary_from_rust_payload(_load_rust_summary_payload(stdout))
+
+
+def parse_runtime_payload(payload: dict[str, Any], *, schema: RuntimeSchema) -> RuntimeEvidence:
+    if payload.get('status') != 'succeeded':
+        raise AssertionError("Rust runtime must report status='succeeded'")
+    pipeline = payload.get('pipeline')
+    if pipeline not in ('gb', 'sk'):
+        raise AssertionError(f'invalid Rust runtime pipeline: {pipeline!r}')
+    output_written = payload.get('output_written')
+    if not isinstance(output_written, bool):
+        raise AssertionError('output_written must be boolean')
+    workbook_path = payload.get('workbook_path')
+    if not output_written and workbook_path is not None:
+        raise AssertionError('check-only runtime must not report workbook_path')
+    if output_written and not isinstance(workbook_path, str):
+        raise AssertionError('normal runtime must report workbook_path')
+
+    stages = _parse_runtime_stages(payload, schema=schema)
+    run_counts = _parse_rust_run_counts(payload)
+    output_size = payload.get('output_size_bytes')
+    if output_size is not None and (
+        isinstance(output_size, bool) or not isinstance(output_size, int) or output_size < 0
+    ):
+        raise AssertionError('output_size_bytes must be a non-negative integer or null')
+    if schema in (RuntimeSchema.INSTRUMENTED, RuntimeSchema.READER_INSTRUMENTED) and output_size is None:
+        raise AssertionError('output_size_bytes is required by instrumented runtime schema')
+
+    reader_snapshot = payload.get('reader_snapshot_sha256', '')
+    if not isinstance(reader_snapshot, str):
+        raise AssertionError('reader_snapshot_sha256 must be a string')
+    if schema is RuntimeSchema.READER_INSTRUMENTED:
+        if len(reader_snapshot) != 64 or any(char not in '0123456789abcdef' for char in reader_snapshot):
+            raise AssertionError('reader_snapshot_sha256 must be an exact lowercase SHA-256')
+        if 'reader_rows' not in run_counts:
+            raise AssertionError('reader_rows is required by reader-instrumented runtime schema')
+
+    summary = _oracle_summary_from_rust_payload(payload)
+    if summary.error_log_count < 0 or any(count < 0 for count in summary.issue_type_counts.values()):
+        raise AssertionError('runtime error counts must be non-negative')
+    if sum(summary.issue_type_counts.values()) != summary.error_log_count:
+        raise AssertionError('runtime issue counts must sum to error_log_count')
+    dimensions = payload.get('sheet_dimensions', [])
+    if not isinstance(dimensions, list) or not all(isinstance(value, str) for value in dimensions):
+        raise AssertionError('sheet_dimensions must be a list of strings')
+    sheet_count = _required_int(payload, 'sheet_count')
+    if sheet_count != 3:
+        raise AssertionError('runtime must report exactly three sheets')
+    request_id = payload.get('request_id')
+    return RuntimeEvidence(
+        pipeline=pipeline,
+        output_written=output_written,
+        request_id_present=isinstance(request_id, str) and bool(request_id),
+        sheet_count=sheet_count,
+        error_log_count=summary.error_log_count,
+        issue_type_counts=tuple(sorted(summary.issue_type_counts.items())),
+        quality_metrics=tuple(
+            (category, metric, value) for (category, metric), value in sorted(summary.quality_metrics.items())
+        ),
+        run_counts=tuple(sorted(run_counts.items())),
+        stage_timings=tuple(sorted(stages.items())),
+        output_size_bytes=output_size,
+        sheet_dimensions=tuple(dimensions),
+        reader_snapshot_sha256=reader_snapshot,
+    )
+
+
+def _parse_runtime_stages(payload: dict[str, Any], *, schema: RuntimeSchema) -> dict[str, Decimal]:
+    timing_payload = payload.get('stage_timings')
+    if not isinstance(timing_payload, dict) or not isinstance(timing_payload.get('stages'), dict):
+        raise AssertionError("Rust field 'stage_timings.stages' must be an object")
+    parsed: dict[str, Decimal] = {}
+    for name, raw_value in timing_payload['stages'].items():
+        if not isinstance(name, str) or isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise AssertionError(f'Rust stage {name!r} must be numeric')
+        try:
+            value = Decimal(str(raw_value))
+        except Exception as exc:
+            raise AssertionError(f'Rust stage {name!r} must be numeric') from exc
+        if not value.is_finite() or value < 0:
+            raise AssertionError(f'Rust stage {name!r} must be finite and non-negative')
+        parsed[name] = value
+
+    required = {*REQUIRED_RUST_PAYLOAD_STAGES, 'export'}
+    if schema in (RuntimeSchema.INSTRUMENTED, RuntimeSchema.READER_INSTRUMENTED):
+        required.update(('writer_populate', 'xlsx_save'))
+    missing = sorted(required - parsed.keys())
+    if missing:
+        raise AssertionError(f'Rust runtime stages missing: {missing!r}')
+    if schema is RuntimeSchema.BASE:
+        forbidden = {'writer_populate', 'xlsx_save'} & parsed.keys()
+        if forbidden:
+            raise AssertionError(f'base runtime schema forbids writer breakdown: {sorted(forbidden)!r}')
+    return parsed
 
 
 def parse_rust_check_only_run(stdout: str) -> TimedPayloadRun:

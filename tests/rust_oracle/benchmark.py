@@ -408,12 +408,39 @@ def assert_same_input_sha256(evidence_paths: tuple[Path, ...]) -> str:
     return hashes[0]
 
 
-def write_check_only_benchmark_result(
+def write_local_check_only_result(
     result: CheckOnlyBenchmarkResult,
     output_path: Path,
 ) -> None:
+    root = repo_root().resolve()
+    destination = output_path.resolve()
+    allowed_roots = ((root / 'rust' / 'target').resolve(), (root / 'data' / 'processed').resolve())
+    if not any(_is_path_below(destination, allowed) for allowed in allowed_roots):
+        raise AssertionError('local check-only results must stay below rust/target or data/processed')
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(dataclasses.asdict(result), ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
+    _reject_reparse_components(destination.parent, allowed_roots)
+    with destination.open('x', encoding='utf-8', newline='\n') as stream:
+        json.dump(dataclasses.asdict(result), stream, ensure_ascii=False, indent=2)
+
+
+def _is_path_below(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _reject_reparse_components(path: Path, allowed_roots: tuple[Path, Path]) -> None:
+    root = next(item for item in allowed_roots if _is_path_below(path, item))
+    current = root
+    for part in path.relative_to(root).parts:
+        current /= part
+        attributes = getattr(current.stat(), 'st_file_attributes', 0)
+        if attributes & 0x400:
+            raise AssertionError(f'local result path contains a reparse point: {current}')
+
+
+def write_check_only_benchmark_result(result: CheckOnlyBenchmarkResult, output_path: Path) -> None:
+    """Compatibility wrapper; raw check-only data remains local-only."""
+    write_local_check_only_result(result, output_path)

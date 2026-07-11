@@ -534,7 +534,7 @@ def test_assert_same_input_sha256_rejects_mixed_evidence(tmp_path: Path) -> None
         benchmark.assert_same_input_sha256((first, second, third))
 
 
-def test_check_only_result_writer_uses_utf8_json(tmp_path: Path) -> None:
+def test_check_only_result_writer_uses_utf8_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     five = (1.0,) * 5
     runtime_evidence = benchmark.RuntimeEvidence(
         run_counts={'reader_rows': 10},
@@ -566,9 +566,10 @@ def test_check_only_result_writer_uses_utf8_json(tmp_path: Path) -> None:
         validation_passed=True,
         verdict='VALIDATED',
     )
-    output_path = tmp_path / '性能证据.json'
+    monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
+    output_path = tmp_path / 'rust' / 'target' / '性能证据.json'
 
-    benchmark.write_check_only_benchmark_result(result, output_path)
+    benchmark.write_local_check_only_result(result, output_path)
 
     raw = output_path.read_bytes()
     assert not raw.startswith(b'\xef\xbb\xbf')
@@ -579,3 +580,12 @@ def test_check_only_result_writer_uses_utf8_json(tmp_path: Path) -> None:
         {'category': '行数勾稽', 'metric': '总表行数', 'value': '10'}
     ]
     assert payload['command_arguments'] == ['gb', '--input', 'D:/成本核算/输入.xlsx', '--check-only', '--benchmark']
+
+
+def test_local_check_only_writer_rejects_destination_outside_local_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
+    with pytest.raises(AssertionError, match='rust/target or data/processed'):
+        benchmark.write_local_check_only_result(object(), tmp_path / 'docs' / 'evidence.json')  # type: ignore[arg-type]

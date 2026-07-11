@@ -7,7 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import tomllib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -21,6 +23,8 @@ CRATES_IO_CHECKSUM = 'dd1746025420e17b5d62528b930e550e016e857038794d74e169018126
 FORK_URL = 'https://github.com/Aspirin86942/rust_xlsxwriter.git'
 FORK_BRANCH = 'costing-fallible-temp-io-v0.96.0'
 CRATE_VERSION = '0.96.0'
+DEPENDENCY_MANIFEST_RELATIVE_PATH = Path('docs/performance/dependencies/2026-07-11-rust-xlsxwriter-0.96.0.json')
+LOCAL_LOG_ROOT_RELATIVE_PATH = Path('rust/target/perf/local-logs')
 
 MANDATORY_DIFF_FILES = (
     'src/packager.rs',
@@ -61,6 +65,22 @@ _EXPECTED_KEYS = (
 )
 
 
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f'duplicate JSON key: {key}')
+        result[key] = value
+    return result
+
+
+def _strict_json_loads(raw: str) -> object:
+    try:
+        return json.loads(raw, object_pairs_hook=_strict_json_object)
+    except json.JSONDecodeError as exc:
+        raise ValueError('invalid JSON evidence') from exc
+
+
 @dataclass(frozen=True)
 class DependencyEvidence:
     upstream_url: Literal['https://github.com/jmcnamara/rust_xlsxwriter.git']
@@ -84,18 +104,12 @@ class EvidenceSanitizer:
     def write_dependency_manifest(output: Path, value: DependencyEvidence) -> None:
         payload = EvidenceSanitizer.dependency_payload(value)
         output.parent.mkdir(parents=True, exist_ok=True)
-        # 先完成闭合校验，再以 x 模式创建，既拒绝覆盖，也避免校验失败留下半成品。
-        created = False
+        temp_path, temp_identity = _write_manifest_temp(output, payload)
         try:
-            with output.open('x', encoding='utf-8', newline='\n') as stream:
-                created = True
-                json.dump(payload, stream, ensure_ascii=False, indent=2)
-                stream.write('\n')
-        except Exception:
-            # 只有成功取得 create-new 所有权的调用才可清理，loser 绝不能删除 winner 文件。
-            if created:
-                output.unlink(missing_ok=True)
-            raise
+            # 同目录 hard link 是同卷、不会覆盖目标的原子发布；loser 只能清理自己的 unique temp。
+            os.link(temp_path, output)
+        finally:
+            _unlink_owned_path(temp_path, temp_identity)
 
     @staticmethod
     def dependency_payload(value: DependencyEvidence) -> dict[str, object]:
@@ -120,7 +134,7 @@ class EvidenceSanitizer:
 
     @staticmethod
     def read_dependency_manifest(path: Path) -> DependencyEvidence:
-        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload = _strict_json_loads(path.read_text(encoding='utf-8'))
         if not isinstance(payload, dict) or tuple(payload) != _EXPECTED_KEYS:
             raise ValueError('dependency manifest must use the exact closed schema')
         allowed_diff_files = payload['allowed_diff_files']
@@ -176,9 +190,26 @@ class EvidenceSanitizer:
 
     @staticmethod
     def verify_empty_pr_query(raw_json: str) -> None:
-        payload = json.loads(raw_json)
+        payload = _strict_json_loads(raw_json)
         if not isinstance(payload, list) or payload:
             raise ValueError('an upstream PR exists or the upstream PR query was not an empty list')
+
+    @staticmethod
+    def verify_fork_diff_statuses(raw: str) -> tuple[str, ...]:
+        paths: list[str] = []
+        for row in raw.splitlines():
+            fields = row.split('\t')
+            status = fields[0] if fields else ''
+            if status != 'M':
+                raise ValueError('every approved fork diff path must have modified status M')
+            if len(fields) != 2 or not fields[1]:
+                raise ValueError('fork diff name-status row must contain exactly one path')
+            paths.append(fields[1])
+        result = tuple(paths)
+        expected = (*MANDATORY_DIFF_FILES, XMLWRITER_PATH) if XMLWRITER_PATH in result else MANDATORY_DIFF_FILES
+        if result != expected:
+            raise ValueError(f'fork diff does not match the closed allowlist: {result!r}')
+        return result
 
     @staticmethod
     def _verify_revision_contents(
@@ -291,11 +322,11 @@ def _revision_from_cargo_manifest(raw: str) -> str:
 
 
 def _revision_from_cargo_metadata(raw: str) -> str:
-    payload = json.loads(raw)
+    payload = _strict_json_loads(raw)
     packages = payload.get('packages') if isinstance(payload, dict) else None
     matches = [item for item in packages or () if isinstance(item, dict) and item.get('name') == 'rust_xlsxwriter']
-    if len(matches) != 1:
-        raise ValueError('Cargo metadata must contain exactly one rust_xlsxwriter package')
+    if len(matches) != 1 or matches[0].get('version') != CRATE_VERSION:
+        raise ValueError('Cargo metadata must contain exactly one rust_xlsxwriter 0.96.0 package')
     return _revision_from_git_source(matches[0].get('source'), 'Cargo metadata')
 
 
@@ -322,7 +353,7 @@ def _revision_from_git_source(source: object, name: str) -> str:
 
 
 def _revision_from_dependency_manifest(raw: str) -> str:
-    payload = json.loads(raw)
+    payload = _strict_json_loads(raw)
     if not isinstance(payload, dict):
         raise ValueError('dependency manifest must be a JSON object')
     return _require_hash(payload.get('fork_revision'), 40, 'dependency manifest revision')
@@ -349,11 +380,159 @@ def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
+_FileIdentity = tuple[int, int]
+
+
+def _file_identity(path: Path) -> _FileIdentity:
+    stat_result = path.stat(follow_symlinks=False)
+    return stat_result.st_dev, stat_result.st_ino
+
+
+def _identity_from_fd(file_descriptor: int) -> _FileIdentity:
+    stat_result = os.fstat(file_descriptor)
+    return stat_result.st_dev, stat_result.st_ino
+
+
+def _unlink_owned_path(path: Path, identity: _FileIdentity) -> None:
+    try:
+        current_identity = _file_identity(path)
+    except FileNotFoundError:
+        return
+    if current_identity == identity:
+        path.unlink()
+
+
+def _write_manifest_temp(output: Path, payload: dict[str, object]) -> tuple[Path, _FileIdentity]:
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix=f'.{output.name}.',
+        suffix='.tmp',
+        dir=output.parent,
+    )
+    temp_path = Path(raw_path)
+    identity = _identity_from_fd(file_descriptor)
+    descriptor_owned = True
+    try:
+        stream = os.fdopen(file_descriptor, 'w', encoding='utf-8', newline='\n')
+        descriptor_owned = False
+        with stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        if descriptor_owned:
+            os.close(file_descriptor)
+        _unlink_owned_path(temp_path, identity)
+        raise
+    return temp_path, identity
+
+
+def _write_owned_log(path: Path, raw_log: str) -> _FileIdentity:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0)
+    file_descriptor = os.open(path, flags, 0o600)
+    identity = _identity_from_fd(file_descriptor)
+    descriptor_owned = True
+    try:
+        stream = os.fdopen(file_descriptor, 'w', encoding='utf-8', newline='\n')
+        descriptor_owned = False
+        with stream:
+            stream.write(raw_log)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        if descriptor_owned:
+            os.close(file_descriptor)
+        _unlink_owned_path(path, identity)
+        raise
+    return identity
+
+
 @dataclass(frozen=True)
 class _CommandResult:
     command: tuple[str, ...]
     stdout: str
     stderr: str
+
+
+def _reject_parent_traversal(path: Path, name: str) -> None:
+    if '..' in path.parts:
+        raise ValueError(f'{name} path must not contain parent traversal')
+
+
+def _resolve_exact_repo_path(path: Path, expected: Path, name: str, *, require_file: bool = False) -> Path:
+    _reject_parent_traversal(path, name)
+    resolved = path.resolve(strict=False)
+    if resolved != expected:
+        raise ValueError(f'{name} path must equal the approved repository path')
+    if require_file and not resolved.is_file():
+        raise ValueError(f'{name} path must be an existing file')
+    return resolved
+
+
+def _resolve_fork_checkout(path: Path) -> Path:
+    _reject_parent_traversal(path, 'fork checkout')
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError('fork checkout path must be an existing directory') from exc
+    if not resolved.is_dir():
+        raise ValueError('fork checkout path must be an existing directory')
+    return resolved
+
+
+def _validate_generation_paths(
+    *,
+    fork_checkout: Path,
+    cargo_manifest: Path,
+    cargo_lock: Path,
+    local_log_root: Path,
+    output: Path,
+) -> tuple[Path, Path, Path, Path, Path, Path]:
+    root = repo_root().resolve(strict=True)
+    fork = _resolve_fork_checkout(fork_checkout)
+    manifest = _resolve_exact_repo_path(
+        cargo_manifest,
+        root / 'rust' / 'Cargo.toml',
+        'cargo manifest',
+        require_file=True,
+    )
+    lock = _resolve_exact_repo_path(cargo_lock, root / 'rust' / 'Cargo.lock', 'cargo lock', require_file=True)
+    log_root = _resolve_exact_repo_path(
+        local_log_root,
+        root / LOCAL_LOG_ROOT_RELATIVE_PATH,
+        'local log root',
+    )
+    output_path = _resolve_exact_repo_path(
+        output,
+        root / DEPENDENCY_MANIFEST_RELATIVE_PATH,
+        'dependency output',
+    )
+    return root, fork, manifest, lock, log_root, output_path
+
+
+def _validate_verification_paths(
+    *,
+    fork_checkout: Path,
+    cargo_manifest: Path,
+    cargo_lock: Path,
+    dependency_manifest: Path,
+) -> tuple[Path, Path, Path, Path]:
+    root = repo_root().resolve(strict=True)
+    fork = _resolve_fork_checkout(fork_checkout)
+    manifest = _resolve_exact_repo_path(
+        cargo_manifest,
+        root / 'rust' / 'Cargo.toml',
+        'cargo manifest',
+        require_file=True,
+    )
+    lock = _resolve_exact_repo_path(cargo_lock, root / 'rust' / 'Cargo.lock', 'cargo lock', require_file=True)
+    dependency = _resolve_exact_repo_path(
+        dependency_manifest,
+        root / DEPENDENCY_MANIFEST_RELATIVE_PATH,
+        'dependency manifest',
+        require_file=True,
+    )
+    return fork, manifest, lock, dependency
 
 
 def _run_command(executable: str, *args: str) -> _CommandResult:
@@ -397,7 +576,8 @@ def _collect_live_evidence(
             '-C',
             str(fork),
             'diff',
-            '--name-only',
+            '--name-status',
+            '--no-renames',
             revision_range,
             '--',
         ),
@@ -456,11 +636,8 @@ def _collect_live_evidence(
         raise ValueError('fork checkout is not on the approved fixed branch')
     EvidenceSanitizer.verify_empty_pr_query(pr_result.stdout)
 
-    diff_files = tuple(line for line in diff_names_result.stdout.splitlines() if line)
+    diff_files = EvidenceSanitizer.verify_fork_diff_statuses(diff_names_result.stdout)
     fallback_used = XMLWRITER_PATH in diff_files
-    expected_files = (*MANDATORY_DIFF_FILES, XMLWRITER_PATH) if fallback_used else MANDATORY_DIFF_FILES
-    if diff_files != expected_files:
-        raise ValueError(f'fork diff does not match the closed allowlist: {diff_files!r}')
 
     cargo_home = Path(os.environ.get('CARGO_HOME', Path.home() / '.cargo')).resolve()
     archive_root = cargo_home / 'registry' / 'cache'
@@ -535,30 +712,50 @@ def generate_dependency_manifest(
     local_log_root: Path,
     output: Path,
 ) -> None:
-    if output.exists():
-        raise FileExistsError(output)
-    live, commands, archives = _collect_live_evidence(
+    root, fork, manifest, lock, log_root, output_path = _validate_generation_paths(
         fork_checkout=fork_checkout,
         cargo_manifest=cargo_manifest,
         cargo_lock=cargo_lock,
+        local_log_root=local_log_root,
+        output=output,
+    )
+    if output_path.exists():
+        raise FileExistsError(output_path)
+    log_path = log_root / f'rust-xlsxwriter-0.96.0-{uuid.uuid4().hex}.log'
+    log_relative_path = log_path.relative_to(root).as_posix()
+    ignore_result = _run_command(
+        'git',
+        '-C',
+        str(root),
+        'check-ignore',
+        '--quiet',
+        '--',
+        log_relative_path,
+    )
+    live, commands, archives = _collect_live_evidence(
+        fork_checkout=fork,
+        cargo_manifest=manifest,
+        cargo_lock=lock,
         pre_pin_commit=pre_pin_commit,
     )
-    raw_log = _raw_log_text(commands, archives)
-    local_log_root.mkdir(parents=True, exist_ok=True)
-    log_path = local_log_root / 'rust-xlsxwriter-0.96.0-dependency-provenance.log'
-    with log_path.open('x', encoding='utf-8', newline='\n') as stream:
-        stream.write(raw_log)
-    log_sha = _sha256_file(log_path)
-    value = _build_dependency_evidence(live=live, pre_pin_commit=pre_pin_commit, local_log_sha256=log_sha)
-    payload_text = json.dumps(EvidenceSanitizer.dependency_payload(value))
-    EvidenceSanitizer._verify_revision_contents(
-        fork_head=live['fork_head'],
-        cargo_manifest_text=live['cargo_manifest_text'],
-        cargo_metadata_text=live['cargo_metadata_text'],
-        cargo_lock_text=live['cargo_lock_text'],
-        dependency_manifest_text=payload_text,
-    )
-    EvidenceSanitizer.write_dependency_manifest(output, value)
+    raw_log = _raw_log_text((ignore_result, *commands), archives)
+    log_root.mkdir(parents=True, exist_ok=True)
+    log_identity = _write_owned_log(log_path, raw_log)
+    try:
+        log_sha = _sha256_file(log_path)
+        value = _build_dependency_evidence(live=live, pre_pin_commit=pre_pin_commit, local_log_sha256=log_sha)
+        payload_text = json.dumps(EvidenceSanitizer.dependency_payload(value))
+        EvidenceSanitizer._verify_revision_contents(
+            fork_head=live['fork_head'],
+            cargo_manifest_text=live['cargo_manifest_text'],
+            cargo_metadata_text=live['cargo_metadata_text'],
+            cargo_lock_text=live['cargo_lock_text'],
+            dependency_manifest_text=payload_text,
+        )
+        EvidenceSanitizer.write_dependency_manifest(output_path, value)
+    except BaseException:
+        _unlink_owned_path(log_path, log_identity)
+        raise
 
 
 def verify_dependency_manifest(
@@ -569,11 +766,17 @@ def verify_dependency_manifest(
     pre_pin_commit: str,
     dependency_manifest: Path,
 ) -> None:
-    value = EvidenceSanitizer.read_dependency_manifest(dependency_manifest)
-    live, _commands, _archives = _collect_live_evidence(
+    fork, manifest, lock, dependency = _validate_verification_paths(
         fork_checkout=fork_checkout,
         cargo_manifest=cargo_manifest,
         cargo_lock=cargo_lock,
+        dependency_manifest=dependency_manifest,
+    )
+    value = EvidenceSanitizer.read_dependency_manifest(dependency)
+    live, _commands, _archives = _collect_live_evidence(
+        fork_checkout=fork,
+        cargo_manifest=manifest,
+        cargo_lock=lock,
         pre_pin_commit=pre_pin_commit,
     )
     EvidenceSanitizer._verify_revision_contents(
@@ -581,7 +784,7 @@ def verify_dependency_manifest(
         cargo_manifest_text=live['cargo_manifest_text'],
         cargo_metadata_text=live['cargo_metadata_text'],
         cargo_lock_text=live['cargo_lock_text'],
-        dependency_manifest_text=dependency_manifest.read_text(encoding='utf-8'),
+        dependency_manifest_text=dependency.read_text(encoding='utf-8'),
     )
     if value.pre_pin_costing_commit != pre_pin_commit:
         raise ValueError('dependency manifest pre-pin commit mismatch')

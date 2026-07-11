@@ -1222,11 +1222,8 @@ class EvidenceSanitizer:
     def scan_staged(self, *, root: Path | None = None, sensitive_names: tuple[str, ...] = ()) -> None:
         repository_root = repo_root().resolve(strict=True)
         selected_root = None if root is None else _resolve_repository_scan_root(root, repository_root=repository_root)
-        entries = _staged_index_entries(repository_root)
-        if selected_root is not None:
-            entries = tuple(
-                entry for entry in entries if _casefold_relative_to(repository_root / entry.path, selected_root)
-            )
+        selected_scope = None if selected_root is None else Path(os.path.relpath(selected_root, repository_root))
+        entries = _staged_index_entries(repository_root, scope=selected_scope)
         for entry in entries:
             _scan_versioned_bytes(entry.content, suffix=entry.path.suffix, sensitive_names=sensitive_names)
             _scan_versioned_text(entry.path.name, sensitive_names=sensitive_names)
@@ -1801,7 +1798,13 @@ def _run_git_bytes(root: Path, *args: str) -> bytes:
     return completed.stdout
 
 
-def _staged_index_entries(root: Path) -> tuple[_StagedIndexEntry, ...]:
+def _staged_path_is_within(path: Path, root: Path) -> bool:
+    path_parts = tuple(os.path.normcase(part) for part in path.parts)
+    root_parts = tuple(os.path.normcase(part) for part in root.parts)
+    return path_parts[: len(root_parts)] == root_parts
+
+
+def _staged_index_entries(root: Path, *, scope: Path | None = None) -> tuple[_StagedIndexEntry, ...]:
     raw_paths = _run_git_bytes(
         root,
         'diff',
@@ -1825,6 +1828,8 @@ def _staged_index_entries(root: Path) -> tuple[_StagedIndexEntry, ...]:
         if '..' in relative.parts:
             raise ValueError('staged evidence path contains parent traversal')
         if len(relative.parts) < 2 or relative.parts[:2] != ('docs', 'performance'):
+            continue
+        if scope is not None and not _staged_path_is_within(relative, scope):
             continue
         if relative in seen:
             raise ValueError('staged evidence path is duplicated')

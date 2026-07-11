@@ -1276,6 +1276,14 @@ def _init_git_repo(path: Path) -> None:
     _git(path, 'commit', '--quiet', '-m', 'init')
 
 
+def _stage_symlink_mode(repo: Path, relative: Path) -> None:
+    path = repo / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('synthetic-link-target\n', encoding='utf-8')
+    blob_sha = _git(repo, 'hash-object', '-w', '--', relative.as_posix()).stdout.decode('ascii').strip()
+    _git(repo, 'update-index', '--add', '--cacheinfo', f'120000,{blob_sha},{relative.as_posix()}')
+
+
 def test_scan_staged_reads_sensitive_index_blob_not_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     root = tmp_path / 'repo'
     _init_git_repo(root)
@@ -1324,6 +1332,105 @@ def test_scan_staged_reads_phase0a_sensitive_content_from_index_blob(
         EvidenceSanitizer.closed_policy().scan_staged()
 
 
+def test_scan_staged_scope_does_not_resolve_index_path_through_worktree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    relative = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a.json')
+    path = root / relative
+    path.parent.mkdir(parents=True)
+    path.write_text('{"value":"actual=unknown-canary"}\n', encoding='utf-8')
+    _git(root, 'add', '--', relative.as_posix())
+    path.write_text('{"value":"safe"}\n', encoding='utf-8')
+    escaped = tmp_path / 'outside' / path.name
+    staged_path_key = str(path.absolute()).casefold()
+    real_resolve = Path.resolve
+
+    def resolve_with_worktree_escape(candidate: Path, strict: bool = False) -> Path:
+        if str(candidate.absolute()).casefold() == staged_path_key:
+            return escaped
+        return real_resolve(candidate, strict=strict)
+
+    monkeypatch.setattr(Path, 'resolve', resolve_with_worktree_escape)
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_staged(root=root / 'docs' / 'performance' / 'baselines')
+
+
+def test_scan_staged_scope_ignores_deleted_evidence_outside_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    outside_scope = root / evidence.DEPENDENCY_MANIFEST_RELATIVE_PATH
+    outside_scope.parent.mkdir(parents=True)
+    outside_scope.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', outside_scope.relative_to(root).as_posix())
+    _git(root, 'commit', '--quiet', '-m', 'committed outside-scope evidence')
+    baseline = root / evidence.PHASE0A_BASELINE_RELATIVE_PATH
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', baseline.relative_to(root).as_posix())
+    outside_scope.unlink()
+    _git(root, 'add', '-u', '--', outside_scope.relative_to(root).as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    EvidenceSanitizer.closed_policy().scan_staged(root=baseline.parent)
+
+
+def test_scan_staged_scope_rejects_deleted_evidence_inside_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    baseline = root / evidence.PHASE0A_BASELINE_RELATIVE_PATH
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', baseline.relative_to(root).as_posix())
+    _git(root, 'commit', '--quiet', '-m', 'committed in-scope evidence')
+    baseline.unlink()
+    _git(root, 'add', '-u', '--', baseline.relative_to(root).as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='deletion'):
+        EvidenceSanitizer.closed_policy().scan_staged(root=baseline.parent)
+
+
+def test_scan_staged_scope_ignores_invalid_mode_outside_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    baseline = root / evidence.PHASE0A_BASELINE_RELATIVE_PATH
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text('{}\n', encoding='utf-8')
+    _git(root, 'add', '--', baseline.relative_to(root).as_posix())
+    _stage_symlink_mode(root, evidence.DEPENDENCY_MANIFEST_RELATIVE_PATH)
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    EvidenceSanitizer.closed_policy().scan_staged(root=baseline.parent)
+
+
+def test_scan_staged_scope_rejects_invalid_mode_inside_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / 'repo'
+    _init_git_repo(root)
+    baseline = root / evidence.PHASE0A_BASELINE_RELATIVE_PATH
+    _stage_symlink_mode(root, evidence.PHASE0A_BASELINE_RELATIVE_PATH)
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='mode|symlink|type-change'):
+        EvidenceSanitizer.closed_policy().scan_staged(root=baseline.parent)
+
+
 def test_scan_staged_rejects_similarly_named_phase0a_orphan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1355,6 +1462,24 @@ def test_scan_cli_staged_scopes_entries_to_requested_root(
     outside_scope.parent.mkdir(parents=True)
     outside_scope.write_text('{"value":"actual=outside-scope"}\n', encoding='utf-8')
     _git(root, 'add', '--', 'docs/performance')
+    calls: list[str] = []
+    real_scan_staged = EvidenceSanitizer.scan_staged
+
+    def record_scan_staged(
+        policy: EvidenceSanitizer,
+        *,
+        root: Path | None = None,
+        sensitive_names: tuple[str, ...] = (),
+    ) -> None:
+        calls.append('staged')
+        real_scan_staged(policy, root=root, sensitive_names=sensitive_names)
+
+    monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', record_scan_staged)
+    monkeypatch.setattr(
+        EvidenceSanitizer,
+        'scan_tree',
+        lambda *_args, **_kwargs: pytest.fail('scan --staged dispatched to scan_tree'),
+    )
     monkeypatch.setattr(evidence, 'repo_root', lambda: root)
     monkeypatch.chdir(root)
     monkeypatch.setattr(
@@ -1364,6 +1489,8 @@ def test_scan_cli_staged_scopes_entries_to_requested_root(
     )
 
     evidence.main()
+
+    assert calls == ['staged']
 
 
 def test_scan_cli_scans_only_requested_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1375,11 +1502,31 @@ def test_scan_cli_scans_only_requested_tree(monkeypatch: pytest.MonkeyPatch, tmp
     sibling = root / 'docs' / 'performance' / 'outside'
     sibling.mkdir()
     (sibling / 'sensitive.json').write_text('{"value":"actual=outside-scope"}\n', encoding='utf-8')
+    calls: list[str] = []
+    real_scan_tree = EvidenceSanitizer.scan_tree
+
+    def record_scan_tree(
+        policy: EvidenceSanitizer,
+        root: Path,
+        *,
+        sensitive_names: tuple[str, ...] = (),
+    ) -> None:
+        calls.append('tree')
+        real_scan_tree(policy, root, sensitive_names=sensitive_names)
+
+    monkeypatch.setattr(EvidenceSanitizer, 'scan_tree', record_scan_tree)
+    monkeypatch.setattr(
+        EvidenceSanitizer,
+        'scan_staged',
+        lambda *_args, **_kwargs: pytest.fail('scan without --staged dispatched to scan_staged'),
+    )
     monkeypatch.setattr(evidence, 'repo_root', lambda: root)
     monkeypatch.chdir(root)
     monkeypatch.setattr(sys, 'argv', ['evidence', 'scan', '--root', 'docs/performance/selected'])
 
     evidence.main()
+
+    assert calls == ['tree']
 
 
 @pytest.mark.parametrize('staged', (False, True))

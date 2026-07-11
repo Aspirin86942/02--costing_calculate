@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,7 @@ OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relations
 PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 CONTENT_TYPE_NS = 'http://schemas.openxmlformats.org/package/2006/content-types'
 SHARED_STRINGS_REL_TYPE = f'{OFFICE_REL_NS}/sharedStrings'
+WORKSHEET_REL_TYPE = f'{OFFICE_REL_NS}/worksheet'
 SHARED_STRINGS_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml'
 
 GROUP_KEYS = {
@@ -132,7 +134,7 @@ class XmlCell:
 @dataclass(frozen=True)
 class _SheetPackage:
     name: str
-    path: str
+    path: str | None
     dimension: str | None
     freeze_panes: str | None
     auto_filter: str | None
@@ -148,13 +150,15 @@ class _Package:
         self.archive = ZipFile(path)
         self.style_catalog = _read_style_catalog(self.archive)
         self.package_mismatches: list[WorkbookMismatch] = []
-        self.shared_strings_relationship_present = False
-        self.shared_strings_part_present = 'xl/sharedStrings.xml' in self.archive.namelist()
+        self.zip_member_counts = Counter(self.archive.namelist())
+        relationships_root = _xml_root(self.archive, 'xl/_rels/workbook.xml.rels')
+        self.relationships = tuple(relationships_root.findall(f'{{{PACKAGE_REL_NS}}}Relationship'))
         content_types = _xml_root(self.archive, '[Content_Types].xml')
+        self.content_type_overrides = tuple(content_types.findall(f'{{{CONTENT_TYPE_NS}}}Override'))
+        self.shared_strings_relationship_present = False
+        self.shared_strings_part_present = self.zip_member_counts['xl/sharedStrings.xml'] > 0
         self.shared_strings_content_type_present = any(
-            node.attrib.get('PartName') == '/xl/sharedStrings.xml'
-            and node.attrib.get('ContentType') == SHARED_STRINGS_CONTENT_TYPE
-            for node in content_types.findall(f'{{{CONTENT_TYPE_NS}}}Override')
+            node.attrib.get('PartName') == '/xl/sharedStrings.xml' for node in self.content_type_overrides
         )
         self.shared_strings = self._read_shared_strings()
         self.sheets = self._read_sheets()
@@ -163,12 +167,11 @@ class _Package:
         self.archive.close()
 
     def _read_shared_strings(self) -> tuple[str, ...]:
-        rels = _xml_root(self.archive, 'xl/_rels/workbook.xml.rels')
         relationships = [
             relationship
-            for relationship in rels.findall(f'{{{PACKAGE_REL_NS}}}Relationship')
+            for relationship in self.relationships
             if relationship.attrib.get('Type') == SHARED_STRINGS_REL_TYPE
-            or relationship.attrib.get('Target', '').endswith('sharedStrings.xml')
+            or PurePosixPath(relationship.attrib.get('Target', '')).name == 'sharedStrings.xml'
         ]
         if not relationships:
             if self.shared_strings_part_present or self.shared_strings_content_type_present:
@@ -178,15 +181,37 @@ class _Package:
         if len(relationships) != 1:
             self._package_mismatch('shared_strings_relationship_count_mismatch')
         relationship = relationships[0]
+        relationship_id = relationship.attrib.get('Id')
+        if relationship_id is None or sum(item.attrib.get('Id') == relationship_id for item in self.relationships) != 1:
+            self._package_mismatch('shared_strings_relationship_id_not_unique')
         if relationship.attrib.get('Type') != SHARED_STRINGS_REL_TYPE:
             self._package_mismatch('shared_strings_relationship_type_mismatch')
-        if relationship.attrib.get('Target') != 'sharedStrings.xml':
+        if relationship.attrib.get('TargetMode', '').lower() == 'external':
+            self._package_mismatch('shared_strings_relationship_external')
+            return ()
+        normalized_target = _normalize_relationship_target(relationship.attrib.get('Target'))
+        if normalized_target is None:
+            self._package_mismatch('shared_strings_relationship_target_unsafe')
+            return ()
+        if normalized_target != 'xl/sharedStrings.xml':
             self._package_mismatch('shared_strings_relationship_target_mismatch')
 
-        if not self.shared_strings_content_type_present:
+        overrides = [
+            node for node in self.content_type_overrides if node.attrib.get('PartName') == '/xl/sharedStrings.xml'
+        ]
+        if not overrides:
             self._package_mismatch('shared_strings_content_type_missing')
-        if not self.shared_strings_part_present:
+        elif len(overrides) != 1:
+            self._package_mismatch('shared_strings_content_type_not_unique')
+        elif overrides[0].attrib.get('ContentType') != SHARED_STRINGS_CONTENT_TYPE:
+            self._package_mismatch('shared_strings_content_type_mismatch')
+
+        part_count = self.zip_member_counts['xl/sharedStrings.xml']
+        if part_count == 0:
             self._package_mismatch('shared_strings_part_missing')
+            return ()
+        if part_count != 1:
+            self._package_mismatch('shared_strings_part_not_unique')
             return ()
 
         root = _xml_root(self.archive, 'xl/sharedStrings.xml')
@@ -194,39 +219,50 @@ class _Package:
 
     def _read_sheets(self) -> tuple[_SheetPackage, ...]:
         workbook = _xml_root(self.archive, 'xl/workbook.xml')
-        rels = _xml_root(self.archive, 'xl/_rels/workbook.xml.rels')
-        rel_targets = {relationship.attrib['Id']: relationship.attrib['Target'] for relationship in rels}
+        sheet_nodes = tuple(workbook.findall(f'.//{{{MAIN_NS}}}sheet'))
+        sheet_relationship_ids = [node.attrib.get(f'{{{OFFICE_REL_NS}}}id') for node in sheet_nodes]
+        duplicate_sheet_ids = {
+            relationship_id
+            for relationship_id, count in Counter(sheet_relationship_ids).items()
+            if relationship_id is not None and count != 1
+        }
+        if duplicate_sheet_ids:
+            self._package_mismatch('worksheet_sheet_relationship_id_not_unique')
         sheets: list[_SheetPackage] = []
-        for node in workbook.findall(f'.//{{{MAIN_NS}}}sheet'):
+        for node in sheet_nodes:
             name = node.attrib['name']
-            target = rel_targets[node.attrib[f'{{{OFFICE_REL_NS}}}id']]
-            path = _resolve_workbook_target(target)
-            worksheet = _xml_root(self.archive, path)
-            pane = worksheet.find(f'.//{{{MAIN_NS}}}pane')
-            auto_filter = worksheet.find(f'{{{MAIN_NS}}}autoFilter')
-            dimension = worksheet.find(f'{{{MAIN_NS}}}dimension')
-            column_styles = _column_styles(worksheet)
-            sheets.append(
-                _SheetPackage(
-                    name=name,
-                    path=path,
-                    dimension=None if dimension is None else dimension.attrib.get('ref'),
-                    freeze_panes=None if pane is None else pane.attrib.get('topLeftCell'),
-                    auto_filter=None if auto_filter is None else auto_filter.attrib.get('ref'),
-                    column_widths=tuple(sorted(_column_widths(worksheet).items())),
-                    column_styles=tuple(sorted(column_styles.items())),
-                    column_style_signatures=tuple(
-                        sorted((column, self.style_catalog[style_id]) for column, style_id in column_styles.items())
-                    ),
-                    number_formats=tuple(sorted(_number_formats(worksheet, self.style_catalog, column_styles).items())),
-                    conditional_format_ranges=tuple(
-                        sorted(
-                            item.attrib.get('sqref', '')
-                            for item in worksheet.findall(f'{{{MAIN_NS}}}conditionalFormatting')
-                        )
-                    ),
-                )
-            )
+            relationship_id = node.attrib.get(f'{{{OFFICE_REL_NS}}}id')
+            matches = [item for item in self.relationships if item.attrib.get('Id') == relationship_id]
+            if not matches:
+                self._package_mismatch('worksheet_relationship_missing')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            if len(matches) != 1:
+                self._package_mismatch('worksheet_relationship_id_not_unique')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            relationship = matches[0]
+            if relationship.attrib.get('Type') != WORKSHEET_REL_TYPE:
+                self._package_mismatch('worksheet_relationship_type_mismatch')
+            if relationship.attrib.get('TargetMode', '').lower() == 'external':
+                self._package_mismatch('worksheet_relationship_external')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            path = _normalize_relationship_target(relationship.attrib.get('Target'))
+            if path is None or not path.startswith('xl/worksheets/'):
+                self._package_mismatch('worksheet_relationship_target_unsafe')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            part_count = self.zip_member_counts[path]
+            if part_count == 0:
+                self._package_mismatch('worksheet_part_missing')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            if part_count != 1:
+                self._package_mismatch('worksheet_part_not_unique')
+                sheets.append(_empty_sheet_package(name))
+                continue
+            sheets.append(_read_sheet_package(self.archive, name, path, self.style_catalog))
         return tuple(sheets)
 
     def _package_mismatch(self, kind: str) -> None:
@@ -374,6 +410,8 @@ def _iter_xml_cells(
     sheet: _SheetPackage,
     mismatches: list[WorkbookMismatch],
 ) -> Iterator[XmlCell]:
+    if sheet.path is None:
+        return
     column_styles = dict(sheet.column_styles)
     with package.archive.open(sheet.path) as stream:
         for _, node in ET.iterparse(stream, events=('end',)):  # noqa: S314 - controlled local xlsx artifact.
@@ -521,6 +559,7 @@ def _stream_totals(
 ) -> tuple[dict[str, Decimal], dict[tuple[str, ...], tuple[Decimal, ...]]]:
     totals = {header: Decimal(0) for header in policy}
     grouped: dict[tuple[str, ...], list[Decimal]] = {}
+    duplicate_group_keys: set[tuple[str, ...]] = set()
     current_row_number: int | None = None
     current_row: dict[int, XmlCell] = {}
 
@@ -528,8 +567,25 @@ def _stream_totals(
         if current_row_number is None:
             return
         row = current_row
-        key_values = tuple(_text_value(row.get(headers[key])) or '' for key in keys)
-        group_totals = grouped.setdefault(key_values, [Decimal(0) for _ in policy]) if keys else None
+        key_values = tuple(_text_value(row.get(headers[key])) for key in keys)
+        if keys and any(value is None or not value.strip() for value in key_values):
+            _append(mismatches, WorkbookMismatch(sheet.name, None, 'blank_group_key'))
+            return
+        complete_key = cast(tuple[str, ...], key_values)
+        if keys and complete_key in duplicate_group_keys:
+            _append(mismatches, WorkbookMismatch(sheet.name, None, 'duplicate_group_key'))
+            return
+        if keys and complete_key in grouped:
+            previous_totals = grouped.pop(complete_key)
+            for index, header in enumerate(policy):
+                totals[header] -= previous_totals[index]
+            duplicate_group_keys.add(complete_key)
+            _append(mismatches, WorkbookMismatch(sheet.name, None, 'duplicate_group_key'))
+            return
+        group_totals: list[Decimal] | None = None
+        if keys:
+            group_totals = [Decimal(0) for _ in policy]
+            grouped[complete_key] = group_totals
         for index, header in enumerate(policy):
             value = _numeric_value(row.get(headers[header]))
             if value is None:
@@ -635,54 +691,98 @@ def _color_signature(color: ET.Element | None) -> tuple[tuple[str, str], ...]:
     return tuple(sorted(values.items()))
 
 
-def _column_widths(worksheet: ET.Element) -> dict[int, Decimal]:
-    widths: dict[int, Decimal] = {}
-    for column in worksheet.findall(f'.//{{{MAIN_NS}}}cols/{{{MAIN_NS}}}col'):
-        width = Decimal(column.attrib['width']).quantize(Decimal('0.0001'))
-        for column_index in range(int(column.attrib['min']), int(column.attrib['max']) + 1):
-            widths[column_index] = width
-    return widths
-
-
-def _column_styles(worksheet: ET.Element) -> dict[int, int]:
-    styles: dict[int, int] = {}
-    for column in worksheet.findall(f'.//{{{MAIN_NS}}}cols/{{{MAIN_NS}}}col'):
-        style_id = int(column.attrib.get('style', '0'))
-        for column_index in range(int(column.attrib['min']), int(column.attrib['max']) + 1):
-            styles[column_index] = style_id
-    return styles
-
-
-def _number_formats(
-    worksheet: ET.Element,
+def _read_sheet_package(
+    archive: ZipFile,
+    name: str,
+    path: str,
     style_catalog: list[tuple[Any, ...]],
-    column_styles: dict[int, int],
-) -> dict[int, str]:
+) -> _SheetPackage:
+    dimension: str | None = None
+    freeze_panes: str | None = None
+    auto_filter: str | None = None
+    column_widths: dict[int, Decimal] = {}
+    column_styles: dict[int, int] = {}
+    row_two_styles: dict[int, int] = {}
+    conditional_format_ranges: list[str] = []
+    with archive.open(path) as stream:
+        for event, node in ET.iterparse(  # noqa: S314 - controlled local xlsx artifact.
+            stream,
+            events=('start', 'end'),
+        ):
+            if event == 'start':
+                if node.tag == f'{{{MAIN_NS}}}dimension':
+                    dimension = node.attrib.get('ref')
+                elif node.tag == f'{{{MAIN_NS}}}pane':
+                    freeze_panes = node.attrib.get('topLeftCell')
+                elif node.tag == f'{{{MAIN_NS}}}autoFilter':
+                    auto_filter = node.attrib.get('ref')
+                elif node.tag == f'{{{MAIN_NS}}}conditionalFormatting':
+                    conditional_format_ranges.append(node.attrib.get('sqref', ''))
+                elif node.tag == f'{{{MAIN_NS}}}col':
+                    width = Decimal(node.attrib['width']).quantize(Decimal('0.0001'))
+                    style_id = int(node.attrib.get('style', '0'))
+                    for column_index in range(int(node.attrib['min']), int(node.attrib['max']) + 1):
+                        column_widths[column_index] = width
+                        column_styles[column_index] = style_id
+                elif node.tag == f'{{{MAIN_NS}}}c':
+                    coordinate = node.attrib['r']
+                    row_number, column_index = _coordinate_key(coordinate)
+                    if row_number == 2:
+                        row_two_styles[column_index] = int(node.attrib.get('s', column_styles.get(column_index, 0)))
+            else:
+                node.clear()
+
     formats = {
         column_index: style_catalog[style_id][0]
         for column_index, style_id in column_styles.items()
         if style_catalog[style_id][0] != 'General'
     }
-    row = worksheet.find(f'.//{{{MAIN_NS}}}row[@r="2"]')
-    if row is None:
-        return formats
-    for cell in row.findall(f'{{{MAIN_NS}}}c'):
-        column_index = _column_index(cell.attrib['r'])
-        style_id = int(cell.attrib.get('s', column_styles.get(column_index, 0)))
+    for column_index, style_id in row_two_styles.items():
         number_format = style_catalog[style_id][0]
         if number_format != 'General':
             formats[column_index] = number_format
-    return formats
+    return _SheetPackage(
+        name=name,
+        path=path,
+        dimension=dimension,
+        freeze_panes=freeze_panes,
+        auto_filter=auto_filter,
+        column_widths=tuple(sorted(column_widths.items())),
+        column_styles=tuple(sorted(column_styles.items())),
+        column_style_signatures=tuple(
+            sorted((column, style_catalog[style_id]) for column, style_id in column_styles.items())
+        ),
+        number_formats=tuple(sorted(formats.items())),
+        conditional_format_ranges=tuple(sorted(conditional_format_ranges)),
+    )
+
+
+def _empty_sheet_package(name: str) -> _SheetPackage:
+    return _SheetPackage(
+        name=name,
+        path=None,
+        dimension=None,
+        freeze_panes=None,
+        auto_filter=None,
+        column_widths=(),
+        column_styles=(),
+        column_style_signatures=(),
+        number_formats=(),
+        conditional_format_ranges=(),
+    )
 
 
 def _xml_root(archive: ZipFile, member: str) -> ET.Element:
     return ET.fromstring(archive.read(member))  # noqa: S314 - controlled local xlsx artifact.
 
 
-def _resolve_workbook_target(target: str) -> str:
-    if target.startswith('/'):
-        return target.lstrip('/')
-    return str(PurePosixPath('xl') / target)
+def _normalize_relationship_target(target: str | None) -> str | None:
+    if not target or '\\' in target:
+        return None
+    relative = PurePosixPath(target)
+    if relative.is_absolute() or '..' in relative.parts:
+        return None
+    return (PurePosixPath('xl') / relative).as_posix()
 
 
 def _parse_decimal(value: str | None) -> Decimal | None:

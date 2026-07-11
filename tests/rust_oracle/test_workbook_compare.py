@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import shutil
+import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 import xlsxwriter
 
 from tests.rust_oracle.workbook_compare import NUMERIC_COLUMNS, WorkbookMismatch, compare_workbooks
@@ -298,6 +300,144 @@ def test_pipeline_specific_numeric_header_fails_when_unexpected(tmp_path: Path) 
     assert _mismatch(report.mismatches, 'unexpected_numeric_header')
 
 
+def test_worksheet_metadata_never_uses_zipfile_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [['字段一', '字段二'], *[[row, f'合成-{row}'] for row in range(5_000)]]
+    expected, actual = _matching_workbooks(tmp_path, rows)
+    original_read = ZipFile.read
+
+    def guarded_read(archive: ZipFile, name: str, *args: object, **kwargs: object) -> bytes:
+        assert not name.startswith('xl/worksheets/')
+        return original_read(archive, name, *args, **kwargs)
+
+    monkeypatch.setattr(ZipFile, 'read', guarded_read)
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert report.passed
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'mismatch_kind'),
+    (
+        ('invalid-type', 'worksheet_relationship_type_mismatch'),
+        ('duplicate-id', 'worksheet_relationship_id_not_unique'),
+        ('bad-target', 'worksheet_relationship_target_unsafe'),
+        ('missing-part', 'worksheet_part_missing'),
+        ('duplicate-part', 'worksheet_part_not_unique'),
+    ),
+)
+def test_worksheet_relationship_chain_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+    mismatch_kind: str,
+) -> None:
+    expected, actual = _matching_workbooks(tmp_path, [['字段'], ['合成值']])
+    if mutation == 'invalid-type':
+        _rewrite_workbook_relationships(actual, lambda rel: rel.set('Type', 'urn:invalid:worksheet'))
+    elif mutation == 'duplicate-id':
+        _duplicate_relationship(actual, target_suffix='worksheets/sheet1.xml')
+    elif mutation == 'bad-target':
+        _rewrite_workbook_relationships(actual, lambda rel: rel.set('Target', '../escape.xml'))
+    elif mutation == 'missing-part':
+        _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda _xml: None)
+    else:
+        _append_duplicate_member(actual, 'xl/worksheets/sheet1.xml')
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert _mismatch(report.mismatches, mismatch_kind)
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'mismatch_kind'),
+    (
+        ('duplicate-relationship', 'shared_strings_relationship_count_mismatch'),
+        ('external', 'shared_strings_relationship_external'),
+        ('duplicate-override', 'shared_strings_content_type_not_unique'),
+        ('conflicting-override', 'shared_strings_content_type_not_unique'),
+        ('duplicate-part', 'shared_strings_part_not_unique'),
+        ('bad-target', 'shared_strings_relationship_target_unsafe'),
+    ),
+)
+def test_shared_strings_unique_chain_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+    mismatch_kind: str,
+) -> None:
+    expected, actual = _matching_workbooks(tmp_path, [['字段'], ['合成文本']])
+    if mutation == 'duplicate-relationship':
+        _duplicate_relationship(actual, target_suffix='sharedStrings.xml')
+    elif mutation == 'external':
+        _rewrite_shared_strings_relationship(actual, target='sharedStrings.xml', target_mode='External')
+    elif mutation in {'duplicate-override', 'conflicting-override'}:
+        _duplicate_shared_strings_override(actual, conflicting=mutation == 'conflicting-override')
+    elif mutation == 'duplicate-part':
+        _append_duplicate_member(actual, 'xl/sharedStrings.xml')
+    else:
+        _rewrite_shared_strings_relationship(actual, target='../sharedStrings.xml')
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert _mismatch(report.mismatches, mismatch_kind)
+
+
+def test_workbook_sheet_relationship_id_must_be_unique(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    sheets = {'Sheet一': [['字段']], 'Sheet二': [['字段']]}
+    _write_xlsx(expected, sheets)
+    _write_xlsx(actual, sheets)
+
+    def duplicate_sheet_id(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        sheet_nodes = root.findall(f'.//{{{MAIN_NS}}}sheet')
+        relationship_attribute = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
+        sheet_nodes[1].set(relationship_attribute, sheet_nodes[0].attrib[relationship_attribute])
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(actual, 'xl/workbook.xml', duplicate_sheet_id)
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert _mismatch(report.mismatches, 'worksheet_sheet_relationship_id_not_unique')
+
+
+@pytest.mark.parametrize('sheet', ('成本计算单数量聚合维度', '成本分析工单维度'))
+def test_blank_group_key_fails_closed_without_exposing_value(tmp_path: Path, sheet: str) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    rows = _business_rows('gb', sheet, amounts=(1,))
+    key_column = rows[0].index('工单编号')
+    rows[1][key_column] = '   '
+    _write_xlsx(expected, {sheet: rows})
+    _write_xlsx(actual, {sheet: rows})
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert _mismatch(report.mismatches, 'blank_group_key')
+    assert '   ' not in repr(report)
+
+
+@pytest.mark.parametrize('sheet', ('成本计算单数量聚合维度', '成本分析工单维度'))
+def test_duplicate_group_key_fails_closed_without_exposing_value(tmp_path: Path, sheet: str) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    rows = _business_rows('gb', sheet, amounts=(1, 2))
+    for key in _group_keys(sheet):
+        key_column = rows[0].index(key)
+        rows[2][key_column] = rows[1][key_column]
+    _write_xlsx(expected, {sheet: rows})
+    _write_xlsx(actual, {sheet: rows})
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert _mismatch(report.mismatches, 'duplicate_group_key')
+    assert 'W1' not in repr(report)
+
+
 def _mismatch(
     mismatches: tuple[WorkbookMismatch, ...],
     kind: str,
@@ -426,3 +566,72 @@ def _rename_sheet(path: Path, title: str) -> None:
         return ET.tostring(root, encoding='utf-8', xml_declaration=True)
 
     _rewrite_zip_xml(path, 'xl/workbook.xml', rename)
+
+
+def _rewrite_workbook_relationships(path: Path, mutate: Callable[[ET.Element], None]) -> None:
+    def rewrite(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        relationship = next(
+            item
+            for item in root.findall(f'{{{PACKAGE_REL_NS}}}Relationship')
+            if item.attrib.get('Target') == 'worksheets/sheet1.xml'
+        )
+        mutate(relationship)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(path, 'xl/_rels/workbook.xml.rels', rewrite)
+
+
+def _duplicate_relationship(path: Path, *, target_suffix: str) -> None:
+    def duplicate(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        relationship = next(
+            item
+            for item in root.findall(f'{{{PACKAGE_REL_NS}}}Relationship')
+            if item.attrib.get('Target', '').endswith(target_suffix)
+        )
+        root.append(ET.fromstring(ET.tostring(relationship)))  # noqa: S314 - controlled synthetic XML.
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(path, 'xl/_rels/workbook.xml.rels', duplicate)
+
+
+def _duplicate_shared_strings_override(path: Path, *, conflicting: bool) -> None:
+    def duplicate(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        override = next(
+            item
+            for item in root.findall(f'{{{CONTENT_TYPE_NS}}}Override')
+            if item.attrib.get('PartName') == '/xl/sharedStrings.xml'
+        )
+        copied = ET.fromstring(ET.tostring(override))  # noqa: S314 - controlled synthetic XML.
+        if conflicting:
+            copied.set('ContentType', 'application/invalid')
+        root.append(copied)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(path, '[Content_Types].xml', duplicate)
+
+
+def _rewrite_shared_strings_relationship(path: Path, *, target: str, target_mode: str | None = None) -> None:
+    def rewrite(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        relationship = next(
+            item
+            for item in root.findall(f'{{{PACKAGE_REL_NS}}}Relationship')
+            if item.attrib.get('Target') == 'sharedStrings.xml'
+        )
+        relationship.set('Target', target)
+        if target_mode is not None:
+            relationship.set('TargetMode', target_mode)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(path, 'xl/_rels/workbook.xml.rels', rewrite)
+
+
+def _append_duplicate_member(path: Path, member: str) -> None:
+    with ZipFile(path, 'a', ZIP_DEFLATED) as archive:
+        payload = archive.read(member)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            archive.writestr(member, payload)

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 use serde_json::Value;
 
 #[test]
@@ -68,8 +69,9 @@ fn existing_output_reports_the_failing_output_path() {
     std::fs::create_dir_all(&root).unwrap();
     let input = root.join("input.xlsx");
     let output_path = root.join("already-exists.xlsx");
-    std::fs::write(&input, b"input placeholder").unwrap();
-    std::fs::write(&output_path, b"existing output").unwrap();
+    write_minimal_input_workbook(&input);
+    let original_output = b"existing output";
+    std::fs::write(&output_path, original_output).unwrap();
 
     let output = Command::new(locate_costing_binary())
         .args([
@@ -82,15 +84,18 @@ fn existing_output_reports_the_failing_output_path() {
         .output()
         .expect("run costing-calculate binary");
 
-    let _ = std::fs::remove_dir_all(root);
     assert!(!output.status.success());
     let payload = error_json(&output.stderr);
     assert_eq!(payload["code"], "OUTPUT_EXISTS");
-    assert_eq!(payload["details"]["stage"], "ValidateCliRequest");
+    assert_eq!(payload["details"]["stage"], "CreateFinalOutput");
     assert_eq!(
         payload["details"]["path"],
         output_path.display().to_string()
     );
+    assert_eq!(payload["details"]["io_kind"], "AlreadyExists");
+    assert!(payload["details"]["raw_os_error"].is_number());
+    assert_eq!(std::fs::read(&output_path).unwrap(), original_output);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -210,6 +215,47 @@ fn unique_temp_dir(suffix: &str) -> PathBuf {
         "costing-cli-{suffix}-pid{}-{now}",
         std::process::id()
     ))
+}
+
+fn write_minimal_input_workbook(path: &std::path::Path) {
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("成本计算单").unwrap();
+    for (column, header) in [
+        "年期",
+        "产品编码",
+        "产品名称",
+        "工单编号",
+        "工单行号",
+        "本期完工数量",
+        "本期完工金额",
+        "成本项目名称",
+        "日期",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        sheet.write_string(0, column as u16, header).unwrap();
+        sheet.write_string(1, column as u16, "").unwrap();
+    }
+    sheet.write_string(2, 0, "2025年01期").unwrap();
+    sheet.write_string(2, 1, "P1").unwrap();
+    sheet.write_string(2, 2, "产品").unwrap();
+    sheet.write_string(2, 3, "WO-1").unwrap();
+    sheet.write_string(2, 4, "1").unwrap();
+    sheet.write_number(2, 5, 1).unwrap();
+    sheet.write_number(2, 6, 10).unwrap();
+    sheet.write_string(2, 7, "").unwrap();
+    let date_format = Format::new().set_num_format("yyyy-mm-dd");
+    sheet
+        .write_datetime_with_format(
+            2,
+            8,
+            ExcelDateTime::from_ymd(2025, 1, 2).unwrap(),
+            &date_format,
+        )
+        .unwrap();
+    workbook.save(path).unwrap();
 }
 
 fn locate_costing_binary() -> PathBuf {

@@ -450,13 +450,6 @@ pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
                 "输入文件与输出文件不能是同一文件",
             ));
         }
-        if output.exists() {
-            return Err(CostingError::io(
-                ErrorCode::OutputExists,
-                format!("输出 workbook 已存在: {}", output.display()),
-                output.clone(),
-            ));
-        }
     }
     Ok(())
 }
@@ -672,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_existing_output_without_overwriting() {
+    fn existing_output_is_deferred_to_writer_atomic_create() {
         let input = unique_temp_path(&std::env::temp_dir(), "existing-output-input", "xlsx");
         let output = unique_temp_path(&std::env::temp_dir(), "existing-output", "xlsx");
         std::fs::write(&input, "input").unwrap();
@@ -682,9 +675,9 @@ mod tests {
             ..args(input.to_str().unwrap())
         };
 
-        let error = validate_cli_request(&request).unwrap_err();
+        let result = validate_cli_request(&request);
 
-        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert!(result.is_ok());
         assert_eq!(std::fs::read_to_string(&output).unwrap(), "existing");
         let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_file(output);
@@ -711,6 +704,16 @@ mod tests {
 
         assert_eq!(error.code(), ErrorCode::OutputExists);
         assert!(!error.retryable());
+        let io_error = error
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(io_error.kind(), std::io::ErrorKind::AlreadyExists);
+        let json = serde_json::to_value(ErrorSummary::from_error(&error)).unwrap();
+        assert_eq!(json["details"]["io_kind"], "AlreadyExists");
     }
 
     #[test]

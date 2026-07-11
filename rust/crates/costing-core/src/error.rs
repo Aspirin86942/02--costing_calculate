@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use thiserror::Error;
@@ -260,6 +260,16 @@ impl CostingError {
         }
     }
 
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Io { path, .. } => Some(path.as_path()),
+            Self::Contextual { context, source } => {
+                context.details.path.as_deref().or_else(|| source.path())
+            }
+            _ => None,
+        }
+    }
+
     pub fn io_meta(&self) -> Option<IoFailureMeta> {
         match self {
             Self::IoSource { io_meta, .. } => Some(*io_meta),
@@ -363,5 +373,43 @@ mod tests {
         assert_eq!(context.request_id, "original-request");
         assert_eq!(context.details.stage, ErrorStage::PopulateWorkbook);
         assert_eq!(context.details.path, Some(PathBuf::from("original.xlsx")));
+    }
+
+    #[test]
+    fn error_path_prefers_outer_context_and_falls_back_to_source() {
+        let direct = CostingError::io(
+            ErrorCode::OutputExists,
+            "output exists",
+            PathBuf::from("source-output.xlsx"),
+        );
+        assert_eq!(
+            direct.path(),
+            Some(PathBuf::from("source-output.xlsx").as_path())
+        );
+
+        let inherited = direct.with_context(ErrorContext::new(
+            "inherited-request",
+            ErrorStage::ValidateCliRequest,
+            None,
+        ));
+        assert_eq!(
+            inherited.path(),
+            Some(PathBuf::from("source-output.xlsx").as_path())
+        );
+
+        let outer = CostingError::io(
+            ErrorCode::OutputExists,
+            "output exists",
+            PathBuf::from("source-output.xlsx"),
+        )
+        .with_context(ErrorContext::new(
+            "outer-request",
+            ErrorStage::ValidateCliRequest,
+            Some(PathBuf::from("outer-output.xlsx")),
+        ));
+        assert_eq!(
+            outer.path(),
+            Some(PathBuf::from("outer-output.xlsx").as_path())
+        );
     }
 }

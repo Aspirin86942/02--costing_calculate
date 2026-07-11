@@ -63,6 +63,37 @@ fn accepted_arguments_fail_with_request_id_and_closed_stage() {
 }
 
 #[test]
+fn existing_output_reports_the_failing_output_path() {
+    let root = unique_temp_dir("existing-output-context");
+    std::fs::create_dir_all(&root).unwrap();
+    let input = root.join("input.xlsx");
+    let output_path = root.join("already-exists.xlsx");
+    std::fs::write(&input, b"input placeholder").unwrap();
+    std::fs::write(&output_path, b"existing output").unwrap();
+
+    let output = Command::new(locate_costing_binary())
+        .args([
+            "gb",
+            "--input",
+            input.to_str().unwrap(),
+            "--output",
+            output_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run costing-calculate binary");
+
+    let _ = std::fs::remove_dir_all(root);
+    assert!(!output.status.success());
+    let payload = error_json(&output.stderr);
+    assert_eq!(payload["code"], "OUTPUT_EXISTS");
+    assert_eq!(payload["details"]["stage"], "ValidateCliRequest");
+    assert_eq!(
+        payload["details"]["path"],
+        output_path.display().to_string()
+    );
+}
+
+#[test]
 fn unknown_pipeline_uses_stable_json_error_model() {
     let output = Command::new(locate_costing_binary())
         .args(["unknown", "--input", "input.xlsx", "--check-only"])

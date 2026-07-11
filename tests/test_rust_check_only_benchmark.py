@@ -31,7 +31,7 @@ def test_rust_check_only_is_not_slower_than_python(
         require_benchmark_sample(pipeline),
         rust_release_executable,
     )
-    result_path = repo_root() / 'rust' / 'target' / 'perf' / 'results' / f'check-only-final-{pipeline}.json'
+    result_path = repo_root() / 'rust' / 'target' / 'perf-local' / 'results' / f'check-only-final-{pipeline}.json'
     write_check_only_benchmark_result(result, result_path)
 
     assert len(result.rust_payload_total_seconds) == CHECK_ONLY_ROUNDS, result

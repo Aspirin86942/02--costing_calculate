@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import zipfile
@@ -605,6 +606,12 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
     assert result.normal_run.runtime.output_size_bytes == output_path.stat().st_size
     assert output_path.exists()  # 上层 wall runner 负责在校验后立即清理。
     assert [path.name for path in local_log_root.glob('*.json')] == [f'{result.local_unversioned_log_sha256}.json']
+
+
+def test_old_normal_capture_cannot_write_raw_cli_payload() -> None:
+    signature = inspect.signature(oracle_runner.run_rust_normal_captured)
+    assert 'evidence_path' not in signature.parameters
+    assert 'versioned_output' not in signature.parameters
 
 
 @pytest.mark.parametrize('collision_target', ('input', 'executable'))

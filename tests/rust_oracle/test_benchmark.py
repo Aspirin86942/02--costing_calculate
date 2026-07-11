@@ -568,7 +568,7 @@ def test_check_only_result_writer_uses_utf8_json(monkeypatch: pytest.MonkeyPatch
         verdict='VALIDATED',
     )
     monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
-    output_path = tmp_path / 'rust' / 'target' / '性能证据.json'
+    output_path = tmp_path / 'rust' / 'target' / 'perf-local' / '性能证据.json'
 
     benchmark.write_local_check_only_result(result, output_path)
 
@@ -588,8 +588,21 @@ def test_local_check_only_writer_rejects_destination_outside_local_roots(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
-    with pytest.raises(AssertionError, match='rust/target or data/processed'):
+    with pytest.raises(AssertionError, match='perf-local'):
         benchmark.write_local_check_only_result(object(), tmp_path / 'docs' / 'evidence.json')  # type: ignore[arg-type]
+
+
+def test_check_only_raw_result_can_only_be_written_under_ignored_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
+    value = benchmark.ValidationFailure('VALIDATED', 'synthetic')
+    local = tmp_path / 'rust' / 'target' / 'perf-local' / 'raw.json'
+    benchmark.write_local_check_only_result(value, local)  # type: ignore[arg-type]
+    assert local.exists()
+    with pytest.raises(AssertionError, match='perf-local'):
+        benchmark.write_local_check_only_result(value, tmp_path / 'data' / 'processed' / 'raw.json')  # type: ignore[arg-type]
 
 
 def test_local_check_only_writer_rejects_raw_symlink_component(
@@ -599,7 +612,7 @@ def test_local_check_only_writer_rejects_raw_symlink_component(
     monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
     real_directory = tmp_path / 'outside'
     real_directory.mkdir()
-    link = tmp_path / 'rust' / 'target' / 'linked'
+    link = tmp_path / 'rust' / 'target' / 'perf-local' / 'linked'
     link.parent.mkdir(parents=True)
     try:
         link.symlink_to(real_directory, target_is_directory=True)
@@ -615,6 +628,6 @@ def test_local_check_only_writer_supports_valid_path_longer_than_260_characters(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
-    output = tmp_path / 'rust' / 'target' / ('a' * 120) / ('b' * 120) / 'result.json'
+    output = tmp_path / 'rust' / 'target' / 'perf-local' / ('a' * 120) / ('b' * 120) / 'result.json'
     benchmark.write_local_check_only_result(benchmark.ValidationFailure('VALIDATED', 'ok'), output)  # type: ignore[arg-type]
     assert _io_path(output).read_text(encoding='utf-8')

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import math
@@ -440,21 +439,65 @@ def write_local_check_only_result(
     output_path: Path,
 ) -> None:
     root = repo_root().resolve()
+    local_root = root / 'rust' / 'target' / 'perf-local'
     destination = _prepare_local_path(
         output_path,
-        allowed_roots=(root / 'rust' / 'target', root / 'data' / 'processed'),
-        purpose='local check-only results must stay below rust/target or data/processed',
+        allowed_roots=(local_root,),
+        purpose='local check-only results must stay below rust/target/perf-local',
         create_parent=False,
     )
     _io_path(destination.parent).mkdir(parents=True, exist_ok=True)
     destination = _prepare_local_path(
         destination,
-        allowed_roots=(root / 'rust' / 'target', root / 'data' / 'processed'),
-        purpose='local check-only results must stay below rust/target or data/processed',
+        allowed_roots=(local_root,),
+        purpose='local check-only results must stay below rust/target/perf-local',
         create_parent=False,
     )
     with _io_path(destination).open('x', encoding='utf-8', newline='\n') as stream:
-        json.dump(dataclasses.asdict(result), stream, ensure_ascii=False, indent=2)
+        json.dump(_local_check_only_payload(result), stream, ensure_ascii=False, indent=2)
+
+
+def _local_check_only_payload(result: object) -> dict[str, object]:
+    if isinstance(result, ValidationFailure):
+        return {'verdict': result.verdict, 'message': result.message}
+    if not isinstance(result, CheckOnlyBenchmarkResult):
+        raise TypeError('local check-only writer accepts CheckOnlyBenchmarkResult only')
+    runtime = result.rust_runtime_evidence
+    return {
+        'pipeline': result.pipeline,
+        'input_sha256': result.input_sha256,
+        'rust_executable': result.rust_executable,
+        'rust_binary_sha256': result.rust_binary_sha256,
+        'git_head': result.git_head,
+        'working_tree_diff_id': result.working_tree_diff_id,
+        'working_directory': result.working_directory,
+        'command_arguments': list(result.command_arguments),
+        'python_payload_total_seconds': list(result.python_payload_total_seconds),
+        'rust_payload_total_seconds': list(result.rust_payload_total_seconds),
+        'python_median_seconds': result.python_median_seconds,
+        'python_min_seconds': result.python_min_seconds,
+        'python_max_seconds': result.python_max_seconds,
+        'rust_median_seconds': result.rust_median_seconds,
+        'rust_min_seconds': result.rust_min_seconds,
+        'rust_max_seconds': result.rust_max_seconds,
+        'rust_stage_seconds': {key: list(values) for key, values in result.rust_stage_seconds.items()},
+        'rust_stage_median_seconds': result.rust_stage_median_seconds,
+        'rust_runtime_evidence': {
+            'run_counts': runtime.run_counts,
+            'error_log_count': runtime.error_log_count,
+            'issue_type_counts': runtime.issue_type_counts,
+            'quality_metrics': [
+                {'category': item.category, 'metric': item.metric, 'value': item.value}
+                for item in runtime.quality_metrics
+            ],
+        },
+        'valid_pair_count': result.valid_pair_count,
+        'validation_passed': result.validation_passed,
+        'verdict': result.verdict,
+        'validation_failures': [
+            {'verdict': item.verdict, 'message': item.message} for item in result.validation_failures
+        ],
+    }
 
 
 def write_check_only_benchmark_result(result: CheckOnlyBenchmarkResult, output_path: Path) -> None:

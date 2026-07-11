@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import socket
+import stat
 import subprocess
 import tempfile
 import tomllib
 import uuid
 from dataclasses import dataclass
+from decimal import Decimal
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from tests.rust_oracle.benchmark_protocol import (
+    AttemptState,
+    ClosedBinaryLabel,
+    ComparisonProfile,
+    HarnessVerdict,
+)
 from tests.rust_oracle.repo_paths import repo_root
 
 UPSTREAM_URL = 'https://github.com/jmcnamara/rust_xlsxwriter.git'
@@ -47,6 +59,10 @@ _HEX64 = re.compile(r'^[0-9a-f]{64}$')
 _DRIVE_PATH = re.compile(r'(?i)(?:^|[^a-z0-9])[a-z]:[\\/]')
 _UNC_PATH = re.compile(r'(?<!:)(?:\\\\|//)[a-z0-9_.-]+[\\/]', re.IGNORECASE)
 _SENSITIVE_TOKEN = re.compile(r'(?i)user|canary|stdout|stderr')
+_VERSIONED_SENSITIVE_MARKER = re.compile(r'(?i)(?:expected\s*=|actual\s*=|stdout\s*:|stderr\s*:|canary)')
+_USERS_PATH = re.compile(r'(?i)(?:[\\/]users[\\/])')
+_COORDINATE = re.compile(r'^[A-Z]+[1-9][0-9]*$')
+_DIMENSION = re.compile(r'^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$')
 _EXPECTED_KEYS = (
     'upstream_url',
     'upstream_tag',
@@ -63,6 +79,391 @@ _EXPECTED_KEYS = (
     'upstream_pr_url',
     'verdict',
 )
+
+
+class EvidenceKind(StrEnum):
+    BENCHMARK = 'benchmark'
+    COMMAND = 'command'
+    SMOKE = 'smoke'
+    PE_IMPORTS = 'pe-imports'
+    FORK_PROVENANCE = 'fork-provenance'
+    CARGO_FEATURE_TREE = 'cargo-feature-tree'
+    TEXT_REPORT = 'text-report'
+
+
+class PathAlias(StrEnum):
+    REPO_ROOT = '$REPO_ROOT'
+    GB_INPUT = '$GB_INPUT'
+    SK_INPUT = '$SK_INPUT'
+    REFERENCE_EXE = '$REFERENCE_EXE'
+    CANDIDATE_EXE = '$CANDIDATE_EXE'
+    ROUND_OUTPUT = '$ROUND_OUTPUT'
+    FORK_CHECKOUT = '$FORK_CHECKOUT'
+
+
+class BenchmarkMetric(StrEnum):
+    WALL = 'wall'
+    PWS = 'pws'
+    WALL_MEDIAN = 'wall_median'
+    PWS_MEDIAN = 'pws_median'
+    WALL_RATIO = 'wall_ratio'
+    PWS_RATIO = 'pws_ratio'
+    INGEST = 'ingest'
+    NORMALIZE = 'normalize'
+    SPLIT = 'split'
+    FACT = 'fact'
+    PRESENTATION = 'presentation'
+    TOTAL = 'total'
+    EXPORT = 'export'
+    WRITER_POPULATE = 'writer_populate'
+    XLSX_SAVE = 'xlsx_save'
+
+
+class RuntimeCount(StrEnum):
+    READER_ROWS = 'reader_rows'
+    DETAIL_ROWS = 'detail_rows'
+    QTY_ROWS = 'qty_rows'
+    QTY_SHEET_ROWS = 'qty_sheet_rows'
+    QUALITY_METRIC_COUNT = 'quality_metric_count'
+    WORK_ORDER_ROWS = 'work_order_rows'
+    ERROR_LOG_COUNT = 'error_log_count'
+
+
+class ApprovedSheet(StrEnum):
+    COST_DETAIL = '成本计算单总表'
+    QUANTITY = '成本计算单数量聚合维度'
+    ANALYSIS = '成本分析工单维度'
+
+
+class MismatchKind(StrEnum):
+    VALUE_MISMATCH = 'value_mismatch'
+    STORAGE_TYPE_MISMATCH = 'storage_type_mismatch'
+    STYLE_MISMATCH = 'style_mismatch'
+    COLUMN_TOTAL_MISMATCH = 'column_total_mismatch'
+    GROUP_TOTAL_MISMATCH = 'group_total_mismatch'
+    REQUIRED_HEADER_MISSING = 'required_header_missing'
+    UNEXPECTED_NUMERIC_HEADER = 'unexpected_numeric_header'
+    NUMERIC_STORAGE_INVALID = 'numeric_storage_invalid'
+    BLANK_GROUP_KEY = 'blank_group_key'
+    DUPLICATE_GROUP_KEY = 'duplicate_group_key'
+    SHARED_STRING_INDEX_OUT_OF_RANGE = 'shared_string_index_out_of_range'
+    PACKAGE_RELATIONSHIP_MISMATCH = 'package_relationship_mismatch'
+
+
+class StorageType(StrEnum):
+    BLANK = 'blank'
+    NUMBER = 'number'
+    STRING = 'string'
+    BOOLEAN = 'boolean'
+    DATE = 'date'
+    ERROR = 'error'
+    FORMULA = 'formula'
+
+
+class CommandId(StrEnum):
+    CARGO_BUILD_RELEASE = 'cargo-build-release'
+    CARGO_TREE_FEATURES = 'cargo-tree-features'
+    PHASE0H_SMOKE = 'phase0h-smoke'
+    PHASE0A_CAPTURE = 'phase0a-capture'
+    PE_DEPENDENTS = 'pe-dependents'
+    PE_IMPORTS = 'pe-imports'
+    DEPENDENCY_ATTESTATION = 'dependency-attestation'
+
+
+class CommandToken(StrEnum):
+    CARGO = 'cargo'
+    GIT = 'git'
+    GH = 'gh'
+    PYTHON = 'python'
+    POWERSHELL = 'powershell'
+    DUMPBIN = 'dumpbin'
+    LLVM_READOBJ = 'llvm-readobj'
+    BUILD = 'build'
+    TREE = 'tree'
+    RELEASE = '--release'
+    LOCKED = '--locked'
+    MANIFEST_PATH = '--manifest-path'
+    PACKAGE = '-p'
+    TARGET = '--target'
+    TARGET_DIR = '--target-dir'
+    NO_DEFAULT_FEATURES = '--no-default-features'
+    FEATURES = '--features'
+    EDGE_FEATURES = '-e=features'
+    DEPENDENTS = '/DEPENDENTS'
+    IMPORTS = '/IMPORTS'
+    COFF_IMPORTS = '--coff-imports'
+
+
+class ToolName(StrEnum):
+    CARGO = 'cargo'
+    GIT = 'git'
+    GH = 'gh'
+    PYTHON = 'python'
+    POWERSHELL = 'powershell'
+    DUMPBIN = 'dumpbin'
+    LLVM_READOBJ = 'llvm-readobj'
+
+
+class DllBasename(StrEnum):
+    KERNEL32 = 'KERNEL32.dll'
+    ADVAPI32 = 'ADVAPI32.dll'
+    BCRYPT = 'bcrypt.dll'
+    NTDLL = 'ntdll.dll'
+    OLE32 = 'ole32.dll'
+    SHELL32 = 'SHELL32.dll'
+    USER32 = 'USER32.dll'
+    WS2_32 = 'WS2_32.dll'
+    VCRUNTIME140 = 'VCRUNTIME140.dll'
+    VCRUNTIME140_1 = 'VCRUNTIME140_1.dll'
+    MSVCP140 = 'MSVCP140.dll'
+    UCRTBASE = 'ucrtbase.dll'
+    ZLIB1 = 'zlib1.dll'
+    LIBZ = 'libz.dll'
+    PROJECT_PRIVATE = 'costing-private.dll'
+
+
+class ForkUrl(StrEnum):
+    OFFICIAL = UPSTREAM_URL
+    COSTING_FORK = FORK_URL
+
+
+class ForkTag(StrEnum):
+    V0_96_0 = UPSTREAM_TAG
+
+
+class ForkDiffPath(StrEnum):
+    PACKAGER = 'src/packager.rs'
+    WORKBOOK = 'src/workbook.rs'
+    WORKBOOK_TESTS = 'src/workbook/tests.rs'
+    WORKSHEET = 'src/worksheet.rs'
+    WORKSHEET_TESTS = 'src/worksheet/tests.rs'
+    XMLWRITER = 'src/xmlwriter.rs'
+
+
+class CargoPackage(StrEnum):
+    COSTING_CALCULATE = 'costing-calculate'
+    COSTING_XLSX = 'costing-xlsx'
+    RUST_XLSXWRITER = 'rust_xlsxwriter'
+    ZLIB_RS = 'zlib-rs'
+    ZMIJ = 'zmij'
+
+
+class CargoFeature(StrEnum):
+    LOW_MEMORY = 'low-memory'
+    CONSTANT_MEMORY = 'constant_memory'
+    ZLIB = 'zlib'
+    ZMIJ = 'zmij'
+
+
+class ReportKind(StrEnum):
+    PHASE_GATE = 'phase-gate'
+    RELEASE_GATE = 'release-gate'
+    DEPENDENCY_GATE = 'dependency-gate'
+
+
+class ReportTitle(StrEnum):
+    PHASE_GATE_RESULT = 'Phase gate result'
+    RELEASE_GATE_RESULT = 'Release gate result'
+    DEPENDENCY_GATE_RESULT = 'Dependency gate result'
+
+
+class ReportCheckId(StrEnum):
+    CORRECTNESS = 'correctness'
+    WALL = 'wall'
+    PWS = 'pws'
+    OUTPUT_BYTES = 'output-bytes'
+    PE_IMPORTS = 'pe-imports'
+    SMOKE = 'smoke'
+    PROVENANCE = 'provenance'
+
+
+@dataclass(frozen=True)
+class MachineArtifactEvidence:
+    windows_build_sha256: str
+    architecture: Literal['x86_64']
+    cpu_model_sha256: str
+    logical_cpu_count: int
+    physical_memory_bytes: int
+    system_drive_media_type: Literal['SSD', 'HDD', 'UNKNOWN']
+    system_drive_size_bytes: int
+    fingerprint_sha256: str
+
+
+@dataclass(frozen=True)
+class BenchmarkRoundEvidence:
+    metric: BenchmarkMetric
+    global_round: int
+    order: tuple[Literal['reference', 'candidate'], Literal['reference', 'candidate']]
+    reference_value: Decimal
+    candidate_value: Decimal
+
+
+@dataclass(frozen=True)
+class BenchmarkMetricEvidence:
+    metric: BenchmarkMetric
+    value: Decimal
+
+
+@dataclass(frozen=True)
+class RuntimeCountEvidence:
+    name: RuntimeCount
+    value: int
+
+
+@dataclass(frozen=True)
+class SheetDimensionEvidence:
+    sheet: ApprovedSheet
+    dimension: str
+
+
+@dataclass(frozen=True)
+class OutputBytesEvidence:
+    role: Literal['reference', 'candidate']
+    value: int
+
+
+@dataclass(frozen=True)
+class MismatchEvidence:
+    sheet: ApprovedSheet
+    coordinate: str
+    mismatch_kind: MismatchKind
+    expected_storage_type: StorageType
+    actual_storage_type: StorageType
+    local_log_sha256: str
+
+
+@dataclass(frozen=True)
+class BenchmarkManifestEvidence:
+    schema_version: Literal[1]
+    profile: ComparisonProfile
+    pipeline: Literal['gb', 'sk']
+    input_alias: PathAlias
+    input_sha256: str
+    reference_label: ClosedBinaryLabel
+    reference_exe_sha256: str
+    candidate_label: ClosedBinaryLabel
+    candidate_exe_sha256: str
+    machine: MachineArtifactEvidence
+    attempt_count: int
+    prior_safe_verdicts: tuple[HarnessVerdict, ...]
+    ledger_head_sha256: str
+    first_group_sha256: str
+    expanded_group_sha256: str | None
+    rounds: tuple[BenchmarkRoundEvidence, ...]
+    metrics: tuple[BenchmarkMetricEvidence, ...]
+    runtime_counts: tuple[RuntimeCountEvidence, ...]
+    sheet_dimensions: tuple[SheetDimensionEvidence, ...]
+    output_bytes: tuple[OutputBytesEvidence, ...]
+    mismatches: tuple[MismatchEvidence, ...]
+    local_log_sha256: tuple[str, ...]
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class SanitizedToolVersion:
+    major: int
+    minor: int
+    patch: int
+
+
+@dataclass(frozen=True)
+class CommandTranscriptEvidence:
+    command_id: CommandId
+    tokens: tuple[CommandToken | PathAlias, ...]
+    tool: ToolName
+    tool_version: SanitizedToolVersion
+    exit_code: int
+    local_log_sha256: str
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class SmokeSummaryEvidence:
+    candidate_exe_sha256: str
+    fixture_sha256: str
+    pipeline: Literal['gb', 'sk']
+    exit_code: int
+    approved_sheets: tuple[ApprovedSheet, ...]
+    temp_canary_created: bool
+    temp_residue_count: int
+    missing_dll: bool
+    local_log_sha256: str
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class PeImportsEvidence:
+    candidate_exe_sha256: str
+    baseline_exe_sha256: str
+    tools: tuple[ToolName, ...]
+    normal_imports: tuple[DllBasename, ...]
+    delay_imports: tuple[DllBasename, ...]
+    local_log_sha256: str
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class ForkProvenanceEvidence:
+    official_url: ForkUrl
+    fork_url: ForkUrl
+    tag: ForkTag
+    upstream_base_revision: str
+    crates_io_checksum: str
+    fork_revision: str
+    allowed_diff_files: tuple[ForkDiffPath, ...]
+    diff_sha256: str
+    no_pr: bool
+    local_log_sha256: str
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class CargoPackageEvidence:
+    package: CargoPackage
+    revision: str | None
+
+
+@dataclass(frozen=True)
+class CargoFeatureEdge:
+    source_package: CargoPackage
+    source_feature: CargoFeature
+    target_package: CargoPackage
+    target_feature: CargoFeature
+
+
+@dataclass(frozen=True)
+class CargoFeatureTreeEvidence:
+    candidate_label: ClosedBinaryLabel
+    candidate_exe_sha256: str
+    fork_revision: str
+    packages: tuple[CargoPackageEvidence, ...]
+    feature_edges: tuple[CargoFeatureEdge, ...]
+    local_log_sha256: str
+    verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class ReportCheckEvidence:
+    check_id: ReportCheckId
+    verdict: HarnessVerdict
+    evidence_sha256: str
+
+
+@dataclass(frozen=True)
+class TextReportEvidence:
+    report_kind: ReportKind
+    title: ReportTitle
+    checks: tuple[ReportCheckEvidence, ...]
+    overall_verdict: HarnessVerdict
+
+
+@dataclass(frozen=True)
+class SanitizedArtifact:
+    kind: EvidenceKind
+    file_name: str
+    payload: dict[str, object]
+    content: str
+    numeric_values: tuple[int | float, ...]
 
 
 def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -100,6 +501,406 @@ class DependencyEvidence:
 
 
 class EvidenceSanitizer:
+    @classmethod
+    def closed_policy(cls) -> EvidenceSanitizer:
+        return cls()
+
+    def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> SanitizedArtifact:
+        if not isinstance(value, BenchmarkManifestEvidence) or value.schema_version != 1:
+            raise ValueError('benchmark evidence must use schema version 1')
+        profile = _enum_text(value.profile, ComparisonProfile, 'profile')
+        pipeline = _pipeline(value.pipeline)
+        input_alias = _enum_text(value.input_alias, PathAlias, 'input alias')
+        reference_label = _enum_text(value.reference_label, ClosedBinaryLabel, 'reference label')
+        candidate_label = _enum_text(value.candidate_label, ClosedBinaryLabel, 'candidate label')
+        input_sha = _require_hash(value.input_sha256, 64, 'input_sha256')
+        reference_sha = _require_hash(value.reference_exe_sha256, 64, 'reference_exe_sha256')
+        candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
+        machine = _machine_payload(value.machine)
+        attempt_count = _nonnegative_int(value.attempt_count, 'attempt_count', positive=True)
+        safe_verdicts = tuple(
+            _enum_text(item, HarnessVerdict, 'prior safe verdict') for item in value.prior_safe_verdicts
+        )
+        allowed_prior_verdicts = {
+            HarnessVerdict.ENVIRONMENT_DRIFT.value,
+            HarnessVerdict.REFERENCE_FAILED.value,
+        }
+        if any(item not in allowed_prior_verdicts for item in safe_verdicts):
+            raise ValueError('prior verdicts are closed to safe retry reasons')
+        ledger_head = _require_hash(value.ledger_head_sha256, 64, 'ledger_head_sha256')
+        first_group = _require_hash(value.first_group_sha256, 64, 'first_group_sha256')
+        expanded_group = (
+            None
+            if value.expanded_group_sha256 is None
+            else _require_hash(value.expanded_group_sha256, 64, 'expanded_group_sha256')
+        )
+
+        rounds: list[dict[str, object]] = []
+        for item in value.rounds:
+            if not isinstance(item, BenchmarkRoundEvidence):
+                raise ValueError('benchmark rounds must use BenchmarkRoundEvidence')
+            metric = _enum_text(item.metric, BenchmarkMetric, 'round metric')
+            global_round = _nonnegative_int(item.global_round, 'global_round', positive=True)
+            if global_round > 10:
+                raise ValueError('global_round must be between 1 and 10')
+            expected_order = ('reference', 'candidate') if global_round % 2 else ('candidate', 'reference')
+            if item.order != expected_order:
+                raise ValueError('round order must follow global AB/BA order')
+            reference_value = _finite_decimal(item.reference_value, 'reference_value', positive=True)
+            candidate_value = _finite_decimal(item.candidate_value, 'candidate_value', positive=True)
+            rounds.append(
+                {
+                    'metric': metric,
+                    'global_round': global_round,
+                    'order': list(item.order),
+                    'reference_value': reference_value,
+                    'candidate_value': candidate_value,
+                }
+            )
+
+        metrics: list[dict[str, object]] = []
+        for item in value.metrics:
+            if not isinstance(item, BenchmarkMetricEvidence):
+                raise ValueError('benchmark metrics must use BenchmarkMetricEvidence')
+            metrics.append(
+                {
+                    'metric': _enum_text(item.metric, BenchmarkMetric, 'benchmark metric'),
+                    'value': _finite_decimal(item.value, 'benchmark metric value'),
+                }
+            )
+        _reject_duplicate_keys(tuple(item['metric'] for item in metrics), 'benchmark metric')
+
+        runtime_counts: list[dict[str, object]] = []
+        for item in value.runtime_counts:
+            if not isinstance(item, RuntimeCountEvidence):
+                raise ValueError('runtime counts must use RuntimeCountEvidence')
+            runtime_counts.append(
+                {
+                    'name': _enum_text(item.name, RuntimeCount, 'runtime count'),
+                    'value': _nonnegative_int(item.value, 'runtime count value'),
+                }
+            )
+        _reject_duplicate_keys(tuple(item['name'] for item in runtime_counts), 'runtime count')
+
+        dimensions: list[dict[str, object]] = []
+        for item in value.sheet_dimensions:
+            if not isinstance(item, SheetDimensionEvidence):
+                raise ValueError('sheet dimensions must use SheetDimensionEvidence')
+            if not isinstance(item.dimension, str) or _DIMENSION.fullmatch(item.dimension) is None:
+                raise ValueError('sheet dimension must be a strict A1 range')
+            dimensions.append(
+                {
+                    'sheet': _enum_text(item.sheet, ApprovedSheet, 'sheet'),
+                    'dimension': item.dimension,
+                }
+            )
+        _reject_duplicate_keys(tuple(item['sheet'] for item in dimensions), 'sheet dimension')
+
+        output_bytes: list[dict[str, object]] = []
+        for item in value.output_bytes:
+            if not isinstance(item, OutputBytesEvidence) or item.role not in ('reference', 'candidate'):
+                raise ValueError('output bytes must use a closed binary role')
+            output_bytes.append(
+                {
+                    'role': item.role,
+                    'value': _nonnegative_int(item.value, 'output bytes', positive=True),
+                }
+            )
+        _reject_duplicate_keys(tuple(item['role'] for item in output_bytes), 'output bytes role')
+
+        mismatches = [_mismatch_payload(item) for item in value.mismatches]
+        local_log_sha = [_require_hash(item, 64, 'local log SHA') for item in value.local_log_sha256]
+        verdict = _enum_text(value.verdict, HarnessVerdict, 'benchmark verdict')
+        payload: dict[str, object] = {
+            'schema_version': 1,
+            'profile': profile,
+            'pipeline': pipeline,
+            'input_alias': input_alias,
+            'input_sha256': input_sha,
+            'reference_label': reference_label,
+            'reference_exe_sha256': reference_sha,
+            'candidate_label': candidate_label,
+            'candidate_exe_sha256': candidate_sha,
+            'machine': machine,
+            'attempt_count': attempt_count,
+            'prior_safe_verdicts': list(safe_verdicts),
+            'ledger_head_sha256': ledger_head,
+            'first_group_sha256': first_group,
+            'expanded_group_sha256': expanded_group,
+            'rounds': rounds,
+            'metrics': metrics,
+            'runtime_counts': runtime_counts,
+            'sheet_dimensions': dimensions,
+            'output_bytes': output_bytes,
+            'mismatches': mismatches,
+            'local_log_sha256': local_log_sha,
+            'verdict': verdict,
+        }
+        return _json_artifact(
+            EvidenceKind.BENCHMARK,
+            f'benchmark-{_sha256_text(f"{profile}|{pipeline}|{candidate_sha}")[:16]}.json',
+            payload,
+        )
+
+    def build_command_transcript(self, value: CommandTranscriptEvidence) -> SanitizedArtifact:
+        if not isinstance(value, CommandTranscriptEvidence):
+            raise ValueError('command evidence must use CommandTranscriptEvidence')
+        command_id = _enum_text(value.command_id, CommandId, 'command ID')
+        tokens = [_closed_command_token(item) for item in value.tokens]
+        tool = _enum_text(value.tool, ToolName, 'tool')
+        version = _tool_version_payload(value.tool_version)
+        payload: dict[str, object] = {
+            'command_id': command_id,
+            'tokens': tokens,
+            'tool': tool,
+            'tool_version': version,
+            'exit_code': _integer(value.exit_code, 'exit_code'),
+            'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
+            'verdict': _enum_text(value.verdict, HarnessVerdict, 'command verdict'),
+        }
+        return _json_artifact(EvidenceKind.COMMAND, f'command-{command_id}.json', payload)
+
+    def build_smoke(self, value: SmokeSummaryEvidence) -> SanitizedArtifact:
+        if not isinstance(value, SmokeSummaryEvidence):
+            raise ValueError('smoke evidence must use SmokeSummaryEvidence')
+        sheets = [_enum_text(item, ApprovedSheet, 'approved sheet') for item in value.approved_sheets]
+        if tuple(sheets) != tuple(item.value for item in ApprovedSheet):
+            raise ValueError('smoke evidence must contain the exact approved Sheet tuple')
+        candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
+        pipeline = _pipeline(value.pipeline)
+        payload: dict[str, object] = {
+            'candidate_exe_sha256': candidate_sha,
+            'fixture_sha256': _require_hash(value.fixture_sha256, 64, 'fixture_sha256'),
+            'pipeline': pipeline,
+            'exit_code': _integer(value.exit_code, 'exit_code'),
+            'approved_sheets': sheets,
+            'temp_canary_created': _boolean(value.temp_canary_created, 'temp_canary_created'),
+            'temp_residue_count': _nonnegative_int(value.temp_residue_count, 'temp_residue_count'),
+            'missing_dll': _boolean(value.missing_dll, 'missing_dll'),
+            'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
+            'verdict': _enum_text(value.verdict, HarnessVerdict, 'smoke verdict'),
+        }
+        return _json_artifact(EvidenceKind.SMOKE, f'smoke-{pipeline}-{candidate_sha[:12]}.json', payload)
+
+    def build_pe_imports(self, value: PeImportsEvidence) -> SanitizedArtifact:
+        if not isinstance(value, PeImportsEvidence):
+            raise ValueError('PE evidence must use PeImportsEvidence')
+        candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
+        tools = [_enum_text(item, ToolName, 'PE tool') for item in value.tools]
+        normal = [_enum_text(item, DllBasename, 'normal import basename') for item in value.normal_imports]
+        delayed = [_enum_text(item, DllBasename, 'delay import basename') for item in value.delay_imports]
+        _reject_duplicate_keys(tuple(tools), 'PE tool')
+        _reject_duplicate_keys(tuple(normal), 'normal import')
+        _reject_duplicate_keys(tuple(delayed), 'delay import')
+        payload: dict[str, object] = {
+            'candidate_exe_sha256': candidate_sha,
+            'baseline_exe_sha256': _require_hash(value.baseline_exe_sha256, 64, 'baseline_exe_sha256'),
+            'tools': tools,
+            'normal_imports': normal,
+            'delay_imports': delayed,
+            'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
+            'verdict': _enum_text(value.verdict, HarnessVerdict, 'PE verdict'),
+        }
+        return _json_artifact(EvidenceKind.PE_IMPORTS, f'pe-imports-{candidate_sha[:12]}.json', payload)
+
+    def build_fork_provenance(self, value: ForkProvenanceEvidence) -> SanitizedArtifact:
+        if not isinstance(value, ForkProvenanceEvidence):
+            raise ValueError('fork evidence must use ForkProvenanceEvidence')
+        if value.official_url is not ForkUrl.OFFICIAL or value.fork_url is not ForkUrl.COSTING_FORK:
+            raise ValueError('fork evidence uses an unapproved URL')
+        if value.tag is not ForkTag.V0_96_0:
+            raise ValueError('fork evidence uses an unapproved tag')
+        paths = tuple(_enum_text(item, ForkDiffPath, 'fork diff path') for item in value.allowed_diff_files)
+        mandatory = tuple(item.value for item in ForkDiffPath if item is not ForkDiffPath.XMLWRITER)
+        if paths not in (mandatory, (*mandatory, ForkDiffPath.XMLWRITER.value)):
+            raise ValueError('fork diff paths do not match the exact allowlist')
+        revision = _require_hash(value.fork_revision, 40, 'fork_revision')
+        payload: dict[str, object] = {
+            'official_url': value.official_url.value,
+            'fork_url': value.fork_url.value,
+            'tag': value.tag.value,
+            'upstream_base_revision': _require_hash(value.upstream_base_revision, 40, 'upstream_base_revision'),
+            'crates_io_checksum': _require_hash(value.crates_io_checksum, 64, 'crates_io_checksum'),
+            'fork_revision': revision,
+            'allowed_diff_files': list(paths),
+            'diff_sha256': _require_hash(value.diff_sha256, 64, 'diff_sha256'),
+            'no_pr': _boolean(value.no_pr, 'no_pr'),
+            'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
+            'verdict': _enum_text(value.verdict, HarnessVerdict, 'fork verdict'),
+        }
+        if payload['no_pr'] is not True:
+            raise ValueError('fork evidence requires an empty upstream PR result')
+        return _json_artifact(EvidenceKind.FORK_PROVENANCE, f'fork-provenance-{revision[:12]}.json', payload)
+
+    def build_cargo_feature_tree(self, value: CargoFeatureTreeEvidence) -> SanitizedArtifact:
+        if not isinstance(value, CargoFeatureTreeEvidence):
+            raise ValueError('Cargo evidence must use CargoFeatureTreeEvidence')
+        label = _enum_text(value.candidate_label, ClosedBinaryLabel, 'candidate label')
+        candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
+        fork_revision = _require_hash(value.fork_revision, 40, 'fork_revision')
+        packages: list[dict[str, object]] = []
+        for item in value.packages:
+            if not isinstance(item, CargoPackageEvidence):
+                raise ValueError('Cargo packages must use CargoPackageEvidence')
+            package = _enum_text(item.package, CargoPackage, 'Cargo package')
+            revision = None if item.revision is None else _require_hash(item.revision, 40, 'package revision')
+            if item.package is CargoPackage.RUST_XLSXWRITER and revision != fork_revision:
+                raise ValueError('rust_xlsxwriter package revision must equal the fork revision')
+            packages.append({'package': package, 'revision': revision})
+        _reject_duplicate_keys(tuple(item['package'] for item in packages), 'Cargo package')
+        edges: list[dict[str, str]] = []
+        for item in value.feature_edges:
+            if not isinstance(item, CargoFeatureEdge):
+                raise ValueError('Cargo feature edges must use CargoFeatureEdge')
+            edges.append(
+                {
+                    'source_package': _enum_text(item.source_package, CargoPackage, 'source package'),
+                    'source_feature': _enum_text(item.source_feature, CargoFeature, 'source feature'),
+                    'target_package': _enum_text(item.target_package, CargoPackage, 'target package'),
+                    'target_feature': _enum_text(item.target_feature, CargoFeature, 'target feature'),
+                }
+            )
+        payload: dict[str, object] = {
+            'candidate_label': label,
+            'candidate_exe_sha256': candidate_sha,
+            'fork_revision': fork_revision,
+            'packages': packages,
+            'feature_edges': edges,
+            'local_log_sha256': _require_hash(value.local_log_sha256, 64, 'local_log_sha256'),
+            'verdict': _enum_text(value.verdict, HarnessVerdict, 'Cargo feature verdict'),
+        }
+        return _json_artifact(
+            EvidenceKind.CARGO_FEATURE_TREE,
+            f'cargo-feature-tree-{label}-{candidate_sha[:12]}.json',
+            payload,
+        )
+
+    def build_text_report(self, value: TextReportEvidence) -> SanitizedArtifact:
+        if not isinstance(value, TextReportEvidence):
+            raise ValueError('text report must use TextReportEvidence')
+        report_kind = _enum_text(value.report_kind, ReportKind, 'report kind')
+        title = _enum_text(value.title, ReportTitle, 'report title')
+        checks: list[dict[str, str]] = []
+        for item in value.checks:
+            if not isinstance(item, ReportCheckEvidence):
+                raise ValueError('report checks must use ReportCheckEvidence')
+            checks.append(
+                {
+                    'check_id': _enum_text(item.check_id, ReportCheckId, 'report check ID'),
+                    'verdict': _enum_text(item.verdict, HarnessVerdict, 'report check verdict'),
+                    'evidence_sha256': _require_hash(item.evidence_sha256, 64, 'report evidence SHA'),
+                }
+            )
+        _reject_duplicate_keys(tuple(item['check_id'] for item in checks), 'report check')
+        overall = _enum_text(value.overall_verdict, HarnessVerdict, 'overall report verdict')
+        payload: dict[str, object] = {
+            'report_kind': report_kind,
+            'title': title,
+            'checks': checks,
+            'overall_verdict': overall,
+        }
+        lines = [f'# {title}', '', f'Overall: {overall}', '']
+        lines.extend(f'- {item["check_id"]}: {item["verdict"]} ({item["evidence_sha256"]})' for item in checks)
+        return SanitizedArtifact(
+            kind=EvidenceKind.TEXT_REPORT,
+            file_name=f'report-{report_kind}.md',
+            payload=payload,
+            content='\n'.join(lines) + '\n',
+            numeric_values=(),
+        )
+
+    def scan_tree(self, root: Path, *, sensitive_names: tuple[str, ...] = ()) -> None:
+        root = root.resolve(strict=True)
+        paths = (root,) if root.is_file() else tuple(sorted(item for item in root.rglob('*') if item.is_file()))
+        for path in paths:
+            _scan_versioned_text(_evidence_io_path(path).read_text(encoding='utf-8'), sensitive_names=sensitive_names)
+            _scan_versioned_text(path.name, sensitive_names=sensitive_names)
+
+    def scan_staged(self, *, sensitive_names: tuple[str, ...] = ()) -> None:
+        for path in _staged_evidence_paths(repo_root().resolve(strict=True)):
+            if not path.is_file():
+                raise ValueError('staged evidence path must be an existing file')
+            self.scan_tree(path, sensitive_names=sensitive_names)
+
+    def validate_local_destination(self, path: Path, *, ignored_roots: tuple[Path, ...]) -> Path:
+        if not ignored_roots:
+            raise ValueError('at least one exact ignored root is required')
+        _reject_parent_traversal(path, 'local destination')
+        raw = _strip_windows_extended_prefix(path).expanduser().absolute()
+        _reject_reparse_components(raw)
+        canonical = raw.resolve(strict=False)
+        roots = tuple(
+            _strip_windows_extended_prefix(item).expanduser().absolute().resolve(strict=False) for item in ignored_roots
+        )
+        if not any(_casefold_relative_to(canonical, root) for root in roots):
+            raise ValueError('local destination must stay below an exact ignored root')
+        return canonical
+
+    def validate_distinct_paths(
+        self,
+        *,
+        input_path: Path,
+        output_path: Path,
+        raw_log_path: Path,
+        evidence_path: Path,
+    ) -> None:
+        keys = tuple(_normalized_path_key(path) for path in (input_path, output_path, raw_log_path, evidence_path))
+        if len(set(keys)) != len(keys):
+            raise ValueError('input, output, raw log and evidence path collision')
+
+    def write_batch(
+        self,
+        *,
+        destination_root: Path,
+        artifacts: tuple[SanitizedArtifact, ...],
+        cleanup_state: AttemptState,
+        scan_staged: bool = True,
+        sensitive_names: tuple[str, ...] = (),
+    ) -> None:
+        if cleanup_state is not AttemptState.CLEANUP_COMPLETE:
+            raise ValueError('cleanup must be complete before versioned evidence is written')
+        if not artifacts or any(not isinstance(item, SanitizedArtifact) for item in artifacts):
+            raise ValueError('write_batch accepts typed sanitized artifacts only')
+        destination_root = destination_root.resolve(strict=False)
+        destination_root.mkdir(parents=True, exist_ok=True)
+        _reject_reparse_components(destination_root)
+        # 短 basename 避免 Windows 深层 pytest/CI 根目录把 staging 子文件推过传统 MAX_PATH。
+        staging = destination_root / f'.s-{uuid.uuid4().hex[:12]}'
+        staging.mkdir()
+        moved: list[Path] = []
+        try:
+            for artifact in artifacts:
+                if Path(artifact.file_name).name != artifact.file_name or artifact.file_name in {'.', '..'}:
+                    raise ValueError('sanitized artifact filename must be one closed basename')
+                target = staging / artifact.file_name
+                with _evidence_io_path(target).open('x', encoding='utf-8', newline='\n') as stream:
+                    stream.write(artifact.content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            self.scan_tree(staging, sensitive_names=sensitive_names)
+            for artifact in artifacts:
+                _validate_artifact_integrity(artifact)
+            self.scan_tree(_performance_tree_root(destination_root), sensitive_names=sensitive_names)
+            if scan_staged:
+                self.scan_staged(sensitive_names=sensitive_names)
+            for artifact in artifacts:
+                source = staging / artifact.file_name
+                final = destination_root / artifact.file_name
+                if _evidence_io_path(final).exists():
+                    raise FileExistsError(final)
+                os.link(_evidence_io_path(source), _evidence_io_path(final))
+                moved.append(final)
+            self.scan_tree(_performance_tree_root(destination_root), sensitive_names=sensitive_names)
+        except BaseException:
+            for path in reversed(moved):
+                try:
+                    _evidence_io_path(path).unlink()
+                except FileNotFoundError:
+                    pass
+            raise
+        finally:
+            shutil.rmtree(_evidence_io_path(staging), ignore_errors=True)
+
     @staticmethod
     def write_dependency_manifest(output: Path, value: DependencyEvidence) -> None:
         payload = EvidenceSanitizer.dependency_payload(value)
@@ -271,6 +1072,280 @@ class EvidenceSanitizer:
             raise ValueError('xmlwriter fallback trigger must be null when fallback is unused')
         if value.allowed_diff_files != expected_files:
             raise ValueError('allowed_diff_files does not match the closed fork diff allowlist')
+
+
+def _enum_text(value: object, enum_type: type[StrEnum], name: str) -> str:
+    if not isinstance(value, enum_type):
+        raise ValueError(f'{name} must use the closed {enum_type.__name__} enum')
+    return value.value
+
+
+def _pipeline(value: object) -> str:
+    if value not in ('gb', 'sk') or not isinstance(value, str):
+        raise ValueError('pipeline must be gb or sk')
+    return value
+
+
+def _integer(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f'{name} must be an integer')
+    return value
+
+
+def _nonnegative_int(value: object, name: str, *, positive: bool = False) -> int:
+    result = _integer(value, name)
+    if result < (1 if positive else 0):
+        qualifier = 'positive' if positive else 'non-negative'
+        raise ValueError(f'{name} must be {qualifier}')
+    return result
+
+
+def _boolean(value: object, name: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f'{name} must be a boolean')
+    return value
+
+
+def _finite_decimal(value: object, name: str, *, positive: bool = False) -> float:
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise ValueError(f'{name} must be a finite Decimal')
+    if value < 0 or (positive and value <= 0):
+        qualifier = 'positive' if positive else 'non-negative'
+        raise ValueError(f'{name} must be {qualifier}')
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f'{name} cannot be represented as a finite JSON number')
+    return result
+
+
+def _reject_duplicate_keys(values: tuple[object, ...], name: str) -> None:
+    if len(set(values)) != len(values):
+        raise ValueError(f'{name} values must be unique')
+
+
+def _machine_payload(value: MachineArtifactEvidence) -> dict[str, object]:
+    if not isinstance(value, MachineArtifactEvidence):
+        raise ValueError('machine evidence must use MachineArtifactEvidence')
+    if value.architecture != 'x86_64':
+        raise ValueError('machine architecture must be x86_64')
+    if value.system_drive_media_type not in ('SSD', 'HDD', 'UNKNOWN'):
+        raise ValueError('machine media type is not closed')
+    return {
+        'windows_build_sha256': _require_hash(value.windows_build_sha256, 64, 'windows_build_sha256'),
+        'architecture': value.architecture,
+        'cpu_model_sha256': _require_hash(value.cpu_model_sha256, 64, 'cpu_model_sha256'),
+        'logical_cpu_count': _nonnegative_int(value.logical_cpu_count, 'logical_cpu_count', positive=True),
+        'physical_memory_bytes': _nonnegative_int(value.physical_memory_bytes, 'physical_memory_bytes', positive=True),
+        'system_drive_media_type': value.system_drive_media_type,
+        'system_drive_size_bytes': _nonnegative_int(
+            value.system_drive_size_bytes,
+            'system_drive_size_bytes',
+            positive=True,
+        ),
+        'fingerprint_sha256': _require_hash(value.fingerprint_sha256, 64, 'machine fingerprint'),
+    }
+
+
+def _mismatch_payload(value: MismatchEvidence) -> dict[str, object]:
+    if not isinstance(value, MismatchEvidence):
+        raise ValueError('mismatches must use MismatchEvidence')
+    if not isinstance(value.coordinate, str) or _COORDINATE.fullmatch(value.coordinate) is None:
+        raise ValueError('mismatch coordinate must be strict A1 syntax')
+    return {
+        'sheet': _enum_text(value.sheet, ApprovedSheet, 'mismatch sheet'),
+        'coordinate': value.coordinate,
+        'mismatch_kind': _enum_text(value.mismatch_kind, MismatchKind, 'mismatch kind'),
+        'expected_storage_type': _enum_text(
+            value.expected_storage_type,
+            StorageType,
+            'expected storage type',
+        ),
+        'actual_storage_type': _enum_text(value.actual_storage_type, StorageType, 'actual storage type'),
+        'local_unversioned_log_sha256': _require_hash(
+            value.local_log_sha256,
+            64,
+            'mismatch local log SHA',
+        ),
+    }
+
+
+def _closed_command_token(value: object) -> str:
+    if isinstance(value, (CommandToken, PathAlias)):
+        return value.value
+    raise ValueError('command transcript tokens must be closed literals or approved aliases')
+
+
+def _tool_version_payload(value: SanitizedToolVersion) -> dict[str, int]:
+    if not isinstance(value, SanitizedToolVersion):
+        raise ValueError('tool version must use SanitizedToolVersion')
+    return {
+        'major': _nonnegative_int(value.major, 'tool version major'),
+        'minor': _nonnegative_int(value.minor, 'tool version minor'),
+        'patch': _nonnegative_int(value.patch, 'tool version patch'),
+    }
+
+
+def _json_artifact(kind: EvidenceKind, file_name: str, payload: dict[str, object]) -> SanitizedArtifact:
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    return SanitizedArtifact(
+        kind=kind,
+        file_name=file_name,
+        payload=payload,
+        content=content,
+        numeric_values=_numeric_values(payload),
+    )
+
+
+def _validate_artifact_integrity(artifact: SanitizedArtifact) -> None:
+    try:
+        expected_name = _expected_artifact_file_name(artifact)
+        if artifact.kind is EvidenceKind.TEXT_REPORT:
+            checks = artifact.payload['checks']
+            if not isinstance(checks, list):
+                raise ValueError('text report checks must be a list')
+            lines = [f'# {artifact.payload["title"]}', '', f'Overall: {artifact.payload["overall_verdict"]}', '']
+            lines.extend(
+                f'- {item["check_id"]}: {item["verdict"]} ({item["evidence_sha256"]})'
+                for item in checks
+                if isinstance(item, dict)
+            )
+            expected_content = '\n'.join(lines) + '\n'
+        else:
+            expected_content = json.dumps(artifact.payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError('sanitized artifact was tampered after its typed builder') from exc
+    if artifact.file_name != expected_name or artifact.content != expected_content:
+        raise ValueError('sanitized artifact was tampered after its typed builder')
+
+
+def _expected_artifact_file_name(artifact: SanitizedArtifact) -> str:
+    payload = artifact.payload
+    if artifact.kind is EvidenceKind.BENCHMARK:
+        identity = f'{payload["profile"]}|{payload["pipeline"]}|{payload["candidate_exe_sha256"]}'
+        return f'benchmark-{_sha256_text(identity)[:16]}.json'
+    if artifact.kind is EvidenceKind.COMMAND:
+        return f'command-{payload["command_id"]}.json'
+    if artifact.kind is EvidenceKind.SMOKE:
+        return f'smoke-{payload["pipeline"]}-{str(payload["candidate_exe_sha256"])[:12]}.json'
+    if artifact.kind is EvidenceKind.PE_IMPORTS:
+        return f'pe-imports-{str(payload["candidate_exe_sha256"])[:12]}.json'
+    if artifact.kind is EvidenceKind.FORK_PROVENANCE:
+        return f'fork-provenance-{str(payload["fork_revision"])[:12]}.json'
+    if artifact.kind is EvidenceKind.CARGO_FEATURE_TREE:
+        return f'cargo-feature-tree-{payload["candidate_label"]}-{str(payload["candidate_exe_sha256"])[:12]}.json'
+    if artifact.kind is EvidenceKind.TEXT_REPORT:
+        return f'report-{payload["report_kind"]}.md'
+    raise ValueError('sanitized artifact uses an unknown evidence kind')
+
+
+def _numeric_values(value: object) -> tuple[int | float, ...]:
+    if isinstance(value, bool):
+        return ()
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError('versioned evidence contains a non-finite number')
+        return (value,)
+    if isinstance(value, dict):
+        return tuple(item for child in value.values() for item in _numeric_values(child))
+    if isinstance(value, (list, tuple)):
+        return tuple(item for child in value for item in _numeric_values(child))
+    return ()
+
+
+def _scan_versioned_text(raw: str, *, sensitive_names: tuple[str, ...]) -> None:
+    folded = raw.casefold()
+    username = getpass.getuser().strip().casefold()
+    hostname = socket.gethostname().strip().casefold()
+    names: set[str] = set()
+    for item in sensitive_names:
+        if not isinstance(item, str) or not item:
+            raise ValueError('sensitive names must be non-empty strings')
+        path = Path(item)
+        names.update((path.name.casefold(), path.stem.casefold()))
+    identity_hit = any(token and len(token) >= 3 and token in folded for token in (username, hostname))
+    name_hit = any(token and token in folded for token in names)
+    if (
+        _DRIVE_PATH.search(raw)
+        or _UNC_PATH.search(raw)
+        or _USERS_PATH.search(raw)
+        or _VERSIONED_SENSITIVE_MARKER.search(raw)
+        or identity_hit
+        or name_hit
+    ):
+        raise ValueError('versioned evidence contains sensitive content')
+
+
+def _staged_evidence_paths(root: Path) -> tuple[Path, ...]:
+    git = shutil.which('git')
+    if git is None:
+        raise FileNotFoundError('git executable not found for staged evidence scan')
+    completed = subprocess.run(  # noqa: S603 - fixed Git executable and closed arguments.
+        [git, '-C', str(root), 'diff', '--cached', '--name-only', '--diff-filter=ACMR', '--'],
+        check=True,
+        capture_output=True,
+        encoding='utf-8',
+        errors='strict',
+    )
+    paths: list[Path] = []
+    for raw in completed.stdout.splitlines():
+        relative = Path(raw)
+        if '..' in relative.parts:
+            raise ValueError('staged evidence path contains parent traversal')
+        if len(relative.parts) >= 2 and relative.parts[:2] == ('docs', 'performance'):
+            paths.append(root / relative)
+    return tuple(paths)
+
+
+def _strip_windows_extended_prefix(path: Path) -> Path:
+    raw = str(path)
+    if raw.upper().startswith('\\\\?\\UNC\\'):
+        raise ValueError('extended UNC paths are not supported')
+    if raw.startswith('\\\\?\\'):
+        return Path(raw[4:])
+    return path
+
+
+def _evidence_io_path(path: Path) -> Path:
+    normal = _strip_windows_extended_prefix(path).absolute()
+    if os.name != 'nt':
+        return normal
+    return Path(f'\\\\?\\{normal}')
+
+
+def _reject_reparse_components(path: Path) -> None:
+    absolute = path.absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        if not os.path.lexists(current):
+            break
+        metadata = os.lstat(current)
+        attributes = getattr(metadata, 'st_file_attributes', 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+            raise ValueError(f'path contains a symlink or reparse point: {current}')
+
+
+def _normalized_path_key(path: Path) -> str:
+    raw = _strip_windows_extended_prefix(path).expanduser().absolute().resolve(strict=False)
+    return os.path.normcase(os.path.normpath(str(raw)))
+
+
+def _casefold_relative_to(path: Path, root: Path) -> bool:
+    path_key = _normalized_path_key(path)
+    root_key = _normalized_path_key(root)
+    try:
+        return os.path.commonpath((path_key, root_key)) == root_key
+    except ValueError:
+        return False
+
+
+def _performance_tree_root(destination: Path) -> Path:
+    current = destination
+    while current.parent != current:
+        if current.name.casefold() == 'performance' and current.parent.name.casefold() == 'docs':
+            return current
+        current = current.parent
+    return destination
 
 
 def _all_manifest_strings(value: DependencyEvidence) -> tuple[str, ...]:

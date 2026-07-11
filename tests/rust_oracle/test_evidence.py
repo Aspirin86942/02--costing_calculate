@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
+import socket
 import subprocess
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -766,3 +769,476 @@ def test_run_command_preserves_windows_rustup_proxy_name(monkeypatch: pytest.Mon
     evidence._run_command('cargo', 'metadata')
 
     assert captured == [(cargo_proxy, 'metadata')]
+
+
+def _benchmark_manifest_evidence(**changes: object) -> evidence.BenchmarkManifestEvidence:
+    value = evidence.BenchmarkManifestEvidence(
+        schema_version=1,
+        profile=evidence.ComparisonProfile.PHASE0B_VS_PHASE0A,
+        pipeline='gb',
+        input_alias=evidence.PathAlias.GB_INPUT,
+        input_sha256='1' * 64,
+        reference_label=evidence.ClosedBinaryLabel.PHASE0A,
+        reference_exe_sha256='2' * 64,
+        candidate_label=evidence.ClosedBinaryLabel.PHASE0B,
+        candidate_exe_sha256='3' * 64,
+        machine=evidence.MachineArtifactEvidence(
+            windows_build_sha256='4' * 64,
+            architecture='x86_64',
+            cpu_model_sha256='5' * 64,
+            logical_cpu_count=16,
+            physical_memory_bytes=32 * 1024**3,
+            system_drive_media_type='SSD',
+            system_drive_size_bytes=1024**4,
+            fingerprint_sha256='6' * 64,
+        ),
+        attempt_count=1,
+        prior_safe_verdicts=(evidence.HarnessVerdict.ENVIRONMENT_DRIFT,),
+        ledger_head_sha256='7' * 64,
+        first_group_sha256='8' * 64,
+        expanded_group_sha256=None,
+        rounds=(
+            evidence.BenchmarkRoundEvidence(
+                metric=evidence.BenchmarkMetric.WALL,
+                global_round=1,
+                order=('reference', 'candidate'),
+                reference_value=Decimal('1.25'),
+                candidate_value=Decimal('1.20'),
+            ),
+        ),
+        metrics=(
+            evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_MEDIAN, Decimal('1.20')),
+            evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_RATIO, Decimal('0.96')),
+        ),
+        runtime_counts=(evidence.RuntimeCountEvidence(evidence.RuntimeCount.READER_ROWS, 10),),
+        sheet_dimensions=(evidence.SheetDimensionEvidence(evidence.ApprovedSheet.COST_DETAIL, 'A1:AZ10'),),
+        output_bytes=(
+            evidence.OutputBytesEvidence('reference', 1000),
+            evidence.OutputBytesEvidence('candidate', 990),
+        ),
+        mismatches=(),
+        local_log_sha256=('9' * 64,),
+        verdict=evidence.HarnessVerdict.VALIDATED,
+    )
+    return replace(value, **changes)
+
+
+def _command_transcript_evidence(**changes: object) -> evidence.CommandTranscriptEvidence:
+    value = evidence.CommandTranscriptEvidence(
+        command_id=evidence.CommandId.CARGO_BUILD_RELEASE,
+        tokens=(
+            evidence.CommandToken.CARGO,
+            evidence.CommandToken.BUILD,
+            evidence.CommandToken.RELEASE,
+            evidence.PathAlias.REPO_ROOT,
+        ),
+        tool=evidence.ToolName.CARGO,
+        tool_version=evidence.SanitizedToolVersion(1, 88, 0),
+        exit_code=0,
+        local_log_sha256='a' * 64,
+        verdict=evidence.HarnessVerdict.VALIDATED,
+    )
+    return replace(value, **changes)
+
+
+def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
+    return (
+        ('benchmark_manifest', _benchmark_manifest_evidence()),
+        ('command_transcript', _command_transcript_evidence()),
+        (
+            'smoke',
+            evidence.SmokeSummaryEvidence(
+                candidate_exe_sha256='b' * 64,
+                fixture_sha256='c' * 64,
+                pipeline='sk',
+                exit_code=0,
+                approved_sheets=tuple(evidence.ApprovedSheet),
+                temp_canary_created=False,
+                temp_residue_count=0,
+                missing_dll=False,
+                local_log_sha256='d' * 64,
+                verdict=evidence.HarnessVerdict.VALIDATED,
+            ),
+        ),
+        (
+            'pe_imports',
+            evidence.PeImportsEvidence(
+                candidate_exe_sha256='e' * 64,
+                baseline_exe_sha256='f' * 64,
+                tools=(evidence.ToolName.DUMPBIN,),
+                normal_imports=(evidence.DllBasename.KERNEL32,),
+                delay_imports=(),
+                local_log_sha256='0' * 64,
+                verdict=evidence.HarnessVerdict.VALIDATED,
+            ),
+        ),
+        (
+            'fork_provenance',
+            evidence.ForkProvenanceEvidence(
+                official_url=evidence.ForkUrl.OFFICIAL,
+                fork_url=evidence.ForkUrl.COSTING_FORK,
+                tag=evidence.ForkTag.V0_96_0,
+                upstream_base_revision=_UPSTREAM_BASE,
+                crates_io_checksum=_CHECKSUM,
+                fork_revision=_REVISION,
+                allowed_diff_files=tuple(evidence.ForkDiffPath),
+                diff_sha256='a' * 64,
+                no_pr=True,
+                local_log_sha256='b' * 64,
+                verdict=evidence.HarnessVerdict.VALIDATED,
+            ),
+        ),
+        (
+            'cargo_feature_tree',
+            evidence.CargoFeatureTreeEvidence(
+                candidate_label=evidence.ClosedBinaryLabel.PHASE3,
+                candidate_exe_sha256='c' * 64,
+                fork_revision=_REVISION,
+                packages=(
+                    evidence.CargoPackageEvidence(
+                        evidence.CargoPackage.RUST_XLSXWRITER,
+                        _REVISION,
+                    ),
+                ),
+                feature_edges=(
+                    evidence.CargoFeatureEdge(
+                        evidence.CargoPackage.COSTING_XLSX,
+                        evidence.CargoFeature.LOW_MEMORY,
+                        evidence.CargoPackage.RUST_XLSXWRITER,
+                        evidence.CargoFeature.CONSTANT_MEMORY,
+                    ),
+                ),
+                local_log_sha256='d' * 64,
+                verdict=evidence.HarnessVerdict.VALIDATED,
+            ),
+        ),
+        (
+            'text_report',
+            evidence.TextReportEvidence(
+                report_kind=evidence.ReportKind.PHASE_GATE,
+                title=evidence.ReportTitle.PHASE_GATE_RESULT,
+                checks=(
+                    evidence.ReportCheckEvidence(
+                        evidence.ReportCheckId.CORRECTNESS,
+                        evidence.HarnessVerdict.VALIDATED,
+                        'e' * 64,
+                    ),
+                ),
+                overall_verdict=evidence.HarnessVerdict.VALIDATED,
+            ),
+        ),
+    )
+
+
+def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers() -> None:
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_evidence())
+    raw = json.dumps(artifact.payload, ensure_ascii=False)
+
+    assert '$GB_INPUT' in raw
+    assert not any(token in raw for token in ('C:\\', 'D:\\', '/Users/', 'input.xlsx'))
+    assert all(math.isfinite(float(value)) for value in artifact.numeric_values)
+
+
+def test_each_allowed_string_field_rejects_unknown_canary() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    benchmark_value = _benchmark_manifest_evidence()
+    benchmark_machine = replace(benchmark_value.machine, architecture='unknown-canary')
+    benchmark_round = replace(benchmark_value.rounds[0], metric='unknown-canary')
+    benchmark_metric = replace(benchmark_value.metrics[0], metric='unknown-canary')
+    runtime_count = replace(benchmark_value.runtime_counts[0], name='unknown-canary')
+    sheet_dimension = replace(benchmark_value.sheet_dimensions[0], sheet='unknown-canary')
+    output_bytes = replace(benchmark_value.output_bytes[0], role='unknown-canary')
+    all_values = dict(_all_new_artifact_values())
+    smoke = all_values['smoke']
+    pe_imports = all_values['pe_imports']
+    fork = all_values['fork_provenance']
+    cargo = all_values['cargo_feature_tree']
+    report = all_values['text_report']
+    assert isinstance(smoke, evidence.SmokeSummaryEvidence)
+    assert isinstance(pe_imports, evidence.PeImportsEvidence)
+    assert isinstance(fork, evidence.ForkProvenanceEvidence)
+    assert isinstance(cargo, evidence.CargoFeatureTreeEvidence)
+    assert isinstance(report, evidence.TextReportEvidence)
+    cases = [
+        (policy.build_benchmark_manifest, value)
+        for value in (
+            _benchmark_manifest_evidence(input_alias='unknown-canary'),
+            _benchmark_manifest_evidence(reference_label='unknown-canary'),
+            _benchmark_manifest_evidence(candidate_label='unknown-canary'),
+            _benchmark_manifest_evidence(pipeline='unknown-canary'),
+            _benchmark_manifest_evidence(profile='unknown-canary'),
+            _benchmark_manifest_evidence(machine=benchmark_machine),
+            _benchmark_manifest_evidence(rounds=(benchmark_round,)),
+            _benchmark_manifest_evidence(metrics=(benchmark_metric,)),
+            _benchmark_manifest_evidence(runtime_counts=(runtime_count,)),
+            _benchmark_manifest_evidence(sheet_dimensions=(sheet_dimension,)),
+            _benchmark_manifest_evidence(output_bytes=(output_bytes,)),
+            _benchmark_manifest_evidence(input_sha256='unknown-canary'),
+        )
+    ]
+    cases.extend(
+        (
+            (policy.build_command_transcript, _command_transcript_evidence(command_id='unknown-canary')),
+            (policy.build_command_transcript, _command_transcript_evidence(tokens=('unknown-canary',))),
+            (policy.build_command_transcript, _command_transcript_evidence(tool='unknown-canary')),
+            (policy.build_smoke, replace(smoke, pipeline='unknown-canary')),
+            (policy.build_smoke, replace(smoke, approved_sheets=('unknown-canary',))),
+            (policy.build_smoke, replace(smoke, verdict='unknown-canary')),
+            (policy.build_pe_imports, replace(pe_imports, tools=('unknown-canary',))),
+            (policy.build_pe_imports, replace(pe_imports, normal_imports=('unknown-canary',))),
+            (policy.build_pe_imports, replace(pe_imports, verdict='unknown-canary')),
+            (policy.build_fork_provenance, replace(fork, official_url='unknown-canary')),
+            (policy.build_fork_provenance, replace(fork, tag='unknown-canary')),
+            (policy.build_fork_provenance, replace(fork, allowed_diff_files=('unknown-canary',))),
+            (policy.build_cargo_feature_tree, replace(cargo, candidate_label='unknown-canary')),
+            (
+                policy.build_cargo_feature_tree,
+                replace(cargo, packages=(replace(cargo.packages[0], package='unknown-canary'),)),
+            ),
+            (
+                policy.build_cargo_feature_tree,
+                replace(cargo, feature_edges=(replace(cargo.feature_edges[0], source_feature='unknown-canary'),)),
+            ),
+            (policy.build_text_report, replace(report, report_kind='unknown-canary')),
+            (policy.build_text_report, replace(report, title='unknown-canary')),
+            (
+                policy.build_text_report,
+                replace(report, checks=(replace(report.checks[0], check_id='unknown-canary'),)),
+            ),
+        )
+    )
+    for builder, value in cases:
+        with pytest.raises(ValueError):
+            builder(value)
+
+
+def test_mismatch_artifact_omits_expected_and_actual_values() -> None:
+    mismatch = evidence.MismatchEvidence(
+        sheet=evidence.ApprovedSheet.COST_DETAIL,
+        coordinate='C7',
+        mismatch_kind=evidence.MismatchKind.VALUE_MISMATCH,
+        expected_storage_type=evidence.StorageType.NUMBER,
+        actual_storage_type=evidence.StorageType.STRING,
+        local_log_sha256='f' * 64,
+    )
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(
+        _benchmark_manifest_evidence(mismatches=(mismatch,))
+    )
+    raw = json.dumps(artifact.payload)
+    assert 'expected_value' not in raw
+    assert 'actual_value' not in raw
+    assert 'expected=' not in raw
+    assert 'actual=' not in raw
+
+
+def test_nonzero_stdout_stderr_canary_is_not_copied_to_manifest() -> None:
+    artifact = EvidenceSanitizer.closed_policy().build_command_transcript(
+        replace(_command_transcript_evidence(), exit_code=9, verdict=evidence.HarnessVerdict.CANDIDATE_FAILED)
+    )
+    raw = json.dumps(artifact.payload)
+    assert 'unknown-canary' not in raw
+    assert 'stdout' not in raw.lower()
+    assert 'stderr' not in raw.lower()
+
+
+def test_command_template_rejects_real_paths_and_arguments() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    for token in (r'D:\\secret\\input.xlsx', '--input=D:/secret/input.xlsx', 'erp-order-2026.xlsx'):
+        with pytest.raises(ValueError):
+            policy.build_command_transcript(replace(_command_transcript_evidence(), tokens=(token,)))
+
+
+def test_all_artifact_kinds_use_typed_sanitizer_builders() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    artifacts = tuple(getattr(policy, f'build_{name}')(value) for name, value in _all_new_artifact_values())
+    assert {artifact.kind for artifact in artifacts} == set(evidence.EvidenceKind)
+    assert not hasattr(policy, 'sanitize')
+
+
+@pytest.mark.parametrize(
+    'sensitive_text',
+    (
+        r'D:\\private\\artifact.json',
+        r'\\server\share\artifact.json',
+        r'C:\Users\private\artifact.json',
+        '/Users/private/artifact.json',
+        'private',
+        'private-host',
+        'unknown-canary',
+        'erp-export-20260413.xlsx',
+    ),
+)
+def test_scan_tree_rejects_drive_unc_users_username_hostname_and_erp_basename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sensitive_text: str,
+) -> None:
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    (root / 'artifact.json').write_text(json.dumps({'value': sensitive_text}), encoding='utf-8')
+    monkeypatch.setattr(evidence.getpass, 'getuser', lambda: 'private')
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'private-host')
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_tree(root, sensitive_names=('erp-export-20260413.xlsx',))
+
+
+@pytest.mark.parametrize('marker', ('expected=secret', 'actual=secret', 'STDOUT: secret', 'STDERR: secret'))
+def test_scan_tree_rejects_expected_actual_stdout_and_stderr_markers(tmp_path: Path, marker: str) -> None:
+    root = tmp_path / 'evidence'
+    root.mkdir()
+    (root / 'artifact.txt').write_text(marker, encoding='utf-8')
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_tree(root)
+
+
+def test_scan_staged_checks_all_staged_evidence_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first = tmp_path / 'docs' / 'performance' / 'first.json'
+    second = tmp_path / 'docs' / 'performance' / 'second.json'
+    first.parent.mkdir(parents=True)
+    first.write_text('{}', encoding='utf-8')
+    second.write_text('actual=unknown-canary', encoding='utf-8')
+    monkeypatch.setattr(evidence, 'repo_root', lambda: tmp_path)
+    monkeypatch.setattr(evidence, '_staged_evidence_paths', lambda _root: (first, second))
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_local_path_rejects_parent_traversal(tmp_path: Path) -> None:
+    trusted = tmp_path / 'rust' / 'target' / 'perf-local'
+    trusted.mkdir(parents=True)
+    with pytest.raises(ValueError, match='parent traversal'):
+        EvidenceSanitizer.closed_policy().validate_local_destination(
+            trusted / '..' / 'escaped.json',
+            ignored_roots=(trusted,),
+        )
+
+
+def test_local_path_rejects_junction_to_versioned_directory(tmp_path: Path) -> None:
+    trusted = tmp_path / 'rust' / 'target' / 'perf-local'
+    versioned = tmp_path / 'docs' / 'performance'
+    trusted.mkdir(parents=True)
+    versioned.mkdir(parents=True)
+    link = trusted / 'linked'
+    try:
+        link.symlink_to(versioned, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'junction/symlink creation unavailable: {exc}')
+    with pytest.raises(ValueError, match='reparse|symlink'):
+        EvidenceSanitizer.closed_policy().validate_local_destination(
+            link / 'raw.json',
+            ignored_roots=(trusted,),
+        )
+
+
+def test_local_path_rejects_case_normalized_escape(tmp_path: Path) -> None:
+    trusted = tmp_path / 'rust' / 'target' / 'Trusted'
+    trusted.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    accepted = policy.validate_local_destination(trusted / 'nested' / 'raw.json', ignored_roots=(trusted,))
+    assert accepted.name == 'raw.json'
+    with pytest.raises(ValueError, match='ignored root'):
+        policy.validate_local_destination(
+            trusted.parent / 'trusted-escape' / 'raw.json',
+            ignored_roots=(trusted,),
+        )
+
+
+def test_local_path_rejects_input_output_evidence_collision(tmp_path: Path) -> None:
+    shared = tmp_path / 'same.xlsx'
+    with pytest.raises(ValueError, match='collision'):
+        EvidenceSanitizer.closed_policy().validate_distinct_paths(
+            input_path=shared,
+            output_path=shared,
+            raw_log_path=tmp_path / 'raw.log',
+            evidence_path=tmp_path / 'evidence.json',
+        )
+
+
+def test_write_batch_removes_staging_on_sensitive_scan_failure(tmp_path: Path) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    artifact = EvidenceSanitizer.closed_policy().build_command_transcript(_command_transcript_evidence())
+    bad = replace(artifact, content='actual=unknown-canary')
+    with pytest.raises(ValueError, match='sensitive'):
+        EvidenceSanitizer.closed_policy().write_batch(
+            destination_root=destination,
+            artifacts=(bad,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        )
+    assert tuple(destination.iterdir()) == ()
+
+
+def test_write_batch_removes_this_batch_outputs_on_post_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifact = policy.build_command_transcript(_command_transcript_evidence())
+    real_scan_tree = policy.scan_tree
+    calls = 0
+
+    def fail_post_write(path: Path, *, sensitive_names: tuple[str, ...] = ()) -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise OSError('post-write scan failed')
+        real_scan_tree(path, sensitive_names=sensitive_names)
+
+    monkeypatch.setattr(policy, 'scan_tree', fail_post_write)
+    with pytest.raises(OSError, match='post-write'):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=(artifact,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        )
+    assert tuple(destination.rglob(artifact.file_name)) == ()
+
+
+def test_write_batch_rejects_tampered_typed_artifact(tmp_path: Path) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifact = policy.build_command_transcript(_command_transcript_evidence())
+    tampered = replace(artifact, content='{"safe":"tampered"}\n')
+    with pytest.raises(ValueError, match='tampered'):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=(tampered,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        )
+    assert tuple(destination.iterdir()) == ()
+
+
+def test_cleanup_failure_leaves_no_versionable_artifact(tmp_path: Path) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    artifact = EvidenceSanitizer.closed_policy().build_command_transcript(_command_transcript_evidence())
+    with pytest.raises(ValueError, match='cleanup'):
+        EvidenceSanitizer.closed_policy().write_batch(
+            destination_root=destination,
+            artifacts=(artifact,),
+            cleanup_state=evidence.AttemptState.FAILED,
+        )
+    assert tuple(destination.iterdir()) == ()
+
+
+def test_phase0a_manifest_cannot_be_overwritten(tmp_path: Path) -> None:
+    destination = tmp_path / 'docs' / 'performance'
+    destination.mkdir(parents=True)
+    policy = EvidenceSanitizer.closed_policy()
+    artifact = policy.build_benchmark_manifest(_benchmark_manifest_evidence())
+    policy.write_batch(
+        destination_root=destination,
+        artifacts=(artifact,),
+        cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+    )
+    original = (destination / artifact.file_name).read_bytes()
+    with pytest.raises(FileExistsError):
+        policy.write_batch(
+            destination_root=destination,
+            artifacts=(artifact,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        )
+    assert (destination / artifact.file_name).read_bytes() == original

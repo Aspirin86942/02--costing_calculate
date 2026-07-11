@@ -1,6 +1,8 @@
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 
+use costing_core::error::{CleanupFailureMeta, ErrorContext, ErrorStage, IoFailureMeta};
 use costing_core::model::{CellValue, WorkbookPayload};
 use rust_decimal::prelude::ToPrimitive;
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet};
@@ -13,15 +15,64 @@ const DEFAULT_SHEET_NAMES: [&str; 3] = [
     "成本分析工单维度",
 ];
 
-pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), CostingXlsxError> {
-    validate_default_sheet_contract(payload)?;
+pub struct WriterContext {
+    pub request_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WriterPrimaryError {
+    #[error("{0}")]
+    Io(#[source] std::io::Error),
+    #[error("{0}")]
+    Xlsx(#[source] CostingXlsxError),
+    #[error("{0}")]
+    Contract(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{primary}")]
+pub struct WriterError {
+    pub context: ErrorContext,
+    #[source]
+    pub primary: WriterPrimaryError,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputArtifactState {
+    NotCreated,
+    CreatedByCurrentRun,
+    CompletedByCurrentRun,
+}
+
+pub fn write_workbook(
+    context: &WriterContext,
+    path: &Path,
+    payload: &WorkbookPayload,
+) -> Result<(), WriterError> {
+    let artifact_state = OutputArtifactState::NotCreated;
+    validate_default_sheet_contract(payload).map_err(|error| {
+        writer_error(
+            context,
+            path,
+            ErrorStage::PlanSheet,
+            primary_from_xlsx_error(error),
+        )
+    })?;
 
     let mut workbook = Workbook::new();
     for sheet in &payload.sheet_models {
         let worksheet = workbook.add_worksheet();
         worksheet
             .set_name(&sheet.sheet_name)
-            .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+            .map_err(CostingXlsxError::Writer)
+            .map_err(|error| {
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::PopulateWorkbook,
+                    WriterPrimaryError::Xlsx(error),
+                )
+            })?;
 
         let header_format = Format::new()
             .set_bold()
@@ -40,56 +91,224 @@ pub fn write_workbook(path: &Path, payload: &WorkbookPayload) -> Result<(), Cost
             sheet.fixed_width,
             &header_format,
             &text_format,
-        )?;
+        )
+        .map_err(|error| {
+            writer_error(
+                context,
+                path,
+                ErrorStage::PopulateWorkbook,
+                primary_from_xlsx_error(error),
+            )
+        })?;
         write_data_rows(
             worksheet,
             &sheet.columns,
             &sheet.rows,
             &sheet.number_formats,
             &text_format,
-        )?;
+        )
+        .map_err(|error| {
+            writer_error(
+                context,
+                path,
+                ErrorStage::PopulateWorkbook,
+                primary_from_xlsx_error(error),
+            )
+        })?;
 
         if sheet.auto_filter && !sheet.columns.is_empty() {
             let last_row = sheet.rows.len() as u32;
             let last_col = (sheet.columns.len() - 1) as u16;
             worksheet
                 .autofilter(0, 0, last_row, last_col)
-                .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                .map_err(CostingXlsxError::Writer)
+                .map_err(|error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        WriterPrimaryError::Xlsx(error),
+                    )
+                })?;
         }
         if let Some(freeze_panes) = &sheet.freeze_panes {
-            let (row, col) = parse_freeze_panes(freeze_panes)?;
+            let (row, col) = parse_freeze_panes(freeze_panes).map_err(|error| {
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::PopulateWorkbook,
+                    primary_from_xlsx_error(error),
+                )
+            })?;
             worksheet
                 .set_freeze_panes(row, col)
-                .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                .map_err(CostingXlsxError::Writer)
+                .map_err(|error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        WriterPrimaryError::Xlsx(error),
+                    )
+                })?;
         }
     }
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            writer_error(
+                context,
+                path,
+                ErrorStage::PrepareOutputDirectory,
+                WriterPrimaryError::Io(error),
+            )
+        })?;
     }
     // 在真正写出时原子创建目标文件，避免前置 exists 检查与保存之间的并发覆盖竞态。
-    let file = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                CostingXlsxError::OutputExists(path.to_path_buf())
-            } else {
-                CostingXlsxError::Message(error.to_string())
-            }
+            finish_writer_failure(
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::CreateFinalOutput,
+                    WriterPrimaryError::Io(error),
+                ),
+                artifact_state,
+                path,
+            )
         })?;
-    if let Err(error) = workbook.save_to_writer(file) {
-        let cleanup_error = std::fs::remove_file(path).err();
-        let cleanup_detail = cleanup_error
-            .map(|cleanup_error| format!("; 清理未完成输出失败: {cleanup_error}"))
-            .unwrap_or_default();
-        return Err(CostingXlsxError::Message(format!(
-            "{error}{cleanup_detail}"
-        )));
+    let artifact_state = OutputArtifactState::CreatedByCurrentRun;
+
+    if let Err(error) = workbook.save_to_writer(&mut file) {
+        drop(file);
+        return Err(finish_writer_failure(
+            writer_error(
+                context,
+                path,
+                ErrorStage::SaveWorkbook,
+                WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+            ),
+            artifact_state,
+            path,
+        ));
     }
+
+    if let Err(error) = file.flush() {
+        drop(file);
+        return Err(finish_writer_failure(
+            writer_error(
+                context,
+                path,
+                ErrorStage::SaveWorkbook,
+                WriterPrimaryError::Io(error),
+            ),
+            artifact_state,
+            path,
+        ));
+    }
+    drop(file);
+
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            return Err(finish_writer_failure(
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::ReadOutputMetadata,
+                    WriterPrimaryError::Io(error),
+                ),
+                artifact_state,
+                path,
+            ));
+        }
+    };
+    if metadata.len() == 0 {
+        return Err(finish_writer_failure(
+            writer_error(
+                context,
+                path,
+                ErrorStage::ReadOutputMetadata,
+                WriterPrimaryError::Contract("written workbook is empty".to_string()),
+            ),
+            artifact_state,
+            path,
+        ));
+    }
+    let artifact_state = OutputArtifactState::CompletedByCurrentRun;
+    debug_assert_eq!(artifact_state, OutputArtifactState::CompletedByCurrentRun);
     Ok(())
+}
+
+fn writer_error(
+    context: &WriterContext,
+    path: &Path,
+    stage: ErrorStage,
+    primary: WriterPrimaryError,
+) -> WriterError {
+    WriterError {
+        context: ErrorContext::new(context.request_id.clone(), stage, Some(path.to_path_buf())),
+        primary,
+    }
+}
+
+fn primary_from_xlsx_error(error: CostingXlsxError) -> WriterPrimaryError {
+    match error {
+        CostingXlsxError::Message(message) => WriterPrimaryError::Contract(message),
+        error => WriterPrimaryError::Xlsx(error),
+    }
+}
+
+fn finish_writer_failure(
+    mut error: WriterError,
+    artifact_state: OutputArtifactState,
+    path: &Path,
+) -> WriterError {
+    match artifact_state {
+        OutputArtifactState::NotCreated => error,
+        OutputArtifactState::CreatedByCurrentRun => match std::fs::remove_file(path) {
+            Ok(()) => {
+                error.context.details.partial_output_removed = Some(true);
+                error
+            }
+            Err(cleanup_error) => {
+                error.context.details.partial_output_removed = Some(false);
+                merge_cleanup_failure(
+                    error,
+                    ErrorStage::RemovePartialOutput,
+                    path.to_path_buf(),
+                    cleanup_error,
+                )
+            }
+        },
+        OutputArtifactState::CompletedByCurrentRun => {
+            error.context.details.final_output_valid = true;
+            error
+        }
+    }
+}
+
+fn merge_cleanup_failure(
+    mut error: WriterError,
+    stage: ErrorStage,
+    path: std::path::PathBuf,
+    cleanup_error: std::io::Error,
+) -> WriterError {
+    error
+        .context
+        .details
+        .cleanup_failures
+        .push(CleanupFailureMeta {
+            stage,
+            path: Some(path),
+            io_meta: IoFailureMeta::from(&cleanup_error),
+            message: cleanup_error.to_string(),
+        });
+    error
 }
 
 fn validate_default_sheet_contract(payload: &WorkbookPayload) -> Result<(), CostingXlsxError> {
@@ -121,11 +340,11 @@ fn write_header_row(
         let col_idx = col_idx as u16;
         worksheet
             .write_string_with_format(0, col_idx, column, header_format)
-            .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+            .map_err(CostingXlsxError::Writer)?;
         if let Some(width) = fixed_width {
             worksheet
                 .set_column_width(col_idx, normalized_column_width(width))
-                .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                .map_err(CostingXlsxError::Writer)?;
         }
         let column_format = number_formats
             .get(column)
@@ -133,7 +352,7 @@ fn write_header_row(
             .unwrap_or_else(|| text_format.clone());
         worksheet
             .set_column_format(col_idx, &column_format)
-            .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+            .map_err(CostingXlsxError::Writer)?;
     }
     Ok(())
 }
@@ -165,17 +384,17 @@ fn write_data_rows(
                             decimal_to_f64(value)?,
                             format,
                         )
-                        .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                        .map_err(CostingXlsxError::Writer)?;
                 }
                 (CellValue::Decimal(value), None) => {
                     worksheet
                         .write_number(excel_row, excel_col, decimal_to_f64(value)?)
-                        .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                        .map_err(CostingXlsxError::Writer)?;
                 }
                 (CellValue::Text(value) | CellValue::DateLike(value), _) => {
                     worksheet
                         .write_string_with_format(excel_row, excel_col, value, text_format)
-                        .map_err(|error| CostingXlsxError::Message(error.to_string()))?;
+                        .map_err(CostingXlsxError::Writer)?;
                 }
             }
         }
@@ -217,17 +436,37 @@ fn parse_freeze_panes(token: &str) -> Result<(u32, u16), CostingXlsxError> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::error::Error;
+    use std::io::ErrorKind;
     use std::process;
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use calamine::{open_workbook_auto, Reader};
+    use costing_core::error::{ErrorStage, IoKindCode};
     use costing_core::model::{
         CellValue, QualityMetric, SheetModel, StageTimings, WorkbookPayload,
     };
     use rust_decimal::Decimal;
 
     use super::*;
+
+    fn writer_context() -> WriterContext {
+        WriterContext {
+            request_id: "writer-test-request".to_string(),
+        }
+    }
+
+    fn writer_io_error(raw_os_error: i32) -> WriterError {
+        WriterError {
+            context: ErrorContext::new(
+                "writer-test-request",
+                ErrorStage::SaveWorkbook,
+                Some(std::path::PathBuf::from("output.xlsx")),
+            ),
+            primary: WriterPrimaryError::Io(std::io::Error::from_raw_os_error(raw_os_error)),
+        }
+    }
 
     fn unique_temp_path(stem: &str) -> std::path::PathBuf {
         let timestamp = SystemTime::now()
@@ -283,7 +522,7 @@ mod tests {
             sheet("成本分析工单维度"),
         ]);
 
-        write_workbook(&output, &payload).unwrap();
+        write_workbook(&writer_context(), &output, &payload).unwrap();
 
         let workbook = open_workbook_auto(&output).unwrap();
         assert_eq!(
@@ -308,11 +547,11 @@ mod tests {
             sheet("成本分析工单维度"),
         ]);
 
-        let error = write_workbook(&output, &payload).unwrap_err();
+        let error = write_workbook(&writer_context(), &output, &payload).unwrap_err();
 
         assert!(matches!(
-            error,
-            CostingXlsxError::OutputExists(ref path) if path == &output
+            error.primary,
+            WriterPrimaryError::Io(ref source) if source.kind() == ErrorKind::AlreadyExists
         ));
         assert_eq!(std::fs::read(&output).unwrap(), original);
         let _ = std::fs::remove_file(output);
@@ -333,9 +572,12 @@ mod tests {
                         sheet("成本分析工单维度"),
                     ]);
                     barrier.wait();
-                    match write_workbook(&output, &payload) {
+                    match write_workbook(&writer_context(), &output, &payload) {
                         Ok(()) => "written",
-                        Err(CostingXlsxError::OutputExists(_)) => "exists",
+                        Err(WriterError {
+                            primary: WriterPrimaryError::Io(source),
+                            ..
+                        }) if source.kind() == ErrorKind::AlreadyExists => "exists",
                         Err(error) => panic!("unexpected writer error: {error}"),
                     }
                 })
@@ -359,7 +601,7 @@ mod tests {
         let output = unique_temp_path("product-dimension");
         let payload = payload(vec![sheet("成本分析产品维度")]);
 
-        let error = write_workbook(&output, &payload).unwrap_err();
+        let error = write_workbook(&writer_context(), &output, &payload).unwrap_err();
 
         assert!(error.to_string().contains("成本分析产品维度"));
         assert!(!output.exists());
@@ -375,9 +617,96 @@ mod tests {
             sheet("调试输出"),
         ]);
 
-        let error = write_workbook(&output, &payload).unwrap_err();
+        let error = write_workbook(&writer_context(), &output, &payload).unwrap_err();
 
         assert!(error.to_string().contains("默认 workbook"));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_does_not_replace_primary_error() {
+        let output = unique_temp_path("cleanup-primary");
+        let error = writer_io_error(112);
+
+        let error = merge_cleanup_failure(
+            error,
+            ErrorStage::RemovePartialOutput,
+            output.clone(),
+            std::io::Error::new(ErrorKind::PermissionDenied, "cleanup denied"),
+        );
+
+        let WriterPrimaryError::Io(primary) = &error.primary else {
+            panic!("expected original I/O primary error")
+        };
+        assert_eq!(primary.kind(), ErrorKind::StorageFull);
+        assert_eq!(primary.raw_os_error(), Some(112));
+        assert_eq!(
+            error
+                .source()
+                .unwrap()
+                .source()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(112)
+        );
+        assert_eq!(error.context.details.cleanup_failures.len(), 1);
+        let cleanup = &error.context.details.cleanup_failures[0];
+        assert_eq!(cleanup.stage, ErrorStage::RemovePartialOutput);
+        assert_eq!(cleanup.path.as_deref(), Some(output.as_path()));
+        assert_eq!(cleanup.io_meta.kind, IoKindCode::PermissionDenied);
+    }
+
+    #[test]
+    fn not_created_never_deletes_existing_path() {
+        let output = unique_temp_path("not-created-existing");
+        std::fs::write(&output, b"pre-existing").unwrap();
+
+        let error = finish_writer_failure(
+            writer_io_error(112),
+            OutputArtifactState::NotCreated,
+            &output,
+        );
+
+        assert_eq!(std::fs::read(&output).unwrap(), b"pre-existing");
+        assert_eq!(error.context.details.partial_output_removed, None);
+        let _ = std::fs::remove_file(output);
+    }
+
+    #[test]
+    fn created_by_current_run_removes_partial_output() {
+        let output = unique_temp_path("created-partial");
+        std::fs::write(&output, b"partial").unwrap();
+
+        let error = finish_writer_failure(
+            writer_io_error(112),
+            OutputArtifactState::CreatedByCurrentRun,
+            &output,
+        );
+
+        assert!(!output.exists());
+        assert_eq!(error.context.details.partial_output_removed, Some(true));
+    }
+
+    #[test]
+    fn completed_output_is_not_deleted_by_secondary_cleanup_failure() {
+        let output = unique_temp_path("completed-secondary-cleanup");
+        std::fs::write(&output, b"complete workbook").unwrap();
+        let error = merge_cleanup_failure(
+            writer_io_error(112),
+            ErrorStage::CleanupTempWorkspace,
+            unique_temp_path("temp-workspace"),
+            std::io::Error::new(ErrorKind::PermissionDenied, "temp cleanup denied"),
+        );
+
+        let error =
+            finish_writer_failure(error, OutputArtifactState::CompletedByCurrentRun, &output);
+
+        assert_eq!(std::fs::read(&output).unwrap(), b"complete workbook");
+        assert!(error.context.details.final_output_valid);
+        assert_eq!(error.context.details.partial_output_removed, None);
+        assert_eq!(error.context.details.cleanup_failures.len(), 1);
+        let _ = std::fs::remove_file(output);
     }
 }

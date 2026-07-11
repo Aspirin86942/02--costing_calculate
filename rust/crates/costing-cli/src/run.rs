@@ -11,8 +11,8 @@ use costing_core::split::split_detail_and_qty;
 use costing_core::timing::measure;
 use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
 use costing_xlsx::{
-    reader::{read_raw_workbook, CostingXlsxError},
-    writer::write_workbook,
+    reader::{read_raw_workbook, CostingXlsxError, XlsxError},
+    writer::{write_workbook, WriterContext, WriterError, WriterPrimaryError},
 };
 
 use crate::args::CliArgs;
@@ -198,8 +198,12 @@ pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
             .output
             .as_ref()
             .expect("resolve_cli_paths supplies output for non check-only runs");
+        let writer_context = WriterContext {
+            request_id: request_id.clone(),
+        };
         measure(&mut timings, "export", || {
-            write_workbook(output, &payload).map_err(|error| map_xlsx_write_error(output, error))
+            write_workbook(&writer_context, output, &payload)
+                .map_err(|error| map_xlsx_write_error(output, error))
         })
         .map_err(|error| {
             with_stage_context(
@@ -471,7 +475,7 @@ fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
     let code = match &error {
         CostingXlsxError::Calamine(_) => ErrorCode::FileNotReadable,
         CostingXlsxError::Message(_) => ErrorCode::InvalidInput,
-        CostingXlsxError::OutputExists(_) => ErrorCode::InvalidInput,
+        CostingXlsxError::Writer(_) => ErrorCode::InvalidInput,
     };
     CostingError::io(
         code,
@@ -480,27 +484,45 @@ fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
     )
 }
 
-fn map_xlsx_write_error(path: &Path, error: CostingXlsxError) -> CostingError {
-    match error {
-        CostingXlsxError::OutputExists(existing_path) => CostingError::io(
-            ErrorCode::OutputExists,
-            format!("输出 workbook 已存在: {}", existing_path.display()),
-            existing_path,
-        ),
-        error => CostingError::io(
-            ErrorCode::OutputNotWritable,
-            format!("写出 workbook 失败: {error}"),
-            path.to_path_buf(),
-        ),
-    }
+fn map_xlsx_write_error(path: &Path, error: WriterError) -> CostingError {
+    let WriterError { context, primary } = error;
+    let mapped = match primary {
+        WriterPrimaryError::Io(source) => {
+            let is_create_race = context.details.stage == ErrorStage::CreateFinalOutput
+                && source.kind() == std::io::ErrorKind::AlreadyExists;
+            let code = if is_create_race {
+                ErrorCode::OutputExists
+            } else {
+                ErrorCode::OutputNotWritable
+            };
+            let message = if is_create_race {
+                format!("输出 workbook 已存在: {}", path.display())
+            } else {
+                format!("写出 workbook 失败: {source}")
+            };
+            CostingError::io_with_source(code, message, source)
+        }
+        WriterPrimaryError::Xlsx(CostingXlsxError::Writer(XlsxError::IoError(source))) => {
+            let message = format!("写出 workbook 失败: {source}");
+            CostingError::io_with_source(ErrorCode::OutputNotWritable, message, source)
+        }
+        primary => CostingError::Writer {
+            code: ErrorCode::OutputNotWritable,
+            message: format!("写出 workbook 失败: {primary}"),
+            retryable: false,
+        },
+    };
+    mapped.with_context(context)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
     use std::path::PathBuf;
     use std::process;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use costing_core::model::ErrorSummary;
     use costing_core::{ErrorCode, PipelineName, RunSummary};
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
@@ -672,10 +694,60 @@ mod tests {
     fn maps_writer_output_race_to_output_exists_error_code() {
         let output = PathBuf::from("late-existing-output.xlsx");
 
-        let error = map_xlsx_write_error(&output, CostingXlsxError::OutputExists(output.clone()));
+        let error = map_xlsx_write_error(
+            &output,
+            WriterError {
+                context: ErrorContext::new(
+                    "writer-race-request",
+                    ErrorStage::CreateFinalOutput,
+                    Some(output.clone()),
+                ),
+                primary: WriterPrimaryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "already exists",
+                )),
+            },
+        );
 
         assert_eq!(error.code(), ErrorCode::OutputExists);
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn writer_io_error_reaches_cli_with_same_raw_os_error() {
+        let output = PathBuf::from("storage-full-output.xlsx");
+        let writer_error = WriterError {
+            context: ErrorContext::new(
+                "writer-owned-request",
+                ErrorStage::SaveWorkbook,
+                Some(output.clone()),
+            ),
+            primary: WriterPrimaryError::Xlsx(CostingXlsxError::Writer(XlsxError::IoError(
+                std::io::Error::from_raw_os_error(112),
+            ))),
+        };
+
+        let error = map_xlsx_write_error(&output, writer_error);
+
+        assert_eq!(error.code(), ErrorCode::OutputNotWritable);
+        assert!(error.retryable());
+        assert_eq!(error.context().unwrap().request_id, "writer-owned-request");
+        let mut source = Some(&error as &(dyn Error + 'static));
+        let mut original_io = None;
+        while let Some(current) = source {
+            if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+                original_io = Some(io_error);
+                break;
+            }
+            source = current.source();
+        }
+        let original_io = original_io.expect("original std::io::Error in source chain");
+        assert_eq!(original_io.kind(), std::io::ErrorKind::StorageFull);
+        assert_eq!(original_io.raw_os_error(), Some(112));
+
+        let json = serde_json::to_value(ErrorSummary::from_error(&error)).unwrap();
+        assert_eq!(json["details"]["io_kind"], "StorageFull");
+        assert_eq!(json["details"]["raw_os_error"], 112);
     }
 
     #[test]

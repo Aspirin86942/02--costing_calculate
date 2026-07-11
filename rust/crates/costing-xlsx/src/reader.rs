@@ -1,8 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use calamine::{open_workbook_auto, Data, Reader};
 use costing_core::model::{CellValue, RawWorkbook};
 use rust_decimal::Decimal;
+pub use rust_xlsxwriter::XlsxError;
 
 const HEADER_ANCHOR: &str = "年期";
 const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编号", "成本项目名称"];
@@ -11,10 +12,10 @@ const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编
 pub enum CostingXlsxError {
     #[error("{0}")]
     Message(String),
-    #[error("output workbook already exists: {0}")]
-    OutputExists(PathBuf),
     #[error("xlsx read error: {0}")]
     Calamine(#[from] calamine::Error),
+    #[error("xlsx writer error: {0}")]
+    Writer(#[source] XlsxError),
 }
 
 pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {

@@ -733,6 +733,15 @@ def test_run_rust_normal_captured_rejects_raw_symlink_component(
         )
 
 
+@pytest.mark.skipif(oracle_runner.os.name != 'nt', reason='Windows extended path syntax')
+def test_extended_local_path_normalizes_and_extended_unc_fails_closed(tmp_path: Path) -> None:
+    normal = (tmp_path / 'rust' / 'target' / 'result.json').absolute()
+    extended = Path(f'\\\\?\\{normal}')
+    assert oracle_runner._normal_path(extended) == normal
+    with pytest.raises(AssertionError, match='UNC'):
+        oracle_runner._normal_path(Path('\\\\?\\UNC\\server\\share\\result.json'))
+
+
 def test_run_rust_normal_captured_rejects_malformed_xlsx_with_log_sha(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

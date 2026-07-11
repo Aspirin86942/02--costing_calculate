@@ -8,7 +8,6 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
-from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -58,29 +57,17 @@ class HarnessFailure(AssertionError):
         self.raw_log_sha256 = raw_log_sha256
 
 
-class PriorArtifactKind(StrEnum):
-    PHASE0A_MANIFEST = 'phase0a-manifest'
-    BENCHMARK_EVIDENCE = 'benchmark-evidence'
-    DEPENDENCY_EVIDENCE = 'dependency-evidence'
-
-
 @dataclass(frozen=True)
-class PriorEvidenceReceipt:
+class UnverifiedPriorEvidenceClaim:
     path_alias: str
-    sha256: str
-    artifact_kind: PriorArtifactKind
-    sanitizer_receipt_sha256: str
-    provenance_sha256: str
+    content_sha256: str
 
     def __post_init__(self) -> None:
         alias = PurePosixPath(self.path_alias)
         if alias.is_absolute() or '..' in alias.parts or '\\' in self.path_alias or not self.path_alias:
             raise ValueError('prior evidence path_alias must be repository-relative POSIX text')
-        if not isinstance(self.artifact_kind, PriorArtifactKind):
-            raise ValueError('prior evidence artifact_kind must be closed')
-        for value in (self.sha256, self.sanitizer_receipt_sha256, self.provenance_sha256):
-            if not _is_sha256(value):
-                raise ValueError('prior evidence receipt hashes must be lowercase SHA-256')
+        if not _is_sha256(self.content_sha256):
+            raise ValueError('prior evidence content hash must be lowercase SHA-256')
 
 
 @dataclass(frozen=True)
@@ -106,7 +93,7 @@ class PairedBenchmarkRequest:
     local_root: Path
     evidence_path: Path
     attempt_ledger_root: Path
-    prior_evidence_receipts: tuple[PriorEvidenceReceipt, ...] = ()
+    prior_evidence_claims: tuple[UnverifiedPriorEvidenceClaim, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,6 +157,9 @@ class AppendOnlyAttemptLedger:
     terminal_verdict: HarnessVerdict | None = None
     terminal_raw_log_sha256: str | None = None
     terminal_primary_verdict: HarnessVerdict | None = None
+    cleanup_only: bool = False
+    recovery_primary_verdict: HarnessVerdict | None = None
+    journal_head_sha256: str = ''
     first_group_sha256: str | None = None
     expanded_group_sha256: str | None = None
     _record_head_sha256: str = ''
@@ -186,16 +176,20 @@ class AppendOnlyAttemptLedger:
         identity: BenchmarkIdentity,
         *,
         comparison_key: str,
-        local_root: Path,
     ) -> AppendOnlyAttemptLedger:
         if not _is_sha256(comparison_key):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison_key must be 64 lowercase hex')
+        trusted_local_root = _trusted_local_root()
         safe_local_root = _safe_harness_path(
-            local_root,
-            allowed_roots=(local_root,),
+            trusted_local_root,
+            allowed_roots=(trusted_local_root,),
             purpose='attempt local root is invalid',
             create_parent=True,
         )
+        if _normal_path(root).absolute() != (trusted_local_root / 'batches').absolute():
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt root must equal trusted local root/batches'
+            )
         safe_root = _safe_harness_path(
             root,
             allowed_roots=(safe_local_root,),
@@ -211,6 +205,8 @@ class AppendOnlyAttemptLedger:
         attempts = sorted(path for path in _io_path(comparison_directory).glob('attempt-*') if path.is_dir())
         previous_head: str | None = None
         inherited: tuple[dict[str, Any], ...] = ()
+        cleanup_only = False
+        recovery_primary: HarnessVerdict | None = None
         if attempts:
             previous = cls.load(attempts[-1], identity, strict_identity=False)
             if previous.terminal_verdict is None:
@@ -228,12 +224,15 @@ class AppendOnlyAttemptLedger:
             previous_head = previous.head_sha256
             if previous.terminal_verdict is HarnessVerdict.CLEANUP_FAILED:
                 inherited = previous.all_planned_output_payloads()
+                cleanup_only = True
+                recovery_primary = previous.terminal_primary_verdict
 
         number = len(attempts) + 1
         attempt_directory = _io_path(comparison_directory / f'attempt-{number:04d}')
         attempt_directory.mkdir()
         (attempt_directory / 'records').mkdir()
         (attempt_directory / 'checkpoints').mkdir()
+        _io_path(comparison_directory / 'journal').mkdir(exist_ok=True)
         _safe_harness_path(
             attempt_directory,
             allowed_roots=(safe_root,),
@@ -247,11 +246,13 @@ class AppendOnlyAttemptLedger:
             'previous_attempt_head_sha256': previous_head,
             'reason': 'ENVIRONMENT_RECOVERED' if previous_head else 'FORMAL_START',
             'inherited_planned_outputs': inherited,
+            'cleanup_only': cleanup_only,
+            'recovery_primary_verdict': recovery_primary.value if recovery_primary else None,
         }
         metadata_bytes = _canonical_json(metadata)
         _write_create_new(attempt_directory / 'metadata.json', metadata_bytes, allowed_root=attempt_directory)
         metadata_sha = hashlib.sha256(metadata_bytes).hexdigest()
-        return cls(
+        ledger = cls(
             attempt_directory=attempt_directory,
             local_root=safe_local_root,
             identity=identity,
@@ -262,7 +263,11 @@ class AppendOnlyAttemptLedger:
             _record_head_sha256=metadata_sha,
             _checkpoint_head_sha256=metadata_sha,
             _inherited_plan_payloads=inherited,
+            cleanup_only=cleanup_only,
+            recovery_primary_verdict=recovery_primary,
         )
+        ledger._append_journal_anchor()
+        return ledger
 
     @classmethod
     def load(
@@ -279,6 +284,8 @@ class AppendOnlyAttemptLedger:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt directory is outside local root') from exc
         if normal_directory.parent.parent.name != 'batches':
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt directory layout is invalid')
+        if local_root.absolute() != _trusted_local_root():
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt directory is outside trusted local root')
         normal_directory = _safe_harness_path(
             normal_directory,
             allowed_roots=(local_root,),
@@ -381,6 +388,21 @@ class AppendOnlyAttemptLedger:
         if not isinstance(inherited_raw, list):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'inherited planned-output list is invalid')
         inherited = tuple(_validate_planned_output_payload(item) for item in inherited_raw)
+        cleanup_only = metadata.get('cleanup_only', False)
+        if not isinstance(cleanup_only, bool):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup_only metadata must be boolean')
+        try:
+            recovery_primary = (
+                HarnessVerdict(metadata['recovery_primary_verdict'])
+                if metadata.get('recovery_primary_verdict')
+                else None
+            )
+        except ValueError as exc:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup recovery primary verdict is invalid'
+            ) from exc
+        if inherited and not cleanup_only:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'inherited outputs require cleanup-only metadata')
         if terminal_verdict is None:
             if expanded_group_sha256:
                 state = AttemptState.EXPANDED_GROUP_COMPLETE
@@ -395,6 +417,18 @@ class AppendOnlyAttemptLedger:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'previous attempt head link is broken')
         elif previous_head is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first attempt cannot link a previous head')
+        journal_head, latest_anchors = _load_comparison_journal(directory.parent)
+        expected_anchor = _journal_state_payload(
+            attempt_number=attempt_number,
+            record_count=len(records),
+            record_head_sha256=record_head,
+            checkpoint_head_sha256=checkpoint_head,
+            terminal_present=terminal_verdict is not None,
+            terminal_head_sha256=head if terminal_verdict is not None else None,
+            verdict=terminal_verdict,
+        )
+        if latest_anchors.get(attempt_number) != expected_anchor:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
         return cls(
             attempt_directory=directory,
             local_root=local_root.resolve(),
@@ -407,6 +441,9 @@ class AppendOnlyAttemptLedger:
             terminal_verdict=terminal_verdict,
             terminal_raw_log_sha256=terminal_raw,
             terminal_primary_verdict=terminal_primary,
+            cleanup_only=cleanup_only,
+            recovery_primary_verdict=recovery_primary,
+            journal_head_sha256=journal_head,
             first_group_sha256=first_group_sha256,
             expanded_group_sha256=expanded_group_sha256,
             _record_head_sha256=record_head,
@@ -444,7 +481,32 @@ class AppendOnlyAttemptLedger:
         self._record_head_sha256 = record_sha
         self._checkpoint_head_sha256 = hashlib.sha256(checkpoint_raw).hexdigest()
         self.head_sha256 = record_sha
+        self._append_journal_anchor()
         return record_sha
+
+    def _append_journal_anchor(self) -> str:
+        comparison_directory = self.attempt_directory.parent
+        journal_head, _ = _load_comparison_journal(comparison_directory)
+        state = _journal_state_payload(
+            attempt_number=self.attempt_number,
+            record_count=self._record_count,
+            record_head_sha256=self._record_head_sha256,
+            checkpoint_head_sha256=self._checkpoint_head_sha256,
+            terminal_present=self.terminal_verdict is not None,
+            terminal_head_sha256=self.head_sha256 if self.terminal_verdict is not None else None,
+            verdict=self.terminal_verdict,
+        )
+        entry = {'previous_journal_sha256': journal_head or None, **state}
+        raw = _canonical_json(entry)
+        journal_directory = comparison_directory / 'journal'
+        sequence = len(tuple(journal_directory.glob('*.json'))) + 1
+        _write_create_new(
+            journal_directory / f'{sequence:06d}.json',
+            raw,
+            allowed_root=comparison_directory,
+        )
+        self.journal_head_sha256 = hashlib.sha256(raw).hexdigest()
+        return self.journal_head_sha256
 
     def record_sample(
         self,
@@ -563,7 +625,53 @@ class AppendOnlyAttemptLedger:
         self.terminal_primary_verdict = primary_verdict
         self.state = AttemptState.FAILED
         self.head_sha256 = hashlib.sha256(raw).hexdigest()
+        self._append_journal_anchor()
         return self.head_sha256
+
+
+def _journal_state_payload(
+    *,
+    attempt_number: int,
+    record_count: int,
+    record_head_sha256: str,
+    checkpoint_head_sha256: str,
+    terminal_present: bool,
+    terminal_head_sha256: str | None,
+    verdict: HarnessVerdict | None,
+) -> dict[str, Any]:
+    return {
+        'attempt_number': attempt_number,
+        'record_count': record_count,
+        'record_head_sha256': record_head_sha256,
+        'checkpoint_head_sha256': checkpoint_head_sha256,
+        'terminal_present': terminal_present,
+        'terminal_head_sha256': terminal_head_sha256,
+        'verdict': verdict.value if verdict else None,
+    }
+
+
+def _load_comparison_journal(comparison_directory: Path) -> tuple[str, dict[int, dict[str, Any]]]:
+    # 外部 journal 用于识别 attempt 目录内的简单回退；Task 6 会把最终 journal head 绑定到版本化 manifest。
+    # 恶意同时删除 journal 与 attempt 尾部不属于本地 Task 2 威胁模型。
+    journal_directory = comparison_directory / 'journal'
+    if not journal_directory.is_dir():
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal is missing')
+    head = ''
+    latest: dict[int, dict[str, Any]] = {}
+    for index, path in enumerate(sorted(journal_directory.glob('*.json')), start=1):
+        if path.name != f'{index:06d}.json':
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal sequence is not contiguous')
+        raw = path.read_bytes()
+        entry = json.loads(raw)
+        if entry.get('previous_journal_sha256') != (head or None):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal hash chain is broken')
+        state = {key: value for key, value in entry.items() if key != 'previous_journal_sha256'}
+        attempt_number = state.get('attempt_number')
+        if not isinstance(attempt_number, int) or isinstance(attempt_number, bool) or attempt_number < 1:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal attempt number is invalid')
+        latest[attempt_number] = state
+        head = hashlib.sha256(raw).hexdigest()
+    return head, latest
 
 
 def derive_batch_id(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
@@ -574,6 +682,7 @@ def derive_batch_id(request: PairedBenchmarkRequest, identity: BenchmarkIdentity
 def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
     if request.metric != 'wall':
         raise ValueError('normal wall runner accepts wall metric only')
+    _validate_trusted_request_paths(request.benchmark)
     identity = _capture_identity(request.benchmark)
     ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, identity)
     if ledger.terminal_verdict is not None:
@@ -591,6 +700,20 @@ def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
         'candidate': rule.candidate_schema,
     }
     cleanup_paths = list(_planned_paths(ledger.all_planned_output_payloads()))
+    if ledger.cleanup_only:
+        cleanup_errors = _cleanup_all(cleanup_paths)
+        if cleanup_errors:
+            final_verdict = HarnessVerdict.CLEANUP_FAILED
+            primary_verdict = ledger.recovery_primary_verdict
+        else:
+            final_verdict = ledger.recovery_primary_verdict or HarnessVerdict.ENVIRONMENT_DRIFT
+            primary_verdict = None
+        ledger.finish(final_verdict, primary_verdict=primary_verdict)
+        raise HarnessFailure(
+            final_verdict,
+            'cleanup-only recovery completed' if not cleanup_errors else 'cleanup-only recovery failed',
+            primary_verdict=primary_verdict,
+        )
     pairs: list[PairedRound] = []
     result_group: MetricGroup | None = None
     primary_error: HarnessFailure | None = None
@@ -890,8 +1013,8 @@ def _capture_identity(request: PairedBenchmarkRequest) -> BenchmarkIdentity:
     git_head = _run_git(root, 'rev-parse', 'HEAD').strip()
     status = _run_git(root, 'status', '--porcelain=v1', '--untracked-files=all')
     diff = _run_git(root, 'diff', '--binary', 'HEAD', '--')
-    prior_receipts = _prior_receipt_fingerprint(root, request.prior_evidence_receipts)
-    repository_state = hashlib.sha256(f'{status}\n{diff}\n{prior_receipts}'.encode()).hexdigest()
+    prior_claims = _prior_claim_fingerprint(root, request.prior_evidence_claims)
+    repository_state = hashlib.sha256(f'{status}\n{diff}\n{prior_claims}'.encode()).hexdigest()
     machine = '|'.join((platform.system(), platform.release(), platform.machine(), str(os.cpu_count() or 0)))
     return BenchmarkIdentity(
         _sha256(request.input_path),
@@ -903,11 +1026,11 @@ def _capture_identity(request: PairedBenchmarkRequest) -> BenchmarkIdentity:
     )
 
 
-def _prior_receipt_fingerprint(root: Path, receipts: tuple[PriorEvidenceReceipt, ...]) -> str:
+def _prior_claim_fingerprint(root: Path, claims: tuple[UnverifiedPriorEvidenceClaim, ...]) -> str:
     rows: list[dict[str, str]] = []
-    for receipt in sorted(receipts, key=lambda item: item.path_alias):
+    for claim in sorted(claims, key=lambda item: item.path_alias):
         path = _safe_harness_path(
-            root / Path(receipt.path_alias),
+            root / Path(claim.path_alias),
             allowed_roots=(root,),
             purpose='prior evidence escaped repository root',
             create_parent=False,
@@ -916,17 +1039,9 @@ def _prior_receipt_fingerprint(root: Path, receipts: tuple[PriorEvidenceReceipt,
             actual = _sha256(path)
         except OSError as exc:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'prior evidence is missing or unreadable') from exc
-        if actual != receipt.sha256:
+        if actual != claim.content_sha256:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'prior evidence content changed')
-        rows.append(
-            {
-                'path_alias': receipt.path_alias,
-                'sha256': actual,
-                'artifact_kind': receipt.artifact_kind.value,
-                'sanitizer_receipt_sha256': receipt.sanitizer_receipt_sha256,
-                'provenance_sha256': receipt.provenance_sha256,
-            }
-        )
+        rows.append({'path_alias': claim.path_alias, 'content_sha256': actual})
     return hashlib.sha256(_canonical_json(rows)).hexdigest()
 
 
@@ -942,23 +1057,23 @@ def validate_formal_repository_state(
     status_entries: tuple[str, ...],
     *,
     evidence_root: Path,
-    prior_evidence_receipts: tuple[PriorEvidenceReceipt, ...],
+    prior_evidence_claims: tuple[UnverifiedPriorEvidenceClaim, ...],
     root: Path | None = None,
 ) -> None:
     root = (root or repo_root()).resolve()
     evidence_root = evidence_root.resolve()
-    if not prior_evidence_receipts:
+    if not prior_evidence_claims:
         if status_entries:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'first formal batch requires a clean worktree')
         return
-    approved = {receipt.path_alias: receipt for receipt in prior_evidence_receipts}
+    approved = {claim.path_alias: claim for claim in prior_evidence_claims}
     seen: set[str] = set()
     for entry in status_entries:
         if not entry.startswith('?? '):
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'formal batch contains non-evidence worktree change')
         alias = entry[3:].replace('\\', '/')
-        receipt = approved.get(alias)
-        if receipt is None:
+        claim = approved.get(alias)
+        if claim is None:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'formal batch contains non-evidence worktree change')
         path = _safe_harness_path(
             root / Path(alias),
@@ -970,7 +1085,7 @@ def validate_formal_repository_state(
             actual = _sha256(path)
         except OSError as exc:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'prior evidence is missing or unreadable') from exc
-        if actual != receipt.sha256:
+        if actual != claim.content_sha256:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'prior evidence content changed')
         seen.add(alias)
     if seen != set(approved):
@@ -1007,6 +1122,21 @@ def _safe_harness_path(
         )
     except AssertionError as exc:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, str(exc)) from exc
+
+
+def _trusted_local_root() -> Path:
+    return (repo_root() / 'rust' / 'target' / 'perf-local').absolute()
+
+
+def _validate_trusted_request_paths(request: PairedBenchmarkRequest) -> None:
+    trusted = _trusted_local_root()
+    if _normal_path(request.local_root).absolute() != trusted:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'request.local_root must equal trusted local root')
+    if _normal_path(request.attempt_ledger_root).absolute() != trusted / 'batches':
+        raise HarnessFailure(
+            HarnessVerdict.INCOMPLETE_EVIDENCE,
+            'request.attempt_ledger_root must equal trusted local root/batches',
+        )
 
 
 def _run_git(root: Path, *args: str) -> str:

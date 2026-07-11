@@ -14,6 +14,7 @@ from pathlib import Path
 from tests.rust_oracle.oracle_runner import (
     REQUIRED_RUST_PAYLOAD_STAGES,
     TimedPayloadRun,
+    _io_path,
     _prepare_local_path,
     assert_runtime_contract_matches,
     build_rust_cli_release,
@@ -420,14 +421,14 @@ def write_local_check_only_result(
         purpose='local check-only results must stay below rust/target or data/processed',
         create_parent=False,
     )
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    _io_path(destination.parent).mkdir(parents=True, exist_ok=True)
     destination = _prepare_local_path(
         destination,
         allowed_roots=(root / 'rust' / 'target', root / 'data' / 'processed'),
         purpose='local check-only results must stay below rust/target or data/processed',
         create_parent=False,
     )
-    with destination.open('x', encoding='utf-8', newline='\n') as stream:
+    with _io_path(destination).open('x', encoding='utf-8', newline='\n') as stream:
         json.dump(dataclasses.asdict(result), stream, ensure_ascii=False, indent=2)
 
 

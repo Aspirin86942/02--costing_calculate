@@ -23,12 +23,16 @@ from tests.rust_oracle.phase0_harness import (
     HarnessFailure,
     MetricGroupRequest,
     PairedBenchmarkRequest,
-    PriorArtifactKind,
-    PriorEvidenceReceipt,
+    UnverifiedPriorEvidenceClaim,
     derive_batch_id,
     run_normal_wall_group,
     validate_formal_repository_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def _trusted_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
 
 
 def _runtime(pipeline: str = 'gb') -> RuntimeEvidence:
@@ -83,17 +87,13 @@ def _ledger(tmp_path: Path) -> AppendOnlyAttemptLedger:
         local_root / 'batches',
         _identity(),
         comparison_key='a' * 64,
-        local_root=local_root,
     )
 
 
-def _receipt(tmp_path: Path, path: Path, sha256: str) -> PriorEvidenceReceipt:
-    return PriorEvidenceReceipt(
+def _claim(tmp_path: Path, path: Path, sha256: str) -> UnverifiedPriorEvidenceClaim:
+    return UnverifiedPriorEvidenceClaim(
         path_alias=path.relative_to(tmp_path).as_posix(),
-        sha256=sha256,
-        artifact_kind=PriorArtifactKind.BENCHMARK_EVIDENCE,
-        sanitizer_receipt_sha256='b' * 64,
-        provenance_sha256='c' * 64,
+        content_sha256=sha256,
     )
 
 
@@ -233,19 +233,19 @@ def test_cleanup_failure_prevents_versionable_evidence(monkeypatch: pytest.Monke
 
 def test_first_formal_batch_requires_clean_worktree(tmp_path: Path) -> None:
     with pytest.raises(HarnessFailure, match='clean'):
-        validate_formal_repository_state((' M tests/file.py',), evidence_root=tmp_path, prior_evidence_receipts=())
+        validate_formal_repository_state((' M tests/file.py',), evidence_root=tmp_path, prior_evidence_claims=())
 
 
 def test_formal_batch_rejects_non_evidence_worktree_change(tmp_path: Path) -> None:
     approved = tmp_path / 'docs' / 'prior.json'
     approved.parent.mkdir()
     approved.write_bytes(b'{}')
-    receipt = _receipt(tmp_path, approved, phase0_harness._sha256(approved))
+    claim = _claim(tmp_path, approved, phase0_harness._sha256(approved))
     with pytest.raises(HarnessFailure, match='non-evidence'):
         validate_formal_repository_state(
             ('?? src/new.py',),
             evidence_root=tmp_path / 'docs',
-            prior_evidence_receipts=(receipt,),
+            prior_evidence_claims=(claim,),
             root=tmp_path,
         )
 
@@ -258,7 +258,7 @@ def test_later_batch_accepts_only_create_new_sanitized_prior_evidence(tmp_path: 
     validate_formal_repository_state(
         ('?? docs/prior.json',),
         evidence_root=tmp_path / 'docs',
-        prior_evidence_receipts=(_receipt(tmp_path, evidence, digest),),
+        prior_evidence_claims=(_claim(tmp_path, evidence, digest),),
         root=tmp_path,
     )
 
@@ -271,7 +271,7 @@ def test_prior_evidence_content_change_invalidates_repository_state(tmp_path: Pa
         validate_formal_repository_state(
             ('?? docs/prior.json',),
             evidence_root=tmp_path / 'docs',
-            prior_evidence_receipts=(_receipt(tmp_path, evidence, '0' * 64),),
+            prior_evidence_claims=(_claim(tmp_path, evidence, '0' * 64),),
             root=tmp_path,
         )
 
@@ -338,7 +338,6 @@ def test_failed_candidate_sha_cannot_be_retried(tmp_path: Path) -> None:
             tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
             _identity(),
             comparison_key='a' * 64,
-            local_root=tmp_path / 'rust' / 'target' / 'perf-local',
         )
 
 
@@ -349,7 +348,6 @@ def test_environment_recovery_attempt_links_previous_ledger_head(tmp_path: Path)
         tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
         _identity(),
         comparison_key='a' * 64,
-        local_root=tmp_path / 'rust' / 'target' / 'perf-local',
     )
     assert recovered.previous_attempt_head_sha256 == ledger.head_sha256
 
@@ -416,6 +414,23 @@ def test_sealed_attempt_rejects_deleted_tail_sample(tmp_path: Path) -> None:
     sample_record = next((ledger.attempt_directory / 'records').glob('*-sample.json'))
     sample_record.unlink()
     with pytest.raises(HarnessFailure, match='checkpoint|sealed|record count'):
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
+
+
+def test_comparison_journal_rejects_deleted_terminal(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.finish(HarnessVerdict.CANDIDATE_FAILED)
+    (ledger.attempt_directory / 'terminal.json').unlink()
+    with pytest.raises(HarnessFailure, match='journal'):
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
+
+
+def test_comparison_journal_rejects_tail_record_and_checkpoint_rollback(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.record_sample('wall', 1, 'candidate', {'value': 1})
+    next((ledger.attempt_directory / 'records').glob('*-sample.json')).unlink()
+    next((ledger.attempt_directory / 'checkpoints').glob('*.json')).unlink()
+    with pytest.raises(HarnessFailure, match='journal'):
         AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
 
 
@@ -495,15 +510,15 @@ def test_cleanup_recovery_attempt_cleans_historical_planned_outputs_before_resum
     monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
     historical = phase0_harness._planned_paths(ledger.all_planned_output_payloads())[0]
     historical.write_bytes(b'partial')
-    ledger.finish(HarnessVerdict.CLEANUP_FAILED)
+    ledger.finish(HarnessVerdict.CLEANUP_FAILED, primary_verdict=HarnessVerdict.CANDIDATE_FAILED)
     recovered = AppendOnlyAttemptLedger.create(
         tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
         _identity(),
         comparison_key='a' * 64,
-        local_root=tmp_path / 'rust' / 'target' / 'perf-local',
     )
     assert recovered.all_planned_output_payloads()
-    _install_runner(monkeypatch, tmp_path)
+    assert recovered.cleanup_only is True
+    commands = _install_runner(monkeypatch, tmp_path)
     request = MetricGroupRequest(
         _request(tmp_path),
         'b' * 8,
@@ -511,8 +526,38 @@ def test_cleanup_recovery_attempt_cleans_historical_planned_outputs_before_resum
         build_round_plan(global_round_start=1, round_count=5),
         recovered.attempt_directory,
     )
-    run_normal_wall_group(request)
+    with pytest.raises(HarnessFailure) as caught:
+        run_normal_wall_group(request)
+    assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
+    assert commands == []
     assert not historical.exists()
+    with pytest.raises(HarnessFailure, match='candidate SHA'):
+        AppendOnlyAttemptLedger.create(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _identity(),
+            comparison_key='a' * 64,
+        )
+
+
+@pytest.mark.parametrize('field', ('local_root', 'attempt_ledger_root'))
+def test_wall_runner_requires_repository_trusted_local_roots(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(tmp_path)
+    benchmark = replace(_request(tmp_path), **{field: tmp_path / 'docs' / 'performance'})
+    request = MetricGroupRequest(
+        benchmark,
+        'b' * 8,
+        'wall',
+        build_round_plan(global_round_start=1, round_count=5),
+        ledger.attempt_directory,
+    )
+    commands = _install_runner(monkeypatch, tmp_path)
+    with pytest.raises(HarnessFailure, match='trusted'):
+        run_normal_wall_group(request)
+    assert commands == []
 
 
 @pytest.mark.parametrize('comparison_key', ('../escape', 'a/b', 'C:/absolute', 'A' * 64, 'a' * 63))
@@ -523,7 +568,6 @@ def test_attempt_ledger_rejects_non_closed_comparison_key(comparison_key: str, t
             local_root / 'batches',
             _identity(),
             comparison_key=comparison_key,
-            local_root=local_root,
         )
 
 
@@ -533,7 +577,6 @@ def test_attempt_ledger_rejects_root_outside_local_root(tmp_path: Path) -> None:
             tmp_path / 'outside',
             _identity(),
             comparison_key='a' * 64,
-            local_root=tmp_path / 'rust' / 'target' / 'perf-local',
         )
 
 
@@ -542,21 +585,20 @@ def test_attempt_ledger_rejects_raw_symlink_component(tmp_path: Path) -> None:
     local_root.mkdir(parents=True)
     outside = tmp_path / 'outside'
     outside.mkdir()
-    linked = local_root / 'linked'
+    linked = local_root / 'batches'
     try:
         linked.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f'symlink creation is unavailable: {exc}')
     with pytest.raises(HarnessFailure, match='reparse|symlink'):
         AppendOnlyAttemptLedger.create(
-            linked / 'batches',
+            linked,
             _identity(),
             comparison_key='a' * 64,
-            local_root=local_root,
         )
 
 
-def test_prior_evidence_receipt_content_participates_in_identity(
+def test_prior_evidence_claim_content_participates_in_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -564,8 +606,8 @@ def test_prior_evidence_receipt_content_participates_in_identity(
     evidence = tmp_path / 'docs' / 'performance' / 'prior.json'
     evidence.parent.mkdir(parents=True)
     evidence.write_bytes(b'first')
-    receipt = _receipt(tmp_path, evidence, phase0_harness._sha256(evidence))
-    request = replace(request, prior_evidence_receipts=(receipt,))
+    claim = _claim(tmp_path, evidence, phase0_harness._sha256(evidence))
+    request = replace(request, prior_evidence_claims=(claim,))
     monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
     monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: 'head' if args[0] == 'rev-parse' else '')
 

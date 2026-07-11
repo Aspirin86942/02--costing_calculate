@@ -11,6 +11,7 @@ from tests.rust_oracle.oracle_runner import (
     REQUIRED_RUST_PAYLOAD_STAGES,
     OracleRunSummary,
     TimedPayloadRun,
+    _io_path,
 )
 from tests.rust_oracle.repo_paths import repo_root
 
@@ -607,3 +608,13 @@ def test_local_check_only_writer_rejects_raw_symlink_component(
 
     with pytest.raises(AssertionError, match='reparse|symlink'):
         benchmark.write_local_check_only_result(object(), link / 'result.json')  # type: ignore[arg-type]
+
+
+def test_local_check_only_writer_supports_valid_path_longer_than_260_characters(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(benchmark, 'repo_root', lambda: tmp_path)
+    output = tmp_path / 'rust' / 'target' / ('a' * 120) / ('b' * 120) / 'result.json'
+    benchmark.write_local_check_only_result(benchmark.ValidationFailure('VALIDATED', 'ok'), output)  # type: ignore[arg-type]
+    assert _io_path(output).read_text(encoding='utf-8')

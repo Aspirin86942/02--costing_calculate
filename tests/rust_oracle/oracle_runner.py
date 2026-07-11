@@ -446,6 +446,8 @@ def _io_path(path: Path) -> Path:
 
 def _normal_path(path: Path) -> Path:
     text = str(path)
+    if os.name == 'nt' and text.upper().startswith('\\\\?\\UNC\\'):
+        raise AssertionError('extended UNC paths are not supported')
     if os.name == 'nt' and text.startswith('\\\\?\\'):
         return Path(text[4:])
     return path
@@ -456,7 +458,7 @@ def _reject_existing_reparse_components(path: Path) -> None:
     for part in path.parts[1:]:
         current /= part
         if not os.path.lexists(current):
-            continue
+            break
         metadata = os.lstat(current)
         attributes = getattr(metadata, 'st_file_attributes', 0)
         if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:

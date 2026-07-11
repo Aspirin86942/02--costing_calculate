@@ -64,6 +64,7 @@ from tests.rust_oracle.evidence import (
     RuntimeCountEvidence,
     SheetDimensionEvidence,
     SmokeSummaryEvidence,
+    _batch_commit_marker,
 )
 from tests.rust_oracle.oracle_runner import (
     CapturedNormalRun,
@@ -96,6 +97,25 @@ class HarnessFailure(AssertionError):
         self.verdict = verdict
         self.primary_verdict = primary_verdict
         self.raw_log_sha256 = raw_log_sha256
+
+
+def _capture_boundary_failure(role: BinaryRole, context: str, error: Exception) -> HarnessFailure:
+    if isinstance(error, RustNormalProcessError):
+        verdict = HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CANDIDATE_FAILED
+        return HarnessFailure(
+            verdict,
+            f'{context} {role} process failed with exit code {error.returncode}',
+            raw_log_sha256=error.log_sha256,
+        )
+    if isinstance(error, RustNormalValidationError):
+        verdict = HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CORRECTNESS_FAILED
+        return HarnessFailure(
+            verdict,
+            f'{context} {role} runtime or workbook validation failed',
+            raw_log_sha256=error.log_sha256,
+        )
+    verdict = HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CORRECTNESS_FAILED
+    return HarnessFailure(verdict, f'{context} {role} capture boundary failed')
 
 
 @dataclass(frozen=True)
@@ -258,6 +278,7 @@ class AppendOnlyAttemptLedger:
     _sample_payloads: dict[tuple[str, int, str], dict[str, Any]] = field(default_factory=dict)
     _plan_payloads: dict[tuple[str, int, str], dict[str, Any]] = field(default_factory=dict)
     _inherited_plan_payloads: tuple[dict[str, Any], ...] = ()
+    _prepared_evidence: dict[str, str] | None = None
 
     @classmethod
     def create(
@@ -406,32 +427,39 @@ class AppendOnlyAttemptLedger:
         first_group_sha256: str | None = None
         expanded_group_sha256: str | None = None
         cleanup_complete = False
+        prepared_evidence: dict[str, str] | None = None
         evidence_committed = False
+        committed_prior_record_head: str | None = None
+        committed_prior_checkpoint_head: str | None = None
         records = sorted((directory / 'records').glob('*.json'))
         checkpoints = sorted((directory / 'checkpoints').glob('*.json'))
-        if len(records) != len(checkpoints):
+        missing_committed_checkpoint = len(records) == len(checkpoints) + 1
+        if len(records) != len(checkpoints) and not missing_committed_checkpoint:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'record/checkpoint count mismatch')
-        for index, (record_path, checkpoint_path) in enumerate(zip(records, checkpoints, strict=True), start=1):
+        paired_records = records[:-1] if missing_committed_checkpoint else records
+        for index, (record_path, checkpoint_path) in enumerate(zip(paired_records, checkpoints, strict=True), start=1):
             expected_prefix = f'{index:04d}-'
             if not record_path.name.startswith(expected_prefix) or checkpoint_path.name != f'{index:04d}.json':
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'ledger record sequence is not contiguous')
             raw = record_path.read_bytes()
             record = json.loads(raw)
-            if record.get('previous_record_sha256') != record_head:
+            previous_record_head = record_head
+            if record.get('previous_record_sha256') != previous_record_head:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt ledger hash chain is broken')
             record_head = hashlib.sha256(raw).hexdigest()
             checkpoint_raw = checkpoint_path.read_bytes()
             checkpoint = json.loads(checkpoint_raw)
+            previous_checkpoint_head = checkpoint_head
             expected_checkpoint = {
                 'record_count': index,
                 'record_sha256': record_head,
-                'previous_checkpoint_sha256': checkpoint_head,
+                'previous_checkpoint_sha256': previous_checkpoint_head,
             }
             if checkpoint != expected_checkpoint:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'durable checkpoint chain is broken')
             checkpoint_head = hashlib.sha256(checkpoint_raw).hexdigest()
             kind = record.get('kind')
-            if evidence_committed or (cleanup_complete and kind != 'evidence-committed'):
+            if evidence_committed or (cleanup_complete and kind not in ('evidence-prepared', 'evidence-committed')):
                 raise HarnessFailure(
                     HarnessVerdict.INCOMPLETE_EVIDENCE,
                     'success record sequence has a trailing record',
@@ -458,10 +486,58 @@ class AppendOnlyAttemptLedger:
                 if cleanup_complete or evidence_committed or first_group_sha256 is None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success record order is invalid')
                 cleanup_complete = True
+            elif kind == 'evidence-prepared':
+                if not cleanup_complete or prepared_evidence is not None or evidence_committed:
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence record order is invalid'
+                    )
+                prepared_evidence = _validate_prepared_evidence(record)
             elif kind == 'evidence-committed':
-                if evidence_committed or not cleanup_complete:
+                if evidence_committed or not cleanup_complete or prepared_evidence is None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'evidence success record order is invalid')
+                _validate_committed_tail_record(
+                    record_path,
+                    raw,
+                    record,
+                    index=index,
+                    previous_record_head=previous_record_head,
+                    prepared_evidence=prepared_evidence,
+                )
                 evidence_committed = True
+                committed_prior_record_head = previous_record_head
+                committed_prior_checkpoint_head = previous_checkpoint_head
+
+        if missing_committed_checkpoint:
+            if (directory / 'terminal.json').exists() or not cleanup_complete or prepared_evidence is None:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'record/checkpoint count mismatch')
+            index = len(records)
+            record_path = records[-1]
+            raw = record_path.read_bytes()
+            record = json.loads(raw)
+            _validate_committed_tail_record(
+                record_path,
+                raw,
+                record,
+                index=index,
+                previous_record_head=record_head,
+                prepared_evidence=prepared_evidence,
+            )
+            committed_prior_record_head = record_head
+            committed_prior_checkpoint_head = checkpoint_head
+            record_head = hashlib.sha256(raw).hexdigest()
+            checkpoint = {
+                'record_count': index,
+                'record_sha256': record_head,
+                'previous_checkpoint_sha256': checkpoint_head,
+            }
+            checkpoint_raw = _canonical_json(checkpoint)
+            _write_create_new(
+                directory / 'checkpoints' / f'{index:04d}.json',
+                checkpoint_raw,
+                allowed_root=directory,
+            )
+            checkpoint_head = hashlib.sha256(checkpoint_raw).hexdigest()
+            evidence_committed = True
 
         state = AttemptState.CREATED
         terminal_verdict: HarnessVerdict | None = None
@@ -537,7 +613,25 @@ class AppendOnlyAttemptLedger:
             verdict=terminal_verdict,
         )
         if latest_anchors.get(attempt_number) != expected_anchor:
-            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
+            if (
+                terminal_verdict is not None
+                or not evidence_committed
+                or committed_prior_record_head is None
+                or committed_prior_checkpoint_head is None
+            ):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
+            prior_anchor = _journal_state_payload(
+                attempt_number=attempt_number,
+                record_count=len(records) - 1,
+                record_head_sha256=committed_prior_record_head,
+                checkpoint_head_sha256=committed_prior_checkpoint_head,
+                terminal_present=False,
+                terminal_head_sha256=None,
+                verdict=None,
+            )
+            if latest_anchors.get(attempt_number) != prior_anchor:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
+            journal_head = _append_recovered_journal_anchor(directory.parent, journal_head, expected_anchor)
         return cls(
             attempt_directory=directory,
             local_root=local_root.resolve(),
@@ -561,12 +655,13 @@ class AppendOnlyAttemptLedger:
             _sample_payloads=sample_payloads,
             _plan_payloads=plan_payloads,
             _inherited_plan_payloads=inherited,
+            _prepared_evidence=prepared_evidence,
         )
 
     def _append(self, kind: str, payload: dict[str, Any]) -> str:
         if self.terminal_verdict is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot accept more records')
-        if self.state is AttemptState.CLEANUP_COMPLETE and kind != 'evidence-committed':
+        if self.state is AttemptState.CLEANUP_COMPLETE and kind not in ('evidence-prepared', 'evidence-committed'):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success cannot accept benchmark records')
         if self.state is AttemptState.EVIDENCE_COMMITTED:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success cannot accept more records')
@@ -719,8 +814,38 @@ class AppendOnlyAttemptLedger:
         self.state = AttemptState.CLEANUP_COMPLETE
         return digest
 
+    def prepare_evidence(
+        self,
+        *,
+        artifact_basename: str,
+        artifact_sha256: str,
+        artifact_content: str,
+    ) -> str:
+        if self.state is not AttemptState.CLEANUP_COMPLETE or self._prepared_evidence is not None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence transition is invalid')
+        payload = _validate_prepared_evidence(
+            {
+                'kind': 'evidence-prepared',
+                'previous_record_sha256': self._record_head_sha256,
+                'artifact_basename': artifact_basename,
+                'artifact_sha256': artifact_sha256,
+                'artifact_content': artifact_content,
+            }
+        )
+        _rebuild_prepared_artifact(payload)
+        digest = self._append('evidence-prepared', payload)
+        self._prepared_evidence = payload
+        return digest
+
+    def prepared_evidence(self) -> dict[str, str] | None:
+        return dict(self._prepared_evidence) if self._prepared_evidence is not None else None
+
     def mark_evidence_committed(self, *, artifact_sha256: str) -> str:
-        if self.state is not AttemptState.CLEANUP_COMPLETE or not _is_sha256(artifact_sha256):
+        if (
+            self.state is not AttemptState.CLEANUP_COMPLETE
+            or self._prepared_evidence is None
+            or artifact_sha256 != self._prepared_evidence['artifact_sha256']
+        ):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'evidence success transition is invalid')
         digest = self._append('evidence-committed', {'artifact_sha256': artifact_sha256})
         self.state = AttemptState.EVIDENCE_COMMITTED
@@ -758,6 +883,87 @@ class AppendOnlyAttemptLedger:
         self.head_sha256 = hashlib.sha256(raw).hexdigest()
         self._append_journal_anchor()
         return self.head_sha256
+
+
+def _validate_prepared_evidence(record: dict[str, Any]) -> dict[str, str]:
+    if set(record) != {
+        'kind',
+        'previous_record_sha256',
+        'artifact_basename',
+        'artifact_sha256',
+        'artifact_content',
+    }:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence record schema is invalid')
+    basename = record['artifact_basename']
+    sha256 = record['artifact_sha256']
+    content = record['artifact_content']
+    if (
+        not isinstance(basename, str)
+        or Path(basename).name != basename
+        or not basename.startswith('benchmark-')
+        or not basename.endswith('.json')
+        or not _is_sha256(sha256)
+        or not isinstance(content, str)
+        or hashlib.sha256(content.encode('utf-8')).hexdigest() != sha256
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence values are invalid')
+    return {'artifact_basename': basename, 'artifact_sha256': sha256, 'artifact_content': content}
+
+
+def _rebuild_prepared_artifact(payload: dict[str, str]) -> Any:
+    policy = EvidenceSanitizer.closed_policy()
+    try:
+        source = policy.read_benchmark_manifest(
+            payload['artifact_basename'],
+            payload['artifact_content'].encode('utf-8'),
+        )
+        artifact = policy.build_benchmark_manifest(source)
+    except ValueError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence typed rebuild failed') from exc
+    if (
+        artifact.file_name != payload['artifact_basename']
+        or artifact.content != payload['artifact_content']
+        or hashlib.sha256(artifact.content.encode('utf-8')).hexdigest() != payload['artifact_sha256']
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence changed during typed rebuild')
+    return artifact
+
+
+def _validate_committed_tail_record(
+    record_path: Path,
+    raw: bytes,
+    record: object,
+    *,
+    index: int,
+    previous_record_head: str,
+    prepared_evidence: dict[str, str],
+) -> None:
+    if (
+        record_path.name != f'{index:04d}-evidence-committed.json'
+        or not isinstance(record, dict)
+        or set(record) != {'kind', 'previous_record_sha256', 'artifact_sha256'}
+        or record.get('kind') != 'evidence-committed'
+        or record.get('previous_record_sha256') != previous_record_head
+        or record.get('artifact_sha256') != prepared_evidence['artifact_sha256']
+        or raw != _canonical_json(record)
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed evidence tail is invalid')
+
+
+def _append_recovered_journal_anchor(
+    comparison_directory: Path,
+    journal_head: str,
+    state: dict[str, Any],
+) -> str:
+    journal_directory = comparison_directory / 'journal'
+    sequence = len(tuple(journal_directory.glob('*.json'))) + 1
+    raw = _canonical_json({'previous_journal_sha256': journal_head or None, **state})
+    _write_create_new(
+        journal_directory / f'{sequence:06d}.json',
+        raw,
+        allowed_root=comparison_directory,
+    )
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _journal_state_payload(
@@ -2137,6 +2343,8 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         )
     ).hexdigest()
     ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
+    if ledger.prepared_evidence() is not None:
+        return _recover_prepared_evidence(request, ledger, batch_id)
     plans = build_round_plan(global_round_start=1, round_count=5)
     try:
         wall_first = run_normal_wall_group(
@@ -2198,6 +2406,12 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             raise HarnessFailure(
                 HarnessVerdict.INCOMPLETE_EVIDENCE, 'evidence path basename does not match typed artifact'
             )
+        artifact_sha256 = hashlib.sha256(artifact.content.encode('utf-8')).hexdigest()
+        ledger.prepare_evidence(
+            artifact_basename=artifact.file_name,
+            artifact_sha256=artifact_sha256,
+            artifact_content=artifact.content,
+        )
         try:
             EvidenceSanitizer.closed_policy().write_batch(
                 destination_root=request.evidence_path.parent,
@@ -2208,7 +2422,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             )
         except (OSError, ValueError) as exc:
             raise HarnessFailure(HarnessVerdict.SENSITIVE_EVIDENCE, 'paired evidence publication failed') from exc
-        ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode('utf-8')).hexdigest())
+        ledger.mark_evidence_committed(artifact_sha256=artifact_sha256)
         return PairedBenchmarkResult(
             wall,
             pws,
@@ -2217,9 +2431,63 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         )
     except HarnessFailure as exc:
         current = AppendOnlyAttemptLedger.load(ledger.attempt_directory, identity)
+        if current.prepared_evidence() is not None:
+            raise
         if current.terminal_verdict is None:
             current.finish(exc.verdict, raw_log_sha256=exc.raw_log_sha256, primary_verdict=exc.primary_verdict)
         raise
+
+
+def _recover_prepared_evidence(
+    request: PairedBenchmarkRequest,
+    ledger: AppendOnlyAttemptLedger,
+    batch_id: str,
+) -> PairedBenchmarkResult:
+    payload = ledger.prepared_evidence()
+    if payload is None:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence recovery was not requested')
+    artifact = _rebuild_prepared_artifact(payload)
+    if request.evidence_path.name != artifact.file_name:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence basename changed on resume')
+    marker_name, marker_content = _batch_commit_marker((artifact,))
+    artifact_path = request.evidence_path
+    marker_path = request.evidence_path.parent / marker_name
+    artifact_exists = _io_path(artifact_path).exists()
+    marker_exists = _io_path(marker_path).exists()
+    if artifact_exists != marker_exists:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence publication is incomplete')
+    if not artifact_exists:
+        try:
+            EvidenceSanitizer.closed_policy().write_batch(
+                destination_root=request.evidence_path.parent,
+                artifacts=(artifact,),
+                cleanup_state=AttemptState.CLEANUP_COMPLETE,
+                scan_staged=True,
+                sensitive_names=(request.input_path.name,),
+            )
+        except (OSError, ValueError) as exc:
+            raise HarnessFailure(HarnessVerdict.SENSITIVE_EVIDENCE, 'prepared evidence republication failed') from exc
+    try:
+        artifact_raw = _io_path(artifact_path).read_bytes()
+        marker_raw = _io_path(marker_path).read_bytes()
+        published_source = EvidenceSanitizer.closed_policy().read_benchmark_manifest(artifact.file_name, artifact_raw)
+        published_artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(published_source)
+    except (OSError, ValueError) as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence publication is invalid') from exc
+    if (
+        published_artifact.file_name != artifact.file_name
+        or published_artifact.content != artifact.content
+        or hashlib.sha256(artifact_raw).hexdigest() != payload['artifact_sha256']
+        or marker_raw != marker_content.encode('utf-8')
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence publication does not match ledger')
+    ledger.mark_evidence_committed(artifact_sha256=payload['artifact_sha256'])
+    return PairedBenchmarkResult(
+        None,
+        None,
+        _batch_attempt(ledger, batch_id, AttemptState.EVIDENCE_COMMITTED),
+        HarnessVerdict.VALIDATED,
+    )
 
 
 def run_phase0h_smoke(request: Phase0HSmokeRequest) -> Phase0HSmokeResult:
@@ -2265,37 +2533,44 @@ def run_phase0h_smoke(request: Phase0HSmokeRequest) -> Phase0HSmokeResult:
                     executable = request.reference_executable if role == 'reference' else request.candidate_executable
                     output = root / 'outputs' / metric / f'{plan.global_round:02d}-{role}.xlsx'
                     cleanup.append(output)
-                    if metric == 'wall':
-                        captured = run_rust_normal_captured(
-                            executable,
-                            request.pipeline,
-                            fixture,
-                            output,
-                            schema=RuntimeSchema.BASE,
-                            local_log_root=root / 'raw-logs',
-                            workbook_oracle_fn=_stable_workbook_oracle,
-                        )
-                    else:
-                        artifacts = _pws_local_artifact_paths(_trusted_local_root(), batch_id, plan.global_round, role)
-                        cleanup.extend(
-                            (
-                                artifacts.result_path,
-                                artifacts.stdout_path,
-                                artifacts.stderr_path,
-                                artifacts.driver_log_path,
+                    try:
+                        if metric == 'wall':
+                            captured = run_rust_normal_captured(
+                                executable,
+                                request.pipeline,
+                                fixture,
+                                output,
+                                schema=RuntimeSchema.BASE,
+                                local_log_root=root / 'raw-logs',
+                                workbook_oracle_fn=_stable_workbook_oracle,
                             )
-                        )
-                        captured = _invoke_pws_single_sample(
-                            executable=executable,
-                            pipeline=request.pipeline,
-                            input_path=fixture,
-                            output_path=output,
-                            role=role,
-                            batch_id=batch_id,
-                            global_round=plan.global_round,
-                            schema=RuntimeSchema.BASE,
-                            local_root=_trusted_local_root(),
-                        )
+                        else:
+                            artifacts = _pws_local_artifact_paths(
+                                _trusted_local_root(), batch_id, plan.global_round, role
+                            )
+                            cleanup.extend(
+                                (
+                                    artifacts.result_path,
+                                    artifacts.stdout_path,
+                                    artifacts.stderr_path,
+                                    artifacts.driver_log_path,
+                                )
+                            )
+                            captured = _invoke_pws_single_sample(
+                                executable=executable,
+                                pipeline=request.pipeline,
+                                input_path=fixture,
+                                output_path=output,
+                                role=role,
+                                batch_id=batch_id,
+                                global_round=plan.global_round,
+                                schema=RuntimeSchema.BASE,
+                                local_root=_trusted_local_root(),
+                            )
+                    except HarnessFailure:
+                        raise
+                    except Exception as exc:
+                        raise _capture_boundary_failure(role, 'smoke', exc) from exc
                     if _workbook_sheet_names(output) != tuple(item.value for item in ApprovedSheet):
                         raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'smoke Sheet contract mismatch')
                     paired_hashes[role] = captured.normal_run.workbook_oracle_sha256
@@ -2303,14 +2578,20 @@ def run_phase0h_smoke(request: Phase0HSmokeRequest) -> Phase0HSmokeResult:
                 if paired_hashes['reference'] != paired_hashes['candidate']:
                     raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'smoke workbook oracle mismatch')
 
+        temp_canary_created = temp_marker.is_file()
+        temp_residue_count = (
+            0 if not temp_canary_created else sum(1 for path in temp_root.iterdir() if path != temp_marker)
+        )
+        if not temp_canary_created or temp_residue_count:
+            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'smoke temp canary changed during capture')
         smoke = SmokeSummaryEvidence(
             candidate_exe_sha256=_sha256(request.candidate_executable),
             fixture_sha256=fixture_sha,
             pipeline=request.pipeline,
             exit_code=0,
             approved_sheets=tuple(ApprovedSheet),
-            temp_canary_created=temp_marker.is_file(),
-            temp_residue_count=sum(1 for path in temp_root.iterdir() if path != temp_marker),
+            temp_canary_created=temp_canary_created,
+            temp_residue_count=temp_residue_count,
             missing_dll=False,
             local_log_sha256=hashlib.sha256('|'.join(all_log_sha).encode()).hexdigest(),
             verdict=HarnessVerdict.VALIDATED,
@@ -2363,43 +2644,56 @@ def capture_phase0a(request: Phase0ARequest) -> Phase0AManifest:
         create_parent=False,
     )
     machine = _capture_machine_evidence()
-    environment_before = _phase0a_environment_state(request.reference_executable, machine)
     groups: dict[str, CalibrationGroup] = {}
-    for pipeline, input_path in (('gb', request.gb_input_path), ('sk', request.sk_input_path)):
-        for metric in ('wall', 'pws'):
-            group = _capture_phase0a_group(
-                pipeline=pipeline,
-                metric=metric,
-                input_path=input_path,
-                executable=request.reference_executable,
-                local_root=local_root,
-                machine=machine,
+    manifest: Phase0AManifest | None = None
+    staging_root: Path | None = None
+    output_created = False
+    primary: HarnessFailure | None = None
+    phase = 'capture'
+    try:
+        environment_before = _phase0a_environment_state(request.reference_executable, machine)
+        for pipeline, input_path in (('gb', request.gb_input_path), ('sk', request.sk_input_path)):
+            for metric in ('wall', 'pws'):
+                phase = 'capture'
+                try:
+                    group = _capture_phase0a_group(
+                        pipeline=pipeline,
+                        metric=metric,
+                        input_path=input_path,
+                        executable=request.reference_executable,
+                        local_root=local_root,
+                        machine=machine,
+                    )
+                except HarnessFailure:
+                    raise
+                except Exception as exc:
+                    raise _capture_boundary_failure('reference', 'Phase 0A', exc) from exc
+                phase = 'validation'
+                validate_calibration_group(group)
+                groups[f'{pipeline}_{metric}'] = group
+        current_machine = _capture_machine_evidence()
+        if current_machine != machine:
+            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A machine changed before publication')
+        if _phase0a_environment_state(request.reference_executable, current_machine) != environment_before:
+            raise HarnessFailure(
+                HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A environment changed across calibration groups'
             )
-            validate_calibration_group(group)
-            groups[f'{pipeline}_{metric}'] = group
-    try:
-        _remove_local_tree(local_root / 'raw-logs', allowed_root=local_root)
-        _remove_local_tree(local_root / 'outputs', allowed_root=local_root)
-    except OSError as exc:
-        raise HarnessFailure(HarnessVerdict.CLEANUP_FAILED, 'Phase 0A raw evidence cleanup failed') from exc
-    if _phase0a_environment_state(request.reference_executable, machine) != environment_before:
-        raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A environment changed across calibration groups')
-    manifest = Phase0AManifest(
-        reference_exe_sha256=_sha256(request.reference_executable),
-        fork_revision=request.fork_revision,
-        git_head=_run_git(repo_root(), 'rev-parse', 'HEAD').strip(),
-        machine=machine,
-        gb_wall=groups['gb_wall'],
-        gb_pws=groups['gb_pws'],
-        sk_wall=groups['sk_wall'],
-        sk_pws=groups['sk_pws'],
-    )
-    payload = _phase0a_payload(manifest, request)
-    staging_root = local_root / f'phase0a-sanitized-{uuid.uuid4().hex}'
-    staging_root.mkdir()
-    staging = staging_root / 'phase0a.json'
-    try:
+        manifest = Phase0AManifest(
+            reference_exe_sha256=_sha256(request.reference_executable),
+            fork_revision=request.fork_revision,
+            git_head=_run_git(repo_root(), 'rev-parse', 'HEAD').strip(),
+            machine=machine,
+            gb_wall=groups['gb_wall'],
+            gb_pws=groups['gb_pws'],
+            sk_wall=groups['sk_wall'],
+            sk_pws=groups['sk_pws'],
+        )
+        payload = _phase0a_payload(manifest, request)
+        staging_root = local_root / f'phase0a-sanitized-{uuid.uuid4().hex}'
+        staging_root.mkdir()
+        staging = staging_root / 'phase0a.json'
         staging.write_bytes(_canonical_json(payload))
+        phase = 'scan'
         EvidenceSanitizer.closed_policy().scan_tree(
             staging_root,
             sensitive_names=(
@@ -2408,15 +2702,44 @@ def capture_phase0a(request: Phase0ARequest) -> Phase0AManifest:
                 platform.node(),
             ),
         )
+        phase = 'publish'
         if output.exists():
             raise FileExistsError(output)
         os.link(staging, output)
+        output_created = True
+    except HarnessFailure as exc:
+        primary = exc
+    except Exception:
+        verdict = (
+            HarnessVerdict.SENSITIVE_EVIDENCE if phase in ('scan', 'publish') else HarnessVerdict.INCOMPLETE_EVIDENCE
+        )
+        primary = HarnessFailure(verdict, f'Phase 0A {phase} failed')
     finally:
-        try:
-            _remove_local_tree(staging_root, allowed_root=local_root)
-        except OSError as exc:
-            _io_path(output).unlink(missing_ok=True)
-            raise HarnessFailure(HarnessVerdict.CLEANUP_FAILED, 'Phase 0A staging cleanup failed') from exc
+        cleanup_failures: list[str] = []
+        cleanup_trees = [local_root / 'raw-logs', local_root / 'outputs']
+        if staging_root is not None:
+            cleanup_trees.append(staging_root)
+        for cleanup_tree in cleanup_trees:
+            try:
+                _remove_local_tree(cleanup_tree, allowed_root=local_root)
+            except OSError as exc:
+                cleanup_failures.append(f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
+        if (primary is not None or cleanup_failures) and output_created:
+            try:
+                _io_path(output).unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_failures.append(f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
+        if cleanup_failures:
+            raise HarnessFailure(
+                HarnessVerdict.CLEANUP_FAILED,
+                f'Phase 0A cleanup failed: {cleanup_failures!r}',
+                primary_verdict=(primary.primary_verdict or primary.verdict) if primary else None,
+                raw_log_sha256=primary.raw_log_sha256 if primary else None,
+            ) from primary
+    if primary is not None:
+        raise primary
+    if manifest is None:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'Phase 0A produced no manifest')
     return manifest
 
 
@@ -2511,10 +2834,47 @@ def _paired_groups_require_expansion(
         'wall_seconds': median(item.candidate.metric_value for item in wall.rounds),
         'pws_bytes': median(item.candidate.metric_value for item in pws.rounds),
     }
-    return any(
+    if any(
         key in limits and requires_mandatory_expansion(measured=value, limit=Decimal(limits[key]))
         for key, value in measured.items()
-    )
+    ):
+        return True
+    for stage in ('ingest', 'writer_populate', 'xlsx_save'):
+        key = f'{stage}_ratio'
+        if key in limits and requires_mandatory_expansion(
+            measured=_stage_ratio(wall, stage),
+            limit=Decimal(limits[key]),
+        ):
+            return True
+    if 'ingest_or_pws_ratio' in limits:
+        combined = min(_stage_ratio(wall, 'ingest'), measured['pws_ratio'])
+        if requires_mandatory_expansion(measured=combined, limit=Decimal(limits['ingest_or_pws_ratio'])):
+            return True
+    if 'writer_populate_or_export_ratio' in limits:
+        limit = Decimal(limits['writer_populate_or_export_ratio'])
+        paired_ratios = tuple(
+            min(_paired_stage_ratio(item, 'writer_populate'), _paired_stage_ratio(item, 'export'))
+            for item in wall.rounds
+        )
+        if any(requires_mandatory_expansion(measured=value, limit=limit) for value in paired_ratios):
+            return True
+        wins = sum(value <= limit for value in paired_ratios)
+        required_wins = int(limits.get('minimum_wins', 0))
+        if (
+            wins > 0
+            and required_wins > 0
+            and requires_mandatory_expansion(
+                measured=Decimal(wins),
+                limit=Decimal(required_wins),
+            )
+        ):
+            return True
+    if request.comparison_profile is ComparisonProfile.PHASE2_B_VS_C:
+        return any(
+            requires_mandatory_expansion(measured=measured[key], limit=Decimal(1))
+            for key in ('wall_ratio', 'pws_ratio')
+        )
+    return False
 
 
 def _batch_attempt(ledger: AppendOnlyAttemptLedger, batch_id: str, state: AttemptState) -> BatchAttempt:
@@ -2749,13 +3109,17 @@ def _evaluate_closed_profile(
             raise HarnessFailure(HarnessVerdict.CANDIDATE_FAILED, 'ingest/PWS improvement gate failed')
     if 'writer_populate_or_export_ratio' in limits:
         limit = Decimal(limits['writer_populate_or_export_ratio'])
-        wins = sum(
-            min(_paired_stage_ratio(item, 'writer_populate'), _paired_stage_ratio(item, 'export')) <= limit
-            for item in wall.rounds
-        )
         required = int(limits.get('minimum_wins', 0))
-        if wins < required:
-            raise HarnessFailure(HarnessVerdict.CANDIDATE_FAILED, 'writer/export minimum-wins gate failed')
+        if len(wall.rounds) not in (5, 10):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'writer/export rounds must use five-round windows')
+        for offset in range(0, len(wall.rounds), 5):
+            window = wall.rounds[offset : offset + 5]
+            wins = sum(
+                min(_paired_stage_ratio(item, 'writer_populate'), _paired_stage_ratio(item, 'export')) <= limit
+                for item in window
+            )
+            if wins < required:
+                raise HarnessFailure(HarnessVerdict.CANDIDATE_FAILED, 'writer/export minimum-wins gate failed')
     candidate_sizes = _output_sizes(wall, pws, 'candidate')
     output_limit = Decimal(limits['output_bytes_ratio']) * Decimal(baseline.output_size_bytes)
     if any(Decimal(value) > output_limit for value in candidate_sizes):
@@ -3068,9 +3432,23 @@ def _capture_phase0a_group(
     primary: BaseException | None = None
     rounds: list[CalibrationRound] = []
     try:
-        capture(1, warmup=True)
+        try:
+            capture(1, warmup=True)
+        except HarnessFailure:
+            raise
+        except Exception as exc:
+            raise _capture_boundary_failure('reference', 'Phase 0A', exc) from exc
+        if _capture_machine_evidence() != machine:
+            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A machine changed during calibration')
         for round_number in range(1, 6):
-            captured = capture(round_number, warmup=False)
+            try:
+                captured = capture(round_number, warmup=False)
+            except HarnessFailure:
+                raise
+            except Exception as exc:
+                raise _capture_boundary_failure('reference', 'Phase 0A', exc) from exc
+            if _capture_machine_evidence() != machine:
+                raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A machine changed during calibration')
             if _capture_phase0a_identity(input_path, executable, machine) != identity:
                 raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Phase 0A identity changed during calibration')
             metric_value = (
@@ -3096,7 +3474,14 @@ def _capture_phase0a_group(
         primary = exc
     failures = _cleanup_all(cleanup)
     if failures:
-        raise HarnessFailure(HarnessVerdict.CLEANUP_FAILED, f'Phase 0A cleanup failed: {failures!r}') from primary
+        primary_verdict = primary.verdict if isinstance(primary, HarnessFailure) else None
+        raw_log_sha256 = primary.raw_log_sha256 if isinstance(primary, HarnessFailure) else None
+        raise HarnessFailure(
+            HarnessVerdict.CLEANUP_FAILED,
+            f'Phase 0A cleanup failed: {failures!r}',
+            primary_verdict=primary_verdict,
+            raw_log_sha256=raw_log_sha256,
+        ) from primary
     if primary is not None:
         raise primary
     return CalibrationGroup(batch_id, pipeline, metric, True, tuple(rounds))  # type: ignore[arg-type]

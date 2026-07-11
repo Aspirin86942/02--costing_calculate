@@ -34,6 +34,7 @@ from tests.rust_oracle.evidence import (
     BenchmarkManifestEvidence,
     EvidenceSanitizer,
     SmokeSummaryEvidence,
+    _batch_commit_marker,
 )
 from tests.rust_oracle.oracle_runner import (
     CapturedNormalRun,
@@ -213,6 +214,38 @@ def _metric_group(metric: str, *, start: int = 1, reference: str = '1.0', candid
             )
         )
     return MetricGroup('9' * 64, 'gb', metric, start, tuple(rounds))  # type: ignore[arg-type]
+
+
+def _with_candidate_stage_ratios(group: MetricGroup, ratios: tuple[dict[str, Decimal], ...]) -> MetricGroup:
+    rounds: list[PairedRound] = []
+    for paired, round_ratios in zip(group.rounds, ratios, strict=True):
+        reference_timings = dict(paired.reference.normal_run.runtime.stage_timings)
+        candidate_timings = dict(paired.candidate.normal_run.runtime.stage_timings)
+        for stage, ratio in round_ratios.items():
+            reference_timings.setdefault(stage, Decimal('0.1'))
+            candidate_timings[stage] = reference_timings[stage] * ratio
+        reference = replace(
+            paired.reference,
+            normal_run=replace(
+                paired.reference.normal_run,
+                runtime=replace(
+                    paired.reference.normal_run.runtime,
+                    stage_timings=tuple(reference_timings.items()),
+                ),
+            ),
+        )
+        candidate = replace(
+            paired.candidate,
+            normal_run=replace(
+                paired.candidate.normal_run,
+                runtime=replace(
+                    paired.candidate.normal_run.runtime,
+                    stage_timings=tuple(candidate_timings.items()),
+                ),
+            ),
+        )
+        rounds.append(replace(paired, reference=reference, candidate=candidate))
+    return replace(group, rounds=tuple(rounds))
 
 
 def _calibration_group(pipeline: str, metric: str, output_size: int) -> CalibrationGroup:
@@ -398,6 +431,43 @@ def test_phase0h_smoke_records_observed_canary_residue_and_sheet_contract(
     assert smoke.approved_sheets == tuple(ApprovedSheet)
 
 
+@pytest.mark.parametrize('mutation', ('missing-sentinel', 'extra-artifact'))
+def test_phase0h_smoke_rejects_temp_canary_mutation_and_still_cleans_environment(
+    mutation: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_smoke_capture(monkeypatch)
+    original_capture = phase0_harness.run_rust_normal_captured
+    mutated = False
+
+    def mutate_canary(*args: object, **kwargs: object) -> CapturedNormalRun:
+        nonlocal mutated
+        captured = original_capture(*args, **kwargs)  # type: ignore[arg-type]
+        if not mutated:
+            temp_root = Path(phase0_harness.os.environ['TEMP'])
+            if mutation == 'missing-sentinel':
+                (temp_root / 'sentinel.txt').unlink()
+            else:
+                (temp_root / 'unexpected.tmp').write_bytes(b'unexpected')
+            mutated = True
+        return captured
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', mutate_canary)
+    monkeypatch.setenv('TEMP', str(tmp_path / 'original-temp'))
+    monkeypatch.setenv('TMP', str(tmp_path / 'original-tmp'))
+    executable = tmp_path / 'reference.exe'
+    executable.write_bytes(b'synthetic executable')
+    smoke_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'phase0h-smoke'
+
+    with pytest.raises(HarnessFailure) as caught:
+        run_phase0h_smoke(Phase0HSmokeRequest('gb', executable, executable, smoke_root))
+
+    assert caught.value.verdict is HarnessVerdict.ENVIRONMENT_DRIFT
+    assert phase0_harness.os.environ['TEMP'] == str(tmp_path / 'original-temp')
+    assert phase0_harness.os.environ['TMP'] == str(tmp_path / 'original-tmp')
+    assert not (smoke_root / 'temp-canary').exists()
+    assert not list(smoke_root.rglob('*.xlsx'))
+
+
 def test_phase0a_manifest_uses_external_output_size_for_base_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -459,7 +529,9 @@ def test_phase0a_pws_uses_trusted_raw_root(monkeypatch: pytest.MonkeyPatch, tmp_
     input_path.write_bytes(b'input')
     executable.write_bytes(b'executable')
     local_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'phase0a'
+    machine = MachineEvidence('build', 'x86_64', 'cpu', 1, 1, 'UNKNOWN', 1, '6' * 64)
     monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '4' * 40)
+    monkeypatch.setattr(phase0_harness, '_capture_machine_evidence', lambda: machine)
 
     def fake_pws(**kwargs: object) -> CapturedNormalRun:
         assert kwargs['local_root'] == phase0_harness._trusted_local_root()
@@ -481,7 +553,7 @@ def test_phase0a_pws_uses_trusted_raw_root(monkeypatch: pytest.MonkeyPatch, tmp_
         input_path=input_path,
         executable=executable,
         local_root=local_root,
-        machine=MachineEvidence('build', 'x86_64', 'cpu', 1, 1, 'UNKNOWN', 1, '6' * 64),
+        machine=machine,
     )
     assert len(group.rounds) == 5
 
@@ -519,6 +591,217 @@ def _install_phase0a_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         raising=False,
     )
     monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '4' * 40)
+
+
+def test_phase0a_group_failure_cleans_residuals_and_allows_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+    failed = False
+
+    def flaky_group(*, pipeline: str, metric: str, local_root: Path, **kwargs: object) -> CalibrationGroup:
+        nonlocal failed
+        del kwargs
+        raw_log = local_root / 'raw-logs' / 'partial.json'
+        workbook = local_root / 'outputs' / pipeline / metric / 'partial.xlsx'
+        raw_log.parent.mkdir(parents=True, exist_ok=True)
+        workbook.parent.mkdir(parents=True, exist_ok=True)
+        raw_log.write_text('{}', encoding='utf-8')
+        workbook.write_bytes(b'partial')
+        if not failed:
+            failed = True
+            raise RustNormalProcessError(9, 'f' * 64)
+        return _calibration_group(pipeline, metric, 321 if pipeline == 'gb' else 654)
+
+    monkeypatch.setattr(phase0_harness, '_capture_phase0a_group', flaky_group)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.capture_phase0a(request)
+    assert caught.value.verdict is HarnessVerdict.REFERENCE_FAILED
+    assert caught.value.raw_log_sha256 == 'f' * 64
+    assert not request.output_path.exists()
+    assert not (request.local_root / 'raw-logs').exists()
+    assert not (request.local_root / 'outputs').exists()
+
+    phase0_harness.capture_phase0a(request)
+    assert request.output_path.is_file()
+
+
+@pytest.mark.parametrize('failure_point', ('scan', 'publish'))
+def test_phase0a_scan_or_publish_failure_removes_staging_and_incomplete_manifest(
+    failure_point: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+    if failure_point == 'scan':
+        monkeypatch.setattr(
+            EvidenceSanitizer,
+            'scan_tree',
+            lambda self, *args, **kwargs: (_ for _ in ()).throw(ValueError('sensitive staging')),
+        )
+    else:
+        monkeypatch.setattr(
+            phase0_harness.os,
+            'link',
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError('publication failed')),
+        )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.capture_phase0a(request)
+
+    assert caught.value.verdict is HarnessVerdict.SENSITIVE_EVIDENCE
+    assert not request.output_path.exists()
+    assert not list(request.local_root.glob('phase0a-sanitized-*'))
+    assert not (request.local_root / 'raw-logs').exists()
+    assert not (request.local_root / 'outputs').exists()
+
+
+def test_phase0a_outer_cleanup_failure_preserves_nested_cleanup_primary_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_capture_phase0a_group',
+        lambda **kwargs: (_ for _ in ()).throw(
+            HarnessFailure(
+                HarnessVerdict.CLEANUP_FAILED,
+                'group cleanup failed',
+                primary_verdict=HarnessVerdict.REFERENCE_FAILED,
+                raw_log_sha256='f' * 64,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        '_remove_local_tree',
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError('outer cleanup failed')),
+    )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.capture_phase0a(request)
+
+    assert caught.value.verdict is HarnessVerdict.CLEANUP_FAILED
+    assert caught.value.primary_verdict is HarnessVerdict.REFERENCE_FAILED
+    assert caught.value.raw_log_sha256 == 'f' * 64
+    assert not request.output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ('error', 'expected_raw_log'),
+    (
+        (RustNormalProcessError(9, 'f' * 64), 'f' * 64),
+        (RustNormalValidationError('invalid workbook', 'e' * 64), 'e' * 64),
+        (RuntimeError('unexpected capture failure'), None),
+    ),
+)
+def test_phase0a_maps_capture_boundary_to_reference_failure(
+    error: Exception,
+    expected_raw_log: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+    monkeypatch.setattr(phase0_harness, '_capture_phase0a_group', lambda **kwargs: (_ for _ in ()).throw(error))
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.capture_phase0a(request)
+
+    assert caught.value.verdict is HarnessVerdict.REFERENCE_FAILED
+    assert caught.value.raw_log_sha256 == expected_raw_log
+
+
+def test_phase0a_rechecks_machine_evidence_after_each_capture(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    initial = MachineEvidence('build', 'x86_64', 'cpu', 4, 8, 'SSD', 16, '6' * 64)
+    changed = replace(initial, fingerprint_sha256='9' * 64)
+    observed = iter((initial, changed))
+    input_path = tmp_path / 'synthetic.xlsx'
+    executable = tmp_path / 'reference.exe'
+    input_path.write_bytes(b'input')
+    executable.write_bytes(b'executable')
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'phase0a'
+    monkeypatch.setattr(phase0_harness, '_capture_machine_evidence', lambda: next(observed))
+    monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '4' * 40)
+
+    def fake_capture(
+        executable: Path, pipeline: str, input_path: Path, output_path: Path, **kwargs: object
+    ) -> CapturedNormalRun:
+        del executable, input_path, kwargs
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b'workbook')
+        return CapturedNormalRun(NormalRunEvidence(Decimal('1'), None, _runtime(pipeline), '8' * 64), 0, '7' * 64)
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._capture_phase0a_group(
+            pipeline='gb',
+            metric='wall',
+            input_path=input_path,
+            executable=executable,
+            local_root=local_root,
+            machine=initial,
+        )
+    assert caught.value.verdict is HarnessVerdict.ENVIRONMENT_DRIFT
+    assert not list(local_root.rglob('*.xlsx'))
+
+
+def test_main_maps_smoke_and_phase0a_capture_failures_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    executable = tmp_path / 'reference.exe'
+    executable.write_bytes(b'executable')
+    smoke_root = tmp_path / 'rust' / 'target' / 'perf-local' / 'smoke'
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_rust_normal_captured',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RustNormalProcessError(9, 'f' * 64)),
+    )
+    smoke_exit = phase0_harness.main(
+        [
+            'smoke',
+            '--pipeline',
+            'gb',
+            '--reference-executable',
+            str(executable),
+            '--candidate-executable',
+            str(executable),
+            '--local-root',
+            str(smoke_root),
+        ]
+    )
+    assert smoke_exit == 3
+    assert 'Traceback' not in capsys.readouterr().err
+
+    _install_phase0a_capture(monkeypatch, tmp_path)
+    request = _phase0a_request(tmp_path)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_capture_phase0a_group',
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError('unexpected capture failure')),
+    )
+    phase0a_exit = phase0_harness.main(
+        [
+            'phase0a',
+            '--gb-input',
+            str(request.gb_input_path),
+            '--sk-input',
+            str(request.sk_input_path),
+            '--reference-executable',
+            str(request.reference_executable),
+            '--fork-revision',
+            request.fork_revision,
+            '--local-root',
+            str(request.local_root),
+            '--output',
+            str(request.output_path),
+        ]
+    )
+    assert phase0a_exit == 3
+    assert 'Traceback' not in capsys.readouterr().err
 
 
 def test_paired_cli_exposes_no_batch_round_or_threshold_argument() -> None:
@@ -758,6 +1041,144 @@ def test_paired_batch_expands_wall_and_pws_together(wall_near_limit: bool, pws_n
     assert wall_plans == pws_plans
 
 
+@pytest.mark.parametrize(
+    ('profile', 'pipeline', 'stage', 'ratio'),
+    (
+        (ComparisonProfile.PHASE1_VS_PHASE0B, 'sk', 'writer_populate', Decimal('0.90')),
+        (ComparisonProfile.PHASE2_B_VS_A, 'sk', 'xlsx_save', Decimal('0.85')),
+        (ComparisonProfile.PHASE4_VS_PHASE3, 'gb', 'ingest', Decimal('1.05')),
+    ),
+)
+def test_expansion_covers_each_stage_ratio_gate(
+    profile: ComparisonProfile,
+    pipeline: str,
+    stage: str,
+    ratio: Decimal,
+    tmp_path: Path,
+) -> None:
+    request = replace(_request(tmp_path), comparison_profile=profile, pipeline=pipeline)
+    wall = _with_candidate_stage_ratios(_metric_group('wall'), tuple({stage: ratio} for _ in range(5)))
+
+    assert phase0_harness._paired_groups_require_expansion(request, wall, _metric_group('pws')) is True
+
+
+def test_expansion_covers_ingest_or_pws_and_writer_export_minimum_wins(tmp_path: Path) -> None:
+    ingest_request = replace(
+        _request(tmp_path),
+        comparison_profile=ComparisonProfile.PHASE4_VS_PHASE3,
+        pipeline='sk',
+    )
+    ingest_wall = _with_candidate_stage_ratios(
+        _metric_group('wall'),
+        tuple({'ingest': Decimal('0.90')} for _ in range(5)),
+    )
+    assert phase0_harness._paired_groups_require_expansion(ingest_request, ingest_wall, _metric_group('pws')) is True
+
+    wins_request = replace(
+        _request(tmp_path),
+        comparison_profile=ComparisonProfile.PHASE2_C_VS_A,
+        pipeline='sk',
+    )
+    win_ratios = tuple(
+        {'writer_populate': Decimal('0.50'), 'export': Decimal('1.50')}
+        if index < 4
+        else {'writer_populate': Decimal('1.50'), 'export': Decimal('1.50')}
+        for index in range(5)
+    )
+    wins_wall = _with_candidate_stage_ratios(_metric_group('wall'), win_ratios)
+    assert phase0_harness._paired_groups_require_expansion(wins_request, wins_wall, _metric_group('pws')) is True
+
+
+@pytest.mark.parametrize(('wall_ratio', 'pws_ratio'), (('1.02', '1.20'), ('0.80', '0.98')))
+def test_phase2_b_vs_c_expands_when_either_tie_break_ratio_is_within_three_percent_of_one(
+    wall_ratio: str, pws_ratio: str, tmp_path: Path
+) -> None:
+    request = replace(
+        _request(tmp_path),
+        comparison_profile=ComparisonProfile.PHASE2_B_VS_C,
+        pipeline='sk',
+    )
+    wall = _metric_group('wall', reference='1', candidate=wall_ratio)
+    pws = _metric_group('pws', reference='1', candidate=pws_ratio)
+
+    assert phase0_harness._paired_groups_require_expansion(request, wall, pws) is True
+
+
+def test_writer_export_minimum_wins_requires_four_wins_in_each_five_round_window(tmp_path: Path) -> None:
+    request = replace(
+        _request(tmp_path),
+        comparison_profile=ComparisonProfile.PHASE2_C_VS_A,
+        pipeline='sk',
+    )
+    first_ratios = tuple(
+        {'writer_populate': Decimal('0.50'), 'export': Decimal('1.50')}
+        if index < 4
+        else {'writer_populate': Decimal('1.50'), 'export': Decimal('1.50')}
+        for index in range(5)
+    )
+    second_ratios = tuple({'writer_populate': Decimal('1.50'), 'export': Decimal('1.50')} for _ in range(5))
+    first_wall = _with_candidate_stage_ratios(_metric_group('wall'), first_ratios)
+    second_wall = _with_candidate_stage_ratios(_metric_group('wall', start=6), second_ratios)
+    wall = phase0_harness.merge_metric_groups(first_wall, second_wall)
+    pws = phase0_harness.merge_metric_groups(
+        _metric_group('pws', reference='100', candidate='100'),
+        _metric_group('pws', start=6, reference='100', candidate='100'),
+    )
+    baseline = phase0_harness._ApprovedPhase0ABaseline('6' * 64, 8, (Decimal('1'),) * 5, (Decimal('100'),) * 5)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._evaluate_closed_profile(request, wall, pws, baseline)
+
+    assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
+
+
+def test_loader_repairs_only_tail_committed_record_missing_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    original_write = phase0_harness._write_create_new
+    failed = False
+
+    def fail_checkpoint(path: Path, content: bytes, *, allowed_root: Path) -> None:
+        nonlocal failed
+        if path.parent.name == 'checkpoints' and not failed:
+            failed = True
+            raise OSError('checkpoint interrupted')
+        original_write(path, content, allowed_root=allowed_root)
+
+    monkeypatch.setattr(phase0_harness, '_write_create_new', fail_checkpoint)
+    with pytest.raises(OSError, match='checkpoint interrupted'):
+        ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
+
+    recovered = AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity)
+    assert recovered.state is AttemptState.EVIDENCE_COMMITTED
+    assert len(tuple((ledger.attempt_directory / 'records').glob('*.json'))) == len(
+        tuple((ledger.attempt_directory / 'checkpoints').glob('*.json'))
+    )
+
+
+def test_loader_repairs_only_missing_journal_anchor_after_committed_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    failed = False
+    original_anchor = ledger._append_journal_anchor
+
+    def fail_anchor() -> str:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError('journal interrupted')
+        return original_anchor()
+
+    monkeypatch.setattr(ledger, '_append_journal_anchor', fail_anchor)
+    with pytest.raises(OSError, match='journal interrupted'):
+        ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
+
+    recovered = AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity)
+    assert recovered.state is AttemptState.EVIDENCE_COMMITTED
+
+
 def _approved_phase0a_payload(*, wall_value: str = '1', pws_value: str = '100') -> dict[str, object]:
     calibration = {
         'wall': {'batch_id_sha256': 'a' * 64, 'values': [wall_value] * 5, 'local_log_sha256': ['7' * 64] * 5},
@@ -830,6 +1251,143 @@ def _install_formal_paired(
         lambda self, **kwargs: publications.append(kwargs),
     )
     return request, publications
+
+
+def _prepare_formal_evidence_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[PairedBenchmarkRequest, AppendOnlyAttemptLedger, object]:
+    request, _ = _install_formal_paired(monkeypatch, tmp_path)
+    sanitized_input = tmp_path / 'confidential-gb-source.xlsx'
+    sanitized_input.write_bytes(b'input')
+    request = replace(request, input_path=sanitized_input)
+    monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', lambda self, **kwargs: None)
+    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+    comparison_key = hashlib.sha256(
+        phase0_harness._canonical_json(
+            {
+                'pipeline': request.pipeline,
+                'profile': request.comparison_profile.value,
+                'reference_label': request.reference_label.value,
+                'candidate_label': request.candidate_label.value,
+                'input_sha256': identity.input_sha256,
+                'reference_sha256': identity.reference_sha256,
+                'candidate_sha256': identity.candidate_sha256,
+            }
+        )
+    ).hexdigest()
+    ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
+    ledger.commit_first_group({'wall': 'wall', 'pws': 'pws'})
+    ledger.mark_cleanup_complete()
+    batch_id = derive_batch_id(request, identity)
+    wall = replace(_metric_group('wall'), batch_id=batch_id)
+    pws = replace(_metric_group('pws', reference='100', candidate='100'), batch_id=batch_id)
+    attempt = phase0_harness._batch_attempt(ledger, batch_id, AttemptState.CLEANUP_COMPLETE)
+    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity)
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(evidence)
+    ledger.prepare_evidence(
+        artifact_basename=artifact.file_name,
+        artifact_sha256=hashlib.sha256(artifact.content.encode('utf-8')).hexdigest(),
+        artifact_content=artifact.content,
+    )
+    return request, ledger, artifact
+
+
+def test_prepared_evidence_without_files_is_republished_before_any_new_sample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_write_batch = EvidenceSanitizer.write_batch
+    request, ledger, _artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    publications = 0
+
+    def publish(self: EvidenceSanitizer, **kwargs: object) -> None:
+        nonlocal publications
+        publications += 1
+        original_write_batch(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(EvidenceSanitizer, 'write_batch', publish)
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_normal_wall_group',
+        lambda request: (_ for _ in ()).throw(AssertionError('sample runner must not run during recovery')),
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_pws_group',
+        lambda request: (_ for _ in ()).throw(AssertionError('sample runner must not run during recovery')),
+    )
+
+    result = phase0_harness.run_paired_normal_batch(request)
+
+    assert publications == 1
+    assert result.wall is None and result.pws is None
+    assert result.verdict is HarnessVerdict.VALIDATED
+    assert (
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity).state is AttemptState.EVIDENCE_COMMITTED
+    )
+
+
+def test_prepared_evidence_with_matching_artifact_and_marker_only_completes_ledger(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_write_batch = EvidenceSanitizer.write_batch
+    request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    original_write_batch(
+        EvidenceSanitizer.closed_policy(),
+        destination_root=request.evidence_path.parent,
+        artifacts=(artifact,),
+        cleanup_state=AttemptState.CLEANUP_COMPLETE,
+        scan_staged=False,
+        sensitive_names=(),
+    )
+    monkeypatch.setattr(
+        EvidenceSanitizer,
+        'write_batch',
+        lambda self, **kwargs: (_ for _ in ()).throw(AssertionError('matching evidence must not be republished')),
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_normal_wall_group',
+        lambda request: (_ for _ in ()).throw(AssertionError('sample runner must not run during recovery')),
+    )
+
+    result = phase0_harness.run_paired_normal_batch(request)
+
+    assert result.wall is None and result.pws is None
+    assert (
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity).state is AttemptState.EVIDENCE_COMMITTED
+    )
+
+
+@pytest.mark.parametrize('tampered_file', ('artifact', 'marker'))
+def test_prepared_evidence_mismatch_fails_closed_without_deleting_or_overwriting(
+    tampered_file: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    original_write_batch = EvidenceSanitizer.write_batch
+    request, _ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    original_write_batch(
+        EvidenceSanitizer.closed_policy(),
+        destination_root=request.evidence_path.parent,
+        artifacts=(artifact,),
+        cleanup_state=AttemptState.CLEANUP_COMPLETE,
+        scan_staged=False,
+        sensitive_names=(),
+    )
+    marker_name, _marker_content = _batch_commit_marker((artifact,))
+    tampered_path = request.evidence_path if tampered_file == 'artifact' else request.evidence_path.parent / marker_name
+    tampered_path.write_bytes(b'tampered')
+    before = tampered_path.read_bytes()
+    monkeypatch.setattr(
+        EvidenceSanitizer,
+        'write_batch',
+        lambda self, **kwargs: (_ for _ in ()).throw(AssertionError('mismatch must not be republished')),
+    )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert tampered_path.read_bytes() == before
 
 
 def test_paired_batch_rejects_phase0a_drift_before_publication(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1191,8 +1749,9 @@ def test_success_ledger_rejects_benchmark_records_after_cleanup(tmp_path: Path) 
     with pytest.raises(HarnessFailure, match='cleanup|success'):
         ledger.record_sample('wall', 1, 'reference', {'value': 1})
 
-    ledger.mark_evidence_committed(artifact_sha256='8' * 64)
-    assert AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity()).state is AttemptState.EVIDENCE_COMMITTED
+    with pytest.raises(HarnessFailure, match='evidence success'):
+        ledger.mark_evidence_committed(artifact_sha256='8' * 64)
+    assert AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity()).state is AttemptState.CLEANUP_COMPLETE
 
 
 @pytest.mark.parametrize('field', ('local_root', 'attempt_ledger_root'))

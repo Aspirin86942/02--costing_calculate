@@ -1539,6 +1539,41 @@ def test_scan_staged_rejects_deleted_batch_entry(
         EvidenceSanitizer.closed_policy().scan_staged()
 
 
+def _assert_rename_out_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    entry: str,
+) -> None:
+    root = tmp_path / 'repo'
+    destination, artifacts = _committed_synthetic_batch(root)
+    source = next(destination.glob('batch-*.commit.json'))
+    if entry == 'artifact':
+        source = destination / artifacts[0].file_name
+    moved = root / 'moved-evidence' / source.name
+    moved.parent.mkdir()
+    _git(root, 'config', 'diff.renames', 'true')
+    _git(root, 'mv', '--', source.relative_to(root).as_posix(), moved.relative_to(root).as_posix())
+    monkeypatch.setattr(evidence, 'repo_root', lambda: root)
+
+    with pytest.raises(ValueError, match='delet|rename|batch'):
+        EvidenceSanitizer.closed_policy().scan_staged()
+
+
+def test_scan_staged_rejects_artifact_rename_out(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_rename_out_rejected(monkeypatch, tmp_path, entry='artifact')
+
+
+def test_scan_staged_rejects_marker_rename_out(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_rename_out_rejected(monkeypatch, tmp_path, entry='marker')
+
+
 def test_all_seven_staged_readers_round_trip_typed_sources() -> None:
     policy = EvidenceSanitizer.closed_policy()
     readers = {

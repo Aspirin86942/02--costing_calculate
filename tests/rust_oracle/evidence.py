@@ -1799,6 +1799,7 @@ def _staged_index_entries(root: Path) -> tuple[_StagedIndexEntry, ...]:
         root,
         'diff',
         '--cached',
+        '--no-renames',
         '--name-only',
         '-z',
         '--diff-filter=ACMRTD',

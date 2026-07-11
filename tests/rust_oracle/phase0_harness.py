@@ -28,16 +28,20 @@ from tests.rust_oracle.benchmark_protocol import (
     RoundPlan,
     RuntimeEvidence,
     RuntimeSchema,
+    build_round_plan,
     validate_metric_group,
 )
 from tests.rust_oracle.oracle_runner import (
+    CapturedNormalRun,
     RustNormalProcessError,
     RustNormalValidationError,
     _io_path,
     _normal_path,
     _prepare_local_path,
     _reject_existing_reparse_components,
+    parse_runtime_payload,
     run_rust_normal_captured,
+    workbook_oracle,
 )
 from tests.rust_oracle.repo_paths import repo_root
 
@@ -457,6 +461,10 @@ class AppendOnlyAttemptLedger:
     def _append(self, kind: str, payload: dict[str, Any]) -> str:
         if self.terminal_verdict is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot accept more records')
+        if self.cleanup_only:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot accept benchmark records'
+            )
         sequence = self._record_count + 1
         record = {'kind': kind, 'previous_record_sha256': self._record_head_sha256, **payload}
         raw = _canonical_json(record)
@@ -676,7 +684,18 @@ def _load_comparison_journal(comparison_directory: Path) -> tuple[str, dict[int,
 
 def derive_batch_id(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
     payload = {'profile': request.comparison_profile.value, 'pipeline': request.pipeline, **asdict(identity)}
-    return hashlib.sha256(_canonical_json(payload)).hexdigest()[:32]
+    return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+def _mandatory_paired_expansion_plans(
+    *,
+    wall_requires_expansion: bool,
+    pws_requires_expansion: bool,
+) -> tuple[tuple[RoundPlan, ...], tuple[RoundPlan, ...]]:
+    if not (wall_requires_expansion or pws_requires_expansion):
+        return (), ()
+    plans = build_round_plan(global_round_start=6, round_count=5)
+    return plans, plans
 
 
 def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
@@ -805,6 +824,15 @@ def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
                 tuple(pairs),
             )
             validate_metric_group(result_group)
+        except (KeyboardInterrupt, SystemExit) as interruption:
+            cleanup_errors = _cleanup_all(cleanup_paths)
+            if cleanup_errors:
+                ledger.finish(HarnessVerdict.CLEANUP_FAILED)
+                raise HarnessFailure(
+                    HarnessVerdict.CLEANUP_FAILED,
+                    f'workbook cleanup failed during interruption: {cleanup_errors!r}',
+                ) from interruption
+            raise
         except HarnessFailure as exc:
             primary_error = exc
         except Exception as exc:
@@ -837,12 +865,14 @@ def _metric_sample(
     plan: RoundPlan,
     identity: BenchmarkIdentity,
     captured: tuple[NormalRunEvidence, str],
+    *,
+    metric_value: Decimal | None = None,
 ) -> MetricSample:
     normal_run, log_sha = captured
     return MetricSample(
         role=role,
         global_round=plan.global_round,
-        metric_value=normal_run.external_wall_seconds,
+        metric_value=normal_run.external_wall_seconds if metric_value is None else metric_value,
         exit_code=0,
         input_sha256=identity.input_sha256,
         binary_sha256=identity.reference_sha256 if role == 'reference' else identity.candidate_sha256,
@@ -1198,8 +1228,420 @@ def _is_lower_hex(value: object, *, minimum: int, maximum: int) -> bool:
     )
 
 
+def build_pws_cli_arguments(
+    mode: str,
+    pipeline: PipelineName,
+    input_path: Path,
+    output_path: Path | None,
+) -> tuple[str, ...]:
+    if mode == 'Normal':
+        if output_path is None:
+            raise ValueError('Normal PWS mode requires one output path')
+        return (pipeline, '--input', str(input_path), '--output', str(output_path), '--benchmark')
+    if mode == 'CheckOnly':
+        if output_path is not None:
+            raise ValueError('CheckOnly PWS mode forbids an output path')
+        return (pipeline, '--input', str(input_path), '--check-only', '--benchmark')
+    raise ValueError('PWS mode must be Normal or CheckOnly')
+
+
+def _build_pws_script_command(
+    *,
+    mode: str,
+    pipeline: PipelineName,
+    input_path: Path,
+    executable: Path,
+    role: BinaryRole,
+    batch_id: str,
+    global_round: int,
+    output_path: Path | None,
+    local_log_root: Path,
+    local_result_path: Path,
+) -> tuple[str, ...]:
+    if not _is_sha256(batch_id):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS batch ID must be lowercase SHA-256')
+    if role not in ('reference', 'candidate') or global_round not in range(1, 11):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS round identity is invalid')
+    powershell = shutil.which('powershell')
+    if powershell is None:
+        raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'Windows PowerShell executable not found')
+    script = Path(__file__).with_name('measure_peak_working_set.ps1')
+    command = [
+        powershell,
+        '-NoProfile',
+        '-File',
+        str(script),
+        '-Mode',
+        mode,
+        '-Pipeline',
+        pipeline,
+        '-InputPath',
+        str(input_path),
+        '-Executable',
+        str(executable),
+        '-Role',
+        role,
+        '-BatchId',
+        batch_id,
+        '-GlobalRound',
+        str(global_round),
+        '-LocalLogRoot',
+        str(local_log_root),
+        '-LocalResultPath',
+        str(local_result_path),
+    ]
+    if mode == 'Normal':
+        if output_path is None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'Normal PWS sample requires output path')
+        command.extend(('-OutputPath', str(output_path)))
+    elif mode != 'CheckOnly' or output_path is not None:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'invalid PWS mode/output combination')
+    return tuple(command)
+
+
+def _pws_local_result_path(local_root: Path, batch_id: str, global_round: int, role: BinaryRole) -> Path:
+    trusted = _trusted_local_root()
+    if _normal_path(local_root).absolute() != trusted:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS result root must equal trusted local root')
+    if not _is_sha256(batch_id) or global_round not in range(1, 11) or role not in ('reference', 'candidate'):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local result identity is invalid')
+    return _safe_harness_path(
+        trusted / 'pws-results' / batch_id / str(global_round) / f'{role}.json',
+        allowed_roots=(trusted,),
+        purpose='PWS result escaped trusted local root',
+        create_parent=True,
+    )
+
+
+def _reject_duplicate_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'duplicate JSON key: {key}')
+        result[key] = value
+    return result
+
+
+def _parse_pws_local_result(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=_reject_duplicate_json_object)
+    except HarnessFailure:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local result is unreadable') from exc
+    if not isinstance(payload, dict):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local result must be an object')
+    required = {
+        'mode',
+        'pipeline',
+        'role',
+        'batch_id',
+        'global_round',
+        'exit_code',
+        'external_wall_seconds',
+        'peak_working_set_bytes',
+        'input_sha256',
+        'binary_sha256',
+        'command_arguments',
+        'stdout_log_sha256',
+        'stderr_log_sha256',
+        'local_unversioned_log_sha256',
+    }
+    if set(payload) != required:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS local result fields are not closed')
+    try:
+        wall = Decimal(payload['external_wall_seconds'])
+    except Exception as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS wall time is invalid') from exc
+    peak = payload['peak_working_set_bytes']
+    exit_code = payload['exit_code']
+    if not wall.is_finite() or wall <= 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS wall time must be finite and positive')
+    if not isinstance(peak, int) or isinstance(peak, bool) or peak <= 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PeakWorkingSet64 must be a positive integer')
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS exit code must be an integer')
+    if not isinstance(payload['command_arguments'], list) or not all(
+        isinstance(item, str) for item in payload['command_arguments']
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS command arguments must be strings')
+    for field_name in (
+        'input_sha256',
+        'binary_sha256',
+        'stdout_log_sha256',
+        'stderr_log_sha256',
+        'local_unversioned_log_sha256',
+    ):
+        if not _is_sha256(payload[field_name]):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'PWS {field_name} is invalid')
+    return payload
+
+
+def _invoke_pws_single_sample(
+    *,
+    executable: Path,
+    pipeline: PipelineName,
+    input_path: Path,
+    output_path: Path,
+    role: BinaryRole,
+    batch_id: str,
+    global_round: int,
+    schema: RuntimeSchema,
+    local_root: Path,
+) -> CapturedNormalRun:
+    result_path = _pws_local_result_path(local_root, batch_id, global_round, role)
+    log_root = _safe_harness_path(
+        local_root / 'pws-logs',
+        allowed_roots=(local_root,),
+        purpose='PWS logs escaped trusted local root',
+        create_parent=True,
+    )
+    command = _build_pws_script_command(
+        mode='Normal',
+        pipeline=pipeline,
+        input_path=input_path,
+        executable=executable,
+        role=role,
+        batch_id=batch_id,
+        global_round=global_round,
+        output_path=output_path,
+        local_log_root=log_root,
+        local_result_path=result_path,
+    )
+    completed = subprocess.run(  # noqa: S603 - closed local PowerShell/script/typed arguments.
+        command,
+        check=False,
+        capture_output=True,
+        cwd=repo_root(),
+        encoding='utf-8',
+        errors='replace',
+    )
+    driver_log = _canonical_json(
+        {'returncode': completed.returncode, 'stdout': completed.stdout, 'stderr': completed.stderr}
+    )
+    driver_log_path = result_path.with_suffix('.powershell.json')
+    _write_create_new(driver_log_path, driver_log, allowed_root=local_root)
+    driver_log_sha = hashlib.sha256(driver_log).hexdigest()
+    if not result_path.exists():
+        raise RustNormalProcessError(completed.returncode or -1, driver_log_sha)
+
+    payload = _parse_pws_local_result(result_path)
+    expected_arguments = build_pws_cli_arguments('Normal', pipeline, input_path.resolve(), output_path.resolve())
+    expected_binary_sha = _sha256(executable)
+    expected_input_sha = _sha256(input_path)
+    expected = {
+        'mode': 'Normal',
+        'pipeline': pipeline,
+        'role': role,
+        'batch_id': batch_id,
+        'global_round': global_round,
+        'input_sha256': expected_input_sha,
+        'binary_sha256': expected_binary_sha,
+        'command_arguments': list(expected_arguments),
+    }
+    for field_name, expected_value in expected.items():
+        if payload[field_name] != expected_value:
+            raise RustNormalValidationError(
+                f'PWS result {field_name} mismatch', payload['local_unversioned_log_sha256']
+            )
+    if completed.returncode != 0 or payload['exit_code'] != 0:
+        raise RustNormalProcessError(
+            payload['exit_code'] or completed.returncode, payload['local_unversioned_log_sha256']
+        )
+
+    stdout_path = log_root / batch_id / str(global_round) / f'{role}.stdout.log'
+    try:
+        stdout = stdout_path.read_text(encoding='utf-8')
+        runtime_payload = json.loads(stdout, object_pairs_hook=_reject_duplicate_json_object)
+        if not isinstance(runtime_payload, dict):
+            raise AssertionError('Rust runtime stdout must be one JSON object')
+        if Path(str(runtime_payload.get('workbook_path'))).resolve() != output_path.resolve():
+            raise AssertionError('Rust PWS runtime reported an unexpected workbook path')
+        if not output_path.is_file():
+            raise AssertionError('Rust PWS runtime did not create its workbook')
+        runtime = parse_runtime_payload(runtime_payload, schema=schema)
+        oracle_sha256 = workbook_oracle(output_path)
+    except RustNormalValidationError:
+        raise
+    except Exception as exc:
+        raise RustNormalValidationError(
+            'Rust PWS runtime or workbook validation failed', payload['local_unversioned_log_sha256']
+        ) from exc
+    normal_run = NormalRunEvidence(
+        external_wall_seconds=Decimal(payload['external_wall_seconds']),
+        peak_working_set_bytes=payload['peak_working_set_bytes'],
+        runtime=runtime,
+        workbook_oracle_sha256=oracle_sha256,
+    )
+    return CapturedNormalRun(normal_run, 0, payload['local_unversioned_log_sha256'])
+
+
 def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
-    raise NotImplementedError('Phase 0H Task 3 owns the PWS runner')
+    if request.metric != 'pws':
+        raise ValueError('PWS runner accepts pws metric only')
+    _validate_trusted_request_paths(request.benchmark)
+    identity = _capture_identity(request.benchmark)
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, identity)
+    if ledger.terminal_verdict is not None:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot be resumed')
+    if request.first_group_sha256 is not None and request.first_group_sha256 != ledger.first_group_sha256:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group first-group SHA does not match ledger')
+
+    role_executables = {
+        'reference': request.benchmark.reference_executable,
+        'candidate': request.benchmark.candidate_executable,
+    }
+    rule = PROFILE_RULES[request.benchmark.comparison_profile][request.benchmark.pipeline]
+    schemas: dict[BinaryRole, RuntimeSchema] = {
+        'reference': rule.reference_schema,
+        'candidate': rule.candidate_schema,
+    }
+    cleanup_paths = list(_planned_paths(ledger.all_planned_output_payloads()))
+    if ledger.cleanup_only:
+        cleanup_errors = _cleanup_all(cleanup_paths)
+        if cleanup_errors:
+            final_verdict = HarnessVerdict.CLEANUP_FAILED
+            primary_verdict = ledger.recovery_primary_verdict
+        else:
+            final_verdict = ledger.recovery_primary_verdict or HarnessVerdict.ENVIRONMENT_DRIFT
+            primary_verdict = None
+        ledger.finish(final_verdict, primary_verdict=primary_verdict)
+        raise HarnessFailure(
+            final_verdict,
+            'cleanup-only recovery completed' if not cleanup_errors else 'cleanup-only recovery failed',
+            primary_verdict=primary_verdict,
+        )
+
+    pairs: list[PairedRound] = []
+    result_group: MetricGroup | None = None
+    primary_error: HarnessFailure | None = None
+    initial_cleanup_errors = _cleanup_all(cleanup_paths)
+    if initial_cleanup_errors:
+        primary_error = HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'historical workbook cleanup was transient')
+    else:
+        try:
+            for plan in request.plans:
+                captured: dict[BinaryRole, MetricSample] = {}
+                for role in plan.order:
+                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
+                    existing = ledger.sample_payload(request.metric, plan.global_round, role)
+                    if existing is not None:
+                        captured[role] = _sample_from_payload(existing)
+                        continue
+                    payload = _planned_output_payload(request, identity, plan.global_round, role)
+                    ledger.record_planned_output(request.metric, plan.global_round, role, payload)
+                    output = next(iter(_planned_paths((payload,))))
+                    cleanup_paths.append(output)
+                    try:
+                        capture = _invoke_pws_single_sample(
+                            executable=role_executables[role],
+                            pipeline=request.benchmark.pipeline,
+                            input_path=request.benchmark.input_path,
+                            output_path=output,
+                            role=role,
+                            batch_id=request.batch_id,
+                            global_round=plan.global_round,
+                            schema=schemas[role],
+                            local_root=request.benchmark.local_root,
+                        )
+                    except RustNormalProcessError as exc:
+                        verdict = (
+                            HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CANDIDATE_FAILED
+                        )
+                        raise HarnessFailure(
+                            verdict,
+                            f'{role} PWS process failed with exit code {exc.returncode}',
+                            raw_log_sha256=exc.log_sha256,
+                        ) from exc
+                    except RustNormalValidationError as exc:
+                        verdict = (
+                            HarnessVerdict.REFERENCE_FAILED
+                            if role == 'reference'
+                            else HarnessVerdict.CORRECTNESS_FAILED
+                        )
+                        raise HarnessFailure(
+                            verdict,
+                            f'{role} PWS runtime or workbook validation failed',
+                            raw_log_sha256=exc.log_sha256,
+                        ) from exc
+                    except Exception as exc:
+                        verdict = (
+                            HarnessVerdict.REFERENCE_FAILED
+                            if role == 'reference'
+                            else HarnessVerdict.CORRECTNESS_FAILED
+                        )
+                        raise HarnessFailure(verdict, f'{role} PWS capture boundary failed') from exc
+                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
+                    if capture.normal_run.peak_working_set_bytes is None:
+                        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS capture omitted PeakWorkingSet64')
+                    sample = _metric_sample(
+                        role,
+                        plan,
+                        identity,
+                        (capture.normal_run, capture.local_unversioned_log_sha256),
+                        metric_value=Decimal(capture.normal_run.peak_working_set_bytes),
+                    )
+                    ledger.record_sample(request.metric, plan.global_round, role, _sample_to_payload(sample))
+                    captured[role] = sample
+                    try:
+                        _remove_workbook(output)
+                    except OSError as exc:
+                        raise HarnessFailure(
+                            HarnessVerdict.ENVIRONMENT_DRIFT,
+                            'immediate workbook cleanup failed; outer cleanup will retry',
+                        ) from exc
+                if (
+                    captured['reference'].normal_run.workbook_oracle_sha256
+                    != captured['candidate'].normal_run.workbook_oracle_sha256
+                ):
+                    raise HarnessFailure(
+                        HarnessVerdict.CORRECTNESS_FAILED,
+                        'reference/candidate workbook oracle mismatch',
+                        raw_log_sha256=captured['candidate'].local_unversioned_log_sha256,
+                    )
+                pairs.append(PairedRound(plan, captured['reference'], captured['candidate']))
+            result_group = MetricGroup(
+                request.batch_id,
+                request.benchmark.pipeline,
+                'pws',
+                request.plans[0].global_round,  # type: ignore[arg-type]
+                tuple(pairs),
+            )
+            validate_metric_group(result_group)
+        except (KeyboardInterrupt, SystemExit) as interruption:
+            cleanup_errors = _cleanup_all(cleanup_paths)
+            if cleanup_errors:
+                ledger.finish(HarnessVerdict.CLEANUP_FAILED)
+                raise HarnessFailure(
+                    HarnessVerdict.CLEANUP_FAILED,
+                    f'workbook cleanup failed during interruption: {cleanup_errors!r}',
+                ) from interruption
+            raise
+        except HarnessFailure as exc:
+            primary_error = exc
+        except Exception as exc:
+            primary_error = HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS runner failed closed')
+            primary_error.__cause__ = exc
+
+    cleanup_errors = _cleanup_all(cleanup_paths)
+    final_error = primary_error
+    if cleanup_errors:
+        final_error = HarnessFailure(
+            HarnessVerdict.CLEANUP_FAILED,
+            f'workbook cleanup failed: {cleanup_errors!r}',
+            primary_verdict=primary_error.verdict if primary_error else None,
+            raw_log_sha256=primary_error.raw_log_sha256 if primary_error else None,
+        )
+    if final_error is not None:
+        ledger.finish(
+            final_error.verdict,
+            raw_log_sha256=final_error.raw_log_sha256,
+            primary_verdict=final_error.primary_verdict,
+        )
+        raise final_error
+    if result_group is None:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS group produced no result')
+    return result_group
 
 
 def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkResult:

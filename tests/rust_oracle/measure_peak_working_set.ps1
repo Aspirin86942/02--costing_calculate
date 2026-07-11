@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
+    [ValidateSet('Normal', 'CheckOnly')]
+    [string] $Mode,
+
+    [Parameter(Mandatory)]
     [ValidateSet('gb', 'sk')]
     [string] $Pipeline,
 
@@ -8,19 +12,34 @@ param(
     [string] $InputPath,
 
     [Parameter(Mandatory)]
-    [string] $BaselineExecutable,
-
-    [string] $CurrentExecutable = '',
+    [string] $Executable,
 
     [Parameter(Mandatory)]
-    [string] $ResultPath
+    [ValidateSet('reference', 'candidate')]
+    [string] $Role,
+
+    [Parameter(Mandatory)]
+    [ValidatePattern('^[0-9a-f]{64}$')]
+    [string] $BatchId,
+
+    [Parameter(Mandatory)]
+    [ValidateRange(1, 10)]
+    [int] $GlobalRound,
+
+    [string] $OutputPath = '',
+
+    [Parameter(Mandatory)]
+    [string] $LocalLogRoot,
+
+    [Parameter(Mandatory)]
+    [string] $LocalResultPath
 )
 
 $ErrorActionPreference = 'Stop'
-$Warmups = 1
-$Rounds = 5
 $PollMilliseconds = 50
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$TrustedLocalRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot 'rust\target\perf-local'))
+$Utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
 
 function Resolve-RequiredFile([string] $Path, [string] $Label) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -29,167 +48,182 @@ function Resolve-RequiredFile([string] $Path, [string] $Label) {
     return (Resolve-Path -LiteralPath $Path).Path
 }
 
-function Get-Median([long[]] $Values) {
-    if ($Values.Count -ne $Rounds) {
-        throw "expected $Rounds values, got $($Values.Count)"
+function Assert-TrustedLocalPath([string] $Path, [string] $Label) {
+    $full = [System.IO.Path]::GetFullPath($Path)
+    $rootWithSeparator = $TrustedLocalRoot.TrimEnd('\') + '\'
+    if (-not $full.StartsWith($rootWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label must stay below the trusted ignored local root"
     }
-    $sorted = @($Values | Sort-Object)
-    return [long] $sorted[[int][Math]::Floor($sorted.Count / 2)]
+    return $full
 }
 
-function Get-TextSha256([string] $Value) {
+function ConvertTo-WindowsCommandLineArgument([string] $Value) {
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+    $builder = New-Object System.Text.StringBuilder
+    [void] $builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes += 1
+            continue
+        }
+        if ($character -eq '"') {
+            [void] $builder.Append(('\' * (($backslashes * 2) + 1)))
+            [void] $builder.Append('"')
+        }
+        else {
+            [void] $builder.Append(('\' * $backslashes))
+            [void] $builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    [void] $builder.Append(('\' * ($backslashes * 2)))
+    [void] $builder.Append('"')
+    return $builder.ToString()
+}
+
+function Get-BytesSha256([byte[]] $Bytes) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
-        $hash = $sha.ComputeHash($bytes)
-        return -join ($hash | ForEach-Object { $_.ToString('x2') })
+        return -join ($sha.ComputeHash($Bytes) | ForEach-Object { $_.ToString('x2') })
     }
     finally {
         $sha.Dispose()
     }
 }
 
-function Invoke-PeakSample([string] $Executable, [string] $InputWorkbook) {
-    if ($InputWorkbook.Contains('"')) {
-        throw "input workbook path cannot contain a quote: $InputWorkbook"
+function Get-FileSha256([string] $Path) {
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
     }
-    $arguments = @(
-        $Pipeline,
-        '--input',
-        ('"{0}"' -f $InputWorkbook),
-        '--check-only',
-        '--benchmark'
+    finally {
+        $sha.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Write-CreateNewUtf8([string] $Path, [string] $Content) {
+    $parent = Split-Path -Parent $Path
+    if ($parent) {
+        [void] (New-Item -ItemType Directory -Force -Path $parent)
+    }
+    $bytes = $Utf8NoBom.GetBytes($Content)
+    $stream = New-Object System.IO.FileStream(
+        $Path,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
     )
-    $process = Start-Process `
-        -FilePath $Executable `
-        -ArgumentList $arguments `
-        -WorkingDirectory $RepoRoot `
-        -WindowStyle Hidden `
-        -PassThru
-    $peakBytes = [long] 0
-    while (-not $process.HasExited) {
-        $process.Refresh()
-        if ($process.PeakWorkingSet64 -gt $peakBytes) {
-            $peakBytes = [long] $process.PeakWorkingSet64
-        }
-        Start-Sleep -Milliseconds $PollMilliseconds
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
     }
-    $process.WaitForExit()
+    finally {
+        $stream.Dispose()
+    }
+    return Get-BytesSha256 $bytes
+}
+
+$input = Resolve-RequiredFile $InputPath 'input workbook'
+$executablePath = Resolve-RequiredFile $Executable 'benchmark executable'
+$inputSha256 = Get-FileSha256 $input
+$binarySha256 = Get-FileSha256 $executablePath
+$localLogRootPath = Assert-TrustedLocalPath $LocalLogRoot 'local log root'
+$localResult = Assert-TrustedLocalPath $LocalResultPath 'local result path'
+
+if ($Mode -eq 'Normal') {
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        throw 'Normal mode requires OutputPath'
+    }
+    $commandArguments = @($Pipeline, '--input', $input, '--output', [System.IO.Path]::GetFullPath($OutputPath), '--benchmark')
+}
+else {
+    if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        throw 'CheckOnly mode forbids OutputPath'
+    }
+    $commandArguments = @($Pipeline, '--input', $input, '--check-only', '--benchmark')
+}
+
+$logDirectory = Join-Path $localLogRootPath (Join-Path $BatchId $GlobalRound)
+$stdoutPath = Join-Path $logDirectory "$Role.stdout.log"
+$stderrPath = Join-Path $logDirectory "$Role.stderr.log"
+foreach ($createNewPath in @($stdoutPath, $stderrPath, $localResult)) {
+    if (Test-Path -LiteralPath $createNewPath) {
+        throw "create-new local artifact already exists: $createNewPath"
+    }
+}
+
+$startInfo = New-Object System.Diagnostics.ProcessStartInfo
+$startInfo.FileName = $executablePath
+$startInfo.Arguments = (($commandArguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument ([string] $_) }) -join ' ')
+$startInfo.WorkingDirectory = $RepoRoot
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
+
+$process = New-Object System.Diagnostics.Process
+$process.StartInfo = $startInfo
+$stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+if (-not $process.Start()) {
+    throw 'failed to start benchmark process'
+}
+$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+$stderrTask = $process.StandardError.ReadToEndAsync()
+$peakBytes = [long] 0
+while (-not $process.HasExited) {
     $process.Refresh()
     if ($process.PeakWorkingSet64 -gt $peakBytes) {
         $peakBytes = [long] $process.PeakWorkingSet64
     }
-    if ($process.ExitCode -ne 0) {
-        throw "benchmark process failed with exit code $($process.ExitCode): $Executable"
-    }
-    return $peakBytes
+    Start-Sleep -Milliseconds $PollMilliseconds
 }
-
-$input = Resolve-RequiredFile $InputPath 'input workbook'
-$baseline = Resolve-RequiredFile $BaselineExecutable 'baseline executable'
-$inputSha256 = (Get-FileHash -LiteralPath $input -Algorithm SHA256).Hash.ToLowerInvariant()
-$baselineSha256 = (Get-FileHash -LiteralPath $baseline -Algorithm SHA256).Hash.ToLowerInvariant()
-$current = if ($CurrentExecutable) {
-    Resolve-RequiredFile $CurrentExecutable 'current executable'
-}
-else {
-    $null
-}
-$currentSha256 = if ($null -ne $current) {
-    (Get-FileHash -LiteralPath $current -Algorithm SHA256).Hash.ToLowerInvariant()
-}
-else {
-    $null
-}
-$commandArguments = @(
-    $Pipeline,
-    '--input',
-    $input,
-    '--check-only',
-    '--benchmark'
-)
-
-for ($index = 0; $index -lt $Warmups; $index++) {
-    [void] (Invoke-PeakSample $baseline $input)
-    if ($null -ne $current) {
-        [void] (Invoke-PeakSample $current $input)
+$process.WaitForExit()
+$stopwatch.Stop()
+try {
+    $process.Refresh()
+    if ($process.PeakWorkingSet64 -gt $peakBytes) {
+        $peakBytes = [long] $process.PeakWorkingSet64
     }
 }
+catch {
+    # PeakWorkingSet64 is a kernel-maintained cumulative peak; the last successful refresh remains authoritative.
+}
+$stdout = $stdoutTask.Result
+$stderr = $stderrTask.Result
+$exitCode = $process.ExitCode
+$process.Dispose()
 
-$baselineValues = [System.Collections.Generic.List[long]]::new()
-$currentValues = [System.Collections.Generic.List[long]]::new()
-for ($round = 1; $round -le $Rounds; $round++) {
-    if (($round % 2 -eq 1) -or ($null -eq $current)) {
-        $baselineValues.Add((Invoke-PeakSample $baseline $input))
-        if ($null -ne $current) {
-            $currentValues.Add((Invoke-PeakSample $current $input))
-        }
-    }
-    else {
-        $currentValues.Add((Invoke-PeakSample $current $input))
-        $baselineValues.Add((Invoke-PeakSample $baseline $input))
-    }
-}
+$stdoutSha256 = Write-CreateNewUtf8 $stdoutPath $stdout
+$stderrSha256 = Write-CreateNewUtf8 $stderrPath $stderr
+$combinedLogSha256 = Get-BytesSha256 $Utf8NoBom.GetBytes("$stdoutSha256`n$stderrSha256")
 
-$baselineMedian = Get-Median $baselineValues.ToArray()
-if ($baselineMedian -le 0) {
-    throw "baseline peak working set median must be positive, got $baselineMedian"
-}
-$currentMedian = if ($null -ne $current) { Get-Median $currentValues.ToArray() } else { $null }
-$ratio = if ($null -ne $currentMedian) { [double] $currentMedian / [double] $baselineMedian } else { $null }
-$verdict = if ($null -eq $currentMedian) {
-    'BASELINE_RECORDED'
-}
-elseif ($ratio -le 1.05) {
-    'VALIDATED'
-}
-else {
-    'MEMORY_REGRESSION'
-}
-
-$inputSha256After = (Get-FileHash -LiteralPath $input -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($inputSha256After -ne $inputSha256) {
-    throw "input workbook SHA-256 changed during sampling: $input"
-}
-if ((Get-FileHash -LiteralPath $baseline -Algorithm SHA256).Hash.ToLowerInvariant() -ne $baselineSha256) {
-    throw "baseline executable SHA-256 changed during sampling: $baseline"
-}
-if (
-    ($null -ne $current) -and
-    ((Get-FileHash -LiteralPath $current -Algorithm SHA256).Hash.ToLowerInvariant() -ne $currentSha256)
-) {
-    throw "current executable SHA-256 changed during sampling: $current"
-}
-$workingTreeStatus = (& git -C $RepoRoot status --porcelain=v1 | Out-String).Trim()
-$workingTreeDiff = (& git -C $RepoRoot diff --binary HEAD -- | Out-String).Trim()
-$workingTreeState = $workingTreeStatus + "`n" + $workingTreeDiff
 $result = [ordered]@{
+    mode = $Mode
     pipeline = $Pipeline
-    input_path = $input
+    role = $Role
+    batch_id = $BatchId
+    global_round = $GlobalRound
+    exit_code = $exitCode
+    external_wall_seconds = $stopwatch.Elapsed.TotalSeconds.ToString('R', [System.Globalization.CultureInfo]::InvariantCulture)
+    peak_working_set_bytes = $peakBytes
     input_sha256 = $inputSha256
-    baseline_executable = $baseline
-    baseline_sha256 = $baselineSha256
-    current_executable = $current
-    current_sha256 = $currentSha256
-    git_head = (& git -C $RepoRoot rev-parse HEAD).Trim()
-    working_tree_diff_id = Get-TextSha256 $workingTreeState
-    working_directory = $RepoRoot
+    binary_sha256 = $binarySha256
     command_arguments = $commandArguments
-    warmups = $Warmups
-    rounds = $Rounds
-    poll_milliseconds = $PollMilliseconds
-    baseline_peak_working_set_bytes = $baselineValues.ToArray()
-    current_peak_working_set_bytes = $currentValues.ToArray()
-    baseline_median_bytes = $baselineMedian
-    current_median_bytes = $currentMedian
-    current_to_baseline_ratio = $ratio
-    verdict = $verdict
+    stdout_log_sha256 = $stdoutSha256
+    stderr_log_sha256 = $stderrSha256
+    local_unversioned_log_sha256 = $combinedLogSha256
 }
+$resultJson = $result | ConvertTo-Json -Depth 4 -Compress
+[void] (Write-CreateNewUtf8 $localResult $resultJson)
 
-$resultParent = Split-Path -Parent $ResultPath
-if ($resultParent) {
-    [void] (New-Item -ItemType Directory -Force -Path $resultParent)
+if ($exitCode -ne 0) {
+    exit $exitCode
 }
-$resultJson = $result | ConvertTo-Json -Depth 6
-$utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
-[System.IO.File]::WriteAllText($ResultPath, $resultJson, $utf8NoBom)
+if ($peakBytes -le 0) {
+    throw 'PeakWorkingSet64 must be positive'
+}

@@ -14,6 +14,7 @@ from tests.rust_oracle.benchmark_protocol import (
     HarnessVerdict,
     NormalRunEvidence,
     RuntimeEvidence,
+    assert_same_benchmark_batch,
     build_round_plan,
 )
 from tests.rust_oracle.oracle_runner import CapturedNormalRun, RustNormalProcessError, RustNormalValidationError
@@ -278,7 +279,9 @@ def test_prior_evidence_content_change_invalidates_repository_state(tmp_path: Pa
 
 def test_batch_id_is_derived_and_cannot_be_supplied(tmp_path: Path) -> None:
     request = _request(tmp_path)
-    assert derive_batch_id(request, _identity()) == derive_batch_id(request, _identity())
+    batch_id = derive_batch_id(request, _identity())
+    assert batch_id == derive_batch_id(request, _identity())
+    assert len(batch_id) == 64
     assert 'batch_id' not in PairedBenchmarkRequest.__dataclass_fields__
 
 
@@ -313,6 +316,23 @@ def test_pws_only_resample_is_rejected(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     with pytest.raises(HarnessFailure, match='wall and pws'):
         ledger.commit_first_group({'pws': 'only'})
+
+
+@pytest.mark.parametrize(('wall_near_limit', 'pws_near_limit'), ((True, False), (False, True), (True, True)))
+def test_paired_batch_expands_wall_and_pws_together(wall_near_limit: bool, pws_near_limit: bool) -> None:
+    wall_plans, pws_plans = phase0_harness._mandatory_paired_expansion_plans(
+        wall_requires_expansion=wall_near_limit,
+        pws_requires_expansion=pws_near_limit,
+    )
+    assert [plan.global_round for plan in wall_plans] == [6, 7, 8, 9, 10]
+    assert wall_plans == pws_plans
+
+
+def test_wall_and_pws_groups_share_attempt_batch_and_n(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_runner(monkeypatch, tmp_path)
+    wall = run_normal_wall_group(_group_request(tmp_path))
+    pws = replace(wall, metric='pws')
+    assert_same_benchmark_batch(wall, pws)
 
 
 def test_interrupted_attempt_resumes_only_missing_samples(
@@ -537,6 +557,17 @@ def test_cleanup_recovery_attempt_cleans_historical_planned_outputs_before_resum
             _identity(),
             comparison_key='a' * 64,
         )
+
+
+def test_cleanup_only_ledger_rejects_benchmark_records_but_can_finish(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    ledger.cleanup_only = True
+
+    with pytest.raises(HarnessFailure, match='cleanup-only'):
+        ledger.record_sample('wall', 1, 'reference', {'value': 1})
+
+    ledger.finish(HarnessVerdict.ENVIRONMENT_DRIFT)
+    assert ledger.terminal_verdict is HarnessVerdict.ENVIRONMENT_DRIFT
 
 
 @pytest.mark.parametrize('field', ('local_root', 'attempt_ledger_root'))

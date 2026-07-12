@@ -980,6 +980,9 @@ class AppendOnlyAttemptLedger:
         else:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
         if protocol_version == PAIRED_PROTOCOL_VERSION:
+            attempts = cls._v3_attempt_inventory(directory.parent)
+            if directory not in tuple(_io_path(path) for path in attempts):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt is outside closed inventory')
             _validate_v3_attempt_file_inventory(directory)
             if metadata_raw != _canonical_json(metadata):
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 metadata encoding is invalid')
@@ -1087,6 +1090,8 @@ class AppendOnlyAttemptLedger:
                 'record_sha256': record_head,
                 'previous_checkpoint_sha256': previous_checkpoint_head,
             }
+            if protocol_version == PAIRED_PROTOCOL_VERSION:
+                _validate_v3_checkpoint_scalars(checkpoint)
             if checkpoint != expected_checkpoint:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'durable checkpoint chain is broken')
             if protocol_version == PAIRED_PROTOCOL_VERSION and checkpoint_raw != _canonical_json(checkpoint):
@@ -1178,6 +1183,9 @@ class AppendOnlyAttemptLedger:
                     (plan_payload['metric'], plan_payload['global_round'], plan_payload['role']) != key
                     or plan_payload['batch_id'] != batch_id
                     or not _is_sha256(plan_payload['batch_id'])
+                    or plan_payload['pipeline'] != pipeline
+                    or plan_payload['binary_sha256']
+                    != (identity.reference_sha256 if key[2] == 'reference' else identity.candidate_sha256)
                 ):
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 planned-output linkage is invalid')
                 plan_payloads[key] = plan_payload
@@ -1304,6 +1312,13 @@ class AppendOnlyAttemptLedger:
                 or terminal_raw_bytes != _canonical_json(terminal)
             ):
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 terminal schema is invalid')
+            if protocol_version == PAIRED_PROTOCOL_VERSION:
+                _validate_v3_terminal_scalars(terminal)
+                if evidence_committed:
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE,
+                        'v3 committed success and failure terminal are mutually exclusive',
+                    )
             if terminal.get('record_count') != len(records) or terminal.get('record_head_sha256') != record_head:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sealed attempt record count/head mismatch')
             if terminal.get('checkpoint_head_sha256') != checkpoint_head:
@@ -1329,6 +1344,11 @@ class AppendOnlyAttemptLedger:
         if not isinstance(cleanup_only, bool):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup_only metadata must be boolean')
         try:
+            if protocol_version == PAIRED_PROTOCOL_VERSION:
+                _validate_v3_optional_verdict(
+                    metadata['recovery_primary_verdict'],
+                    purpose='v3 recovery primary verdict',
+                )
             recovery_primary = (
                 HarnessVerdict(metadata['recovery_primary_verdict'])
                 if metadata.get('recovery_primary_verdict')
@@ -1458,7 +1478,7 @@ class AppendOnlyAttemptLedger:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot accept more records')
         if self.state is AttemptState.CLEANUP_COMPLETE and kind not in ('evidence-prepared', 'evidence-committed'):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success cannot accept benchmark records')
-        if self.protocol_version == PAIRED_PROTOCOL_VERSION and self.state is AttemptState.EVIDENCE_COMMITTED:
+        if self.state is AttemptState.EVIDENCE_COMMITTED:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success cannot accept more records')
         if self.cleanup_only:
             raise HarnessFailure(
@@ -1614,9 +1634,16 @@ class AppendOnlyAttemptLedger:
         if (validated['metric'], validated['global_round'], validated['role']) != key:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output key/payload mismatch')
         if self.protocol_version == PAIRED_PROTOCOL_VERSION and (
-            validated['batch_id'] != self.batch_id or not _is_sha256(validated['batch_id'])
+            validated['batch_id'] != self.batch_id
+            or not _is_sha256(validated['batch_id'])
+            or validated['pipeline'] != ('gb' if self.recovery_provenance is not None else 'sk')
+            or validated['binary_sha256']
+            != (self.identity.reference_sha256 if role == 'reference' else self.identity.candidate_sha256)
         ):
-            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output batch does not match ledger')
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'planned-output batch, pipeline, or role binary does not match ledger identity',
+            )
         existing = self._plan_payloads.get(key)
         if existing is not None:
             if existing != validated:
@@ -1768,7 +1795,7 @@ class AppendOnlyAttemptLedger:
         raw_log_sha256: str | None = None,
         primary_verdict: HarnessVerdict | None = None,
     ) -> str:
-        if self.state is AttemptState.EVIDENCE_COMMITTED:
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION and self.state is AttemptState.EVIDENCE_COMMITTED:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success is already sealed')
         if self.terminal_verdict is not None or (self.attempt_directory / 'terminal.json').exists():
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt is already sealed')
@@ -1802,7 +1829,19 @@ def classify_v3_attempt_state(ledger: AppendOnlyAttemptLedger | None) -> V3Attem
         return 'NEW'
     if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
         return 'INVALID'
+    if ledger.state is AttemptState.EVIDENCE_COMMITTED and ledger.terminal_verdict is not None:
+        return 'INVALID'
     if ledger.cleanup_only:
+        if (
+            ledger._plan_payloads
+            or ledger._sample_started_payloads
+            or ledger._sample_payloads
+            or ledger.first_group_sha256 is not None
+            or ledger.expanded_group_sha256 is not None
+            or ledger._prepared_evidence is not None
+            or ledger.state is not AttemptState.CREATED
+        ):
+            return 'INVALID'
         return 'FAILED_TERMINAL' if ledger.terminal_verdict is not None else 'CLEANUP_ONLY'
     if ledger.terminal_verdict is not None:
         return 'FAILED_TERMINAL'
@@ -1824,6 +1863,46 @@ def classify_v3_attempt_state(ledger: AppendOnlyAttemptLedger | None) -> V3Attem
 def _validate_v3_record_envelope(record: object, keys: set[str]) -> None:
     if not isinstance(record, dict) or set(record) != keys:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 record fields are not closed')
+
+
+def _validate_v3_checkpoint_scalars(checkpoint: object) -> None:
+    if (
+        not isinstance(checkpoint, dict)
+        or type(checkpoint.get('record_count')) is not int
+        or checkpoint['record_count'] < 1
+        or not _is_sha256(checkpoint.get('record_sha256'))
+        or not _is_sha256(checkpoint.get('previous_checkpoint_sha256'))
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 checkpoint scalar types are invalid')
+
+
+def _validate_v3_optional_verdict(value: object, *, purpose: str) -> HarnessVerdict | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{purpose} type is invalid')
+    try:
+        verdict = HarnessVerdict(value)
+    except ValueError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{purpose} is invalid') from exc
+    if verdict is HarnessVerdict.VALIDATED:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{purpose} cannot be VALIDATED')
+    return verdict
+
+
+def _validate_v3_terminal_scalars(terminal: dict[str, Any]) -> None:
+    verdict = _validate_v3_optional_verdict(terminal['verdict'], purpose='v3 terminal verdict')
+    primary = _validate_v3_optional_verdict(terminal['primary_verdict'], purpose='v3 terminal primary verdict')
+    if (
+        verdict is None
+        or type(terminal['record_count']) is not int
+        or terminal['record_count'] < 0
+        or not _is_sha256(terminal['record_head_sha256'])
+        or not _is_sha256(terminal['checkpoint_head_sha256'])
+        or (terminal['raw_log_sha256'] is not None and not _is_sha256(terminal['raw_log_sha256']))
+        or (primary is not None and primary is HarnessVerdict.VALIDATED)
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 terminal scalar types are invalid')
 
 
 def _validate_v3_attempt_file_inventory(directory: Path) -> None:
@@ -1874,6 +1953,23 @@ def _validate_v3_journal_encoding(directory: Path) -> None:
         entry = json.loads(raw)
         if not isinstance(entry, dict) or set(entry) != keys or raw != _canonical_json(entry):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 journal encoding is invalid')
+        terminal_present = entry['terminal_present']
+        verdict = entry['verdict']
+        if (
+            (entry['previous_journal_sha256'] is not None and not _is_sha256(entry['previous_journal_sha256']))
+            or type(entry['attempt_number']) is not int
+            or entry['attempt_number'] < 1
+            or type(entry['record_count']) is not int
+            or entry['record_count'] < 0
+            or not _is_sha256(entry['record_head_sha256'])
+            or not _is_sha256(entry['checkpoint_head_sha256'])
+            or type(terminal_present) is not bool
+            or (terminal_present and not _is_sha256(entry['terminal_head_sha256']))
+            or (not terminal_present and entry['terminal_head_sha256'] is not None)
+            or (terminal_present and _validate_v3_optional_verdict(verdict, purpose='v3 journal verdict') is None)
+            or (not terminal_present and verdict is not None)
+        ):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 journal scalar types are invalid')
 
 
 def _validate_sample_started_payload(payload: object) -> dict[str, Any]:

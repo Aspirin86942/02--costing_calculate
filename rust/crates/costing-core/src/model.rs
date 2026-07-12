@@ -71,14 +71,17 @@ pub struct SplitResult {
 }
 
 impl SplitResult {
+    #[cfg(test)]
     pub(crate) fn schema(&self) -> &ColumnSchema {
         &self.schema
     }
 
+    #[cfg(test)]
     pub(crate) fn detail_rows(&self) -> &[IndexedRow] {
         &self.detail_rows
     }
 
+    #[cfg(test)]
     pub(crate) fn qty_rows(&self) -> &[IndexedRow] {
         &self.qty_rows
     }

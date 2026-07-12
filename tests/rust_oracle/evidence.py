@@ -1140,7 +1140,6 @@ class EvidenceSanitizer:
         )
 
     def read_benchmark_manifest(self, file_name: str, raw: bytes) -> BenchmarkManifestEvidence:
-        _scan_versioned_bytes(raw, suffix='.json', sensitive_names=())
         payload = _strict_versioned_json_object(raw, 'benchmark manifest')
         schema_version = payload.get('schema_version')
         if type(schema_version) is not int or schema_version not in (1, 2, 3):
@@ -1165,6 +1164,7 @@ class EvidenceSanitizer:
             if type(raw_protocol) is not int or raw_protocol != PAIRED_PROTOCOL_VERSION:
                 raise ValueError('benchmark manifest protocol version must be exact integer 3')
             protocol_version = 3
+            _scan_versioned_bytes(raw, suffix='.json', sensitive_names=())
         machine_raw = _required_object(payload['machine'], 'benchmark machine')
         _require_exact_keys(
             machine_raw,

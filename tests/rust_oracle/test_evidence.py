@@ -24,6 +24,7 @@ _PRE_PIN_COMMIT = '000d7c3867600908b1d2631fb5033b5092883c14'
 _CHECKSUM = 'dd1746025420e17b5d62528b930e550e016e857038794d74e169018126ef3d14'
 _DIFF_SHA = 'a' * 64
 _LOG_SHA = 'b' * 64
+_OMITTED = object()
 _MANDATORY_DIFF_FILES = (
     'src/packager.rs',
     'src/workbook.rs',
@@ -983,15 +984,18 @@ def _upstream_evidence(**changes: object) -> UpstreamGateProvenance:
 def _benchmark_manifest_v3(
     *,
     pipeline: str = 'gb',
-    recovery: RecoveryProvenance | None = None,
-    upstream: UpstreamGateProvenance | None = None,
+    recovery: RecoveryProvenance | None | object = _OMITTED,
+    upstream: UpstreamGateProvenance | None | object = _OMITTED,
     comparison_key: str = 'a' * 64,
     batch_id: str = 'b' * 64,
     **changes: object,
 ) -> evidence.BenchmarkManifestEvidence:
-    if recovery is None and upstream is None:
+    if recovery is _OMITTED and upstream is _OMITTED:
         recovery = _recovery_evidence() if pipeline == 'gb' else None
         upstream = _upstream_evidence() if pipeline == 'sk' else None
+    else:
+        recovery = None if recovery is _OMITTED else recovery
+        upstream = None if upstream is _OMITTED else upstream
     value = replace(
         _benchmark_manifest_v2_evidence(),
         schema_version=3,
@@ -1140,6 +1144,30 @@ def test_legacy_schema_rebuild_stays_byte_stable(
         EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(parsed)
 
 
+@pytest.mark.parametrize('schema_version', (1, 2))
+def test_legacy_schema_reader_accepts_legal_scanner_token(schema_version: int) -> None:
+    mismatch = evidence.MismatchEvidence(
+        sheet=evidence.ApprovedSheet.COST_DETAIL,
+        coordinate='CANARY1',
+        mismatch_kind=evidence.MismatchKind.VALUE_MISMATCH,
+        expected_storage_type=evidence.StorageType.NUMBER,
+        actual_storage_type=evidence.StorageType.STRING,
+        local_log_sha256='f' * 64,
+    )
+    source = (
+        _legacy_benchmark_manifest_evidence(mismatches=(mismatch,))
+        if schema_version == 1
+        else _benchmark_manifest_v2_evidence(mismatches=(mismatch,))
+    )
+    policy = EvidenceSanitizer.closed_policy()
+    artifact = policy.rebuild_audit_benchmark_manifest(source)
+
+    parsed = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
+
+    assert parsed == source
+    assert policy.rebuild_audit_benchmark_manifest(parsed) == artifact
+
+
 @pytest.mark.parametrize(
     ('field', 'value'),
     (
@@ -1157,8 +1185,10 @@ def test_v3_provenance_rejects_non_closed_values(field: str, value: object) -> N
 @pytest.mark.parametrize(
     ('pipeline', 'recovery', 'upstream'),
     (
+        ('gb', None, None),
         ('gb', None, _upstream_evidence()),
         ('gb', _recovery_evidence(), _upstream_evidence()),
+        ('sk', None, None),
         ('sk', _recovery_evidence(), None),
         ('sk', _recovery_evidence(), _upstream_evidence()),
     ),

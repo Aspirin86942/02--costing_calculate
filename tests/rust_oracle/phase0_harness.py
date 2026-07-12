@@ -22,6 +22,8 @@ from openpyxl import load_workbook
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
     ENVIRONMENT_MEDIAN_DRIFT_LIMIT,
+    LEGACY_PAIRED_PROTOCOL_VERSION,
+    PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     AttemptState,
     BatchAttempt,
@@ -46,19 +48,16 @@ from tests.rust_oracle.benchmark_protocol import (
     RoundPlan,
     RuntimeEvidence,
     RuntimeSchema,
+    UpstreamGateProvenance,
     aggregate_output_bytes,
     assert_same_benchmark_batch,
     build_direction_diagnostic,
     build_round_plan,
-    derive_comparison_key,
     derive_v2_comparison_key,
     merge_metric_groups,
     requires_mandatory_expansion,
     validate_calibration_group,
     validate_metric_group,
-)
-from tests.rust_oracle.benchmark_protocol import (
-    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
 )
 from tests.rust_oracle.evidence import (
     ApprovedSheet,
@@ -316,6 +315,184 @@ _PROFILE_LABEL_PAIRS: dict[ComparisonProfile, frozenset[tuple[ClosedBinaryLabel,
     ComparisonProfile.PHASE5_VS_PHASE0A: frozenset({(ClosedBinaryLabel.PHASE0A, ClosedBinaryLabel.PHASE5)}),
 }
 
+V3AttemptClassification = Literal[
+    'NEW',
+    'SAMPLING_RESUMABLE',
+    'STARTED_WITHOUT_SAMPLE',
+    'CLEANUP_COMPLETE',
+    'EVIDENCE_PREPARED',
+    'EVIDENCE_COMMITTED',
+    'CLEANUP_ONLY',
+    'FAILED_TERMINAL',
+    'INVALID',
+]
+
+
+def _recovery_provenance_payload(value: RecoveryProvenance | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        'parent_protocol_version': value.parent_protocol_version,
+        'parent_comparison_key': value.parent_comparison_key,
+        'parent_attempt': value.parent_attempt,
+        'parent_terminal_sha256': value.parent_terminal_sha256,
+        'parent_comparison_tree_sha256': value.parent_comparison_tree_sha256,
+        'parent_journal_head_sha256': value.parent_journal_head_sha256,
+        'parent_inventory_entry_count': value.parent_inventory_entry_count,
+        'reason': value.reason.value,
+    }
+
+
+def _upstream_gate_provenance_payload(value: UpstreamGateProvenance | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        'pipeline': value.pipeline,
+        'protocol_version': value.protocol_version,
+        'schema_version': value.schema_version,
+        'comparison_key': value.comparison_key,
+        'artifact_basename': value.artifact_basename,
+        'artifact_sha256': value.artifact_sha256,
+        'marker_basename': value.marker_basename,
+        'marker_sha256': value.marker_sha256,
+        'validated_commit_sha': value.validated_commit_sha,
+    }
+
+
+def _parse_exact_recovery_provenance(value: object) -> RecoveryProvenance | None:
+    if value is None:
+        return None
+    keys = {
+        'parent_protocol_version',
+        'parent_comparison_key',
+        'parent_attempt',
+        'parent_terminal_sha256',
+        'parent_comparison_tree_sha256',
+        'parent_journal_head_sha256',
+        'parent_inventory_entry_count',
+        'reason',
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError('recovery provenance fields are not closed')
+    try:
+        reason = RecoveryReason(value['reason'])
+        return RecoveryProvenance(
+            parent_protocol_version=value['parent_protocol_version'],  # type: ignore[arg-type]
+            parent_comparison_key=value['parent_comparison_key'],  # type: ignore[arg-type]
+            parent_attempt=value['parent_attempt'],  # type: ignore[arg-type]
+            parent_terminal_sha256=value['parent_terminal_sha256'],  # type: ignore[arg-type]
+            parent_comparison_tree_sha256=value['parent_comparison_tree_sha256'],  # type: ignore[arg-type]
+            parent_journal_head_sha256=value['parent_journal_head_sha256'],  # type: ignore[arg-type]
+            parent_inventory_entry_count=value['parent_inventory_entry_count'],  # type: ignore[arg-type]
+            reason=reason,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError('recovery provenance values are invalid') from exc
+
+
+def _parse_exact_upstream_gate_provenance(value: object) -> UpstreamGateProvenance | None:
+    if value is None:
+        return None
+    keys = {
+        'pipeline',
+        'protocol_version',
+        'schema_version',
+        'comparison_key',
+        'artifact_basename',
+        'artifact_sha256',
+        'marker_basename',
+        'marker_sha256',
+        'validated_commit_sha',
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError('upstream gate provenance fields are not closed')
+    try:
+        return UpstreamGateProvenance(**value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError('upstream gate provenance values are invalid') from exc
+
+
+def _parse_exact_v3_batch_payload(value: object) -> dict[str, object]:
+    keys = {
+        'protocol_version',
+        'comparison_key',
+        'profile',
+        'pipeline',
+        'phase0a_manifest_sha256',
+        'input_sha256',
+        'reference_sha256',
+        'candidate_sha256',
+        'git_head',
+        'repository_state_sha256',
+        'machine_fingerprint_sha256',
+        'recovery_provenance',
+        'upstream_gate_provenance',
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError('protocol v3 batch payload fields are not closed')
+    if type(value['protocol_version']) is not int or value['protocol_version'] != PAIRED_PROTOCOL_VERSION:
+        raise ValueError('protocol v3 batch version is invalid')
+    if type(value['profile']) is not str or value['profile'] != ComparisonProfile.PHASE0B_VS_PHASE0A.value:
+        raise ValueError('protocol v3 batch profile is invalid')
+    pipeline = value['pipeline']
+    if type(pipeline) is not str or pipeline not in ('gb', 'sk'):
+        raise ValueError('protocol v3 batch pipeline is invalid')
+    sha_keys = {
+        'comparison_key',
+        'phase0a_manifest_sha256',
+        'input_sha256',
+        'reference_sha256',
+        'candidate_sha256',
+        'repository_state_sha256',
+        'machine_fingerprint_sha256',
+    }
+    if not all(_is_sha256(value[key]) for key in sha_keys):
+        raise ValueError('protocol v3 batch SHA fields are invalid')
+    if not _is_lower_hex(value['git_head'], minimum=40, maximum=40):
+        raise ValueError('protocol v3 batch Git HEAD is invalid')
+    recovery = _parse_exact_recovery_provenance(value['recovery_provenance'])
+    upstream = _parse_exact_upstream_gate_provenance(value['upstream_gate_provenance'])
+    if pipeline == 'gb':
+        if recovery is None or upstream is not None:
+            raise ValueError('gb protocol v3 batch requires recovery provenance only')
+    elif recovery is not None or upstream is None:
+        raise ValueError('sk protocol v3 batch requires upstream gate provenance only')
+    return dict(value)
+
+
+def derive_v3_batch_id(
+    *,
+    comparison_key: str,
+    profile: ComparisonProfile,
+    pipeline: PipelineName,
+    phase0a_manifest_sha256: str,
+    identity: BenchmarkIdentity,
+    recovery_provenance: RecoveryProvenance | None,
+    upstream_gate_provenance: UpstreamGateProvenance | None,
+) -> str:
+    if not isinstance(profile, ComparisonProfile):
+        raise ValueError('protocol v3 batch profile is not closed')
+    if not isinstance(identity, BenchmarkIdentity):
+        raise ValueError('protocol v3 batch identity is invalid')
+    payload = _parse_exact_v3_batch_payload(
+        {
+            'protocol_version': PAIRED_PROTOCOL_VERSION,
+            'comparison_key': comparison_key,
+            'profile': profile.value,
+            'pipeline': pipeline,
+            'phase0a_manifest_sha256': phase0a_manifest_sha256,
+            'input_sha256': identity.input_sha256,
+            'reference_sha256': identity.reference_sha256,
+            'candidate_sha256': identity.candidate_sha256,
+            'git_head': identity.git_head,
+            'repository_state_sha256': identity.repository_state_sha256,
+            'machine_fingerprint_sha256': identity.machine_fingerprint_sha256,
+            'recovery_provenance': _recovery_provenance_payload(recovery_provenance),
+            'upstream_gate_provenance': _upstream_gate_provenance_payload(upstream_gate_provenance),
+        }
+    )
+    return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
 
 @dataclass(frozen=True)
 class PwsLocalArtifacts:
@@ -336,6 +513,11 @@ class AppendOnlyAttemptLedger:
     attempt_number: int
     previous_attempt_head_sha256: str | None
     head_sha256: str
+    batch_id: str = ''
+    phase0a_manifest_sha256: str = ''
+    recovery_provenance: RecoveryProvenance | None = None
+    upstream_gate_provenance: UpstreamGateProvenance | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     state: AttemptState = AttemptState.CREATED
     terminal_verdict: HarnessVerdict | None = None
     terminal_raw_log_sha256: str | None = None
@@ -349,7 +531,9 @@ class AppendOnlyAttemptLedger:
     _checkpoint_head_sha256: str = ''
     _record_count: int = 0
     _sample_payloads: dict[tuple[str, int, str], dict[str, Any]] = field(default_factory=dict)
+    _sample_started_payloads: dict[tuple[str, int, str], dict[str, Any]] = field(default_factory=dict)
     _plan_payloads: dict[tuple[str, int, str], dict[str, Any]] = field(default_factory=dict)
+    _plan_record_sha256s: dict[tuple[str, int, str], str] = field(default_factory=dict)
     _inherited_plan_payloads: tuple[dict[str, Any], ...] = ()
     _prepared_evidence: dict[str, str] | None = None
 
@@ -393,7 +577,7 @@ class AppendOnlyAttemptLedger:
         recovery_primary: HarnessVerdict | None = None
         if attempts:
             previous = cls.load(attempts[-1], identity, strict_identity=False)
-            if previous.protocol_version != PAIRED_PROTOCOL_VERSION:
+            if previous.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION:
                 raise HarnessFailure(
                     HarnessVerdict.INCOMPLETE_EVIDENCE,
                     'protocol v2 cannot append to a protocol v1 comparison directory',
@@ -429,7 +613,7 @@ class AppendOnlyAttemptLedger:
             create_parent=False,
         )
         metadata = {
-            'protocol_version': PAIRED_PROTOCOL_VERSION,
+            'protocol_version': LEGACY_PAIRED_PROTOCOL_VERSION,
             'comparison_key': comparison_key,
             'attempt_number': number,
             'identity': asdict(identity),
@@ -446,7 +630,7 @@ class AppendOnlyAttemptLedger:
             attempt_directory=attempt_directory,
             local_root=safe_local_root,
             identity=identity,
-            protocol_version=PAIRED_PROTOCOL_VERSION,
+            protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
             comparison_key=comparison_key,
             attempt_number=number,
             previous_attempt_head_sha256=previous_head,
@@ -456,6 +640,202 @@ class AppendOnlyAttemptLedger:
             _inherited_plan_payloads=inherited,
             cleanup_only=cleanup_only,
             recovery_primary_verdict=recovery_primary,
+            metadata=metadata,
+        )
+        ledger._append_journal_anchor()
+        return ledger
+
+    @classmethod
+    def create_v3_once(
+        cls,
+        root: Path,
+        identity: BenchmarkIdentity,
+        *,
+        comparison_key: str,
+        phase0a_manifest_sha256: str,
+        recovery_provenance: RecoveryProvenance | None,
+        upstream_gate_provenance: UpstreamGateProvenance | None,
+    ) -> AppendOnlyAttemptLedger:
+        pipeline: PipelineName = 'gb' if recovery_provenance is not None else 'sk'
+        batch_id = derive_v3_batch_id(
+            comparison_key=comparison_key,
+            profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+            pipeline=pipeline,
+            phase0a_manifest_sha256=phase0a_manifest_sha256,
+            identity=identity,
+            recovery_provenance=recovery_provenance,
+            upstream_gate_provenance=upstream_gate_provenance,
+        )
+        trusted_local_root = _trusted_local_root()
+        safe_local_root = _safe_harness_path(
+            trusted_local_root,
+            allowed_roots=(trusted_local_root,),
+            purpose='attempt local root is invalid',
+            create_parent=True,
+        )
+        if _normal_path(root).absolute() != (trusted_local_root / 'batches').absolute():
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt root must equal trusted local root/batches'
+            )
+        safe_root = _safe_harness_path(
+            root,
+            allowed_roots=(safe_local_root,),
+            purpose='attempt root must stay below the ignored local root',
+            create_parent=True,
+        )
+        raw_comparison_directory = safe_root / comparison_key
+        comparison_existed = _io_path(raw_comparison_directory).exists()
+        comparison_directory = _safe_harness_path(
+            raw_comparison_directory,
+            allowed_roots=(safe_root,),
+            purpose='comparison_key escaped the attempt root',
+            create_parent=True,
+        )
+        attempts = cls._v3_attempt_inventory(comparison_directory)
+        if not attempts:
+            if comparison_existed:
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE, 'existing protocol v3 comparison has no attempt'
+                )
+            return cls._create_v3_attempt(
+                comparison_directory,
+                safe_local_root,
+                identity,
+                comparison_key=comparison_key,
+                batch_id=batch_id,
+                phase0a_manifest_sha256=phase0a_manifest_sha256,
+                recovery_provenance=recovery_provenance,
+                upstream_gate_provenance=upstream_gate_provenance,
+                previous=None,
+            )
+        current = cls.load_read_only(attempts[-1], identity)
+        if (
+            current.protocol_version != PAIRED_PROTOCOL_VERSION
+            or current.comparison_key != comparison_key
+            or current.batch_id != batch_id
+            or current.phase0a_manifest_sha256 != phase0a_manifest_sha256
+            or current.recovery_provenance != recovery_provenance
+            or current.upstream_gate_provenance != upstream_gate_provenance
+        ):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v3 comparison identity changed')
+        classification = classify_v3_attempt_state(current)
+        if classification == 'STARTED_WITHOUT_SAMPLE':
+            cleanup_errors = _cleanup_all(_planned_paths(current.all_planned_output_payloads()))
+            if cleanup_errors:
+                current = cls.open_v3_for_resume(current.attempt_directory, identity)
+                current.finish(
+                    HarnessVerdict.CLEANUP_FAILED,
+                    primary_verdict=HarnessVerdict.INCOMPLETE_EVIDENCE,
+                )
+                raise HarnessFailure(
+                    HarnessVerdict.CLEANUP_FAILED,
+                    'started sample cleanup failed',
+                    primary_verdict=HarnessVerdict.INCOMPLETE_EVIDENCE,
+                )
+            current = cls.open_v3_for_resume(current.attempt_directory, identity)
+            current.finish(HarnessVerdict.INCOMPLETE_EVIDENCE)
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'started sample has no durable sample record')
+        if classification == 'FAILED_TERMINAL':
+            if current.terminal_verdict is not HarnessVerdict.CLEANUP_FAILED or len(attempts) != 1:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sealed v3 failure cannot create a successor')
+            return cls._create_v3_attempt(
+                comparison_directory,
+                safe_local_root,
+                identity,
+                comparison_key=comparison_key,
+                batch_id=batch_id,
+                phase0a_manifest_sha256=phase0a_manifest_sha256,
+                recovery_provenance=recovery_provenance,
+                upstream_gate_provenance=upstream_gate_provenance,
+                previous=current,
+            )
+        if classification == 'INVALID':
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v3 attempt state is invalid')
+        if classification == 'EVIDENCE_COMMITTED':
+            return current
+        return cls.open_v3_for_resume(current.attempt_directory, identity)
+
+    @classmethod
+    def _v3_attempt_inventory(cls, comparison_directory: Path) -> tuple[Path, ...]:
+        directory = _io_path(comparison_directory)
+        if not directory.exists():
+            return ()
+        attempts: list[Path] = []
+        with os.scandir(directory) as scan:
+            children = sorted(scan, key=lambda child: child.name)
+        for child in children:
+            if child.name == 'journal' and child.is_dir(follow_symlinks=False):
+                continue
+            expected_name = f'attempt-{len(attempts) + 1:04d}'
+            if child.name != expected_name or not child.is_dir(follow_symlinks=False) or child.is_symlink():
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v3 comparison inventory is invalid')
+            attempts.append(Path(child.path))
+        if attempts and not (directory / 'journal').is_dir():
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v3 comparison journal is missing')
+        if len(attempts) > 2:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v3 has too many attempts')
+        return tuple(attempts)
+
+    @classmethod
+    def _create_v3_attempt(
+        cls,
+        comparison_directory: Path,
+        local_root: Path,
+        identity: BenchmarkIdentity,
+        *,
+        comparison_key: str,
+        batch_id: str,
+        phase0a_manifest_sha256: str,
+        recovery_provenance: RecoveryProvenance | None,
+        upstream_gate_provenance: UpstreamGateProvenance | None,
+        previous: AppendOnlyAttemptLedger | None,
+    ) -> AppendOnlyAttemptLedger:
+        number = 1 if previous is None else previous.attempt_number + 1
+        cleanup_only = previous is not None
+        inherited = previous.all_planned_output_payloads() if previous is not None else ()
+        recovery_primary = previous.terminal_primary_verdict if previous is not None else None
+        attempt_directory = _io_path(comparison_directory / f'attempt-{number:04d}')
+        attempt_directory.mkdir()
+        (attempt_directory / 'records').mkdir()
+        (attempt_directory / 'checkpoints').mkdir()
+        _io_path(comparison_directory / 'journal').mkdir(exist_ok=True)
+        metadata = {
+            'protocol_version': PAIRED_PROTOCOL_VERSION,
+            'comparison_key': comparison_key,
+            'batch_id': batch_id,
+            'phase0a_manifest_sha256': phase0a_manifest_sha256,
+            'recovery_provenance': _recovery_provenance_payload(recovery_provenance),
+            'upstream_gate_provenance': _upstream_gate_provenance_payload(upstream_gate_provenance),
+            'attempt_number': number,
+            'identity': asdict(identity),
+            'previous_attempt_head_sha256': previous.head_sha256 if previous is not None else None,
+            'reason': 'CLEANUP_RECOVERY' if cleanup_only else 'FORMAL_START',
+            'inherited_planned_outputs': list(inherited),
+            'cleanup_only': cleanup_only,
+            'recovery_primary_verdict': recovery_primary.value if recovery_primary else None,
+        }
+        metadata_bytes = _canonical_json(metadata)
+        _write_create_new(attempt_directory / 'metadata.json', metadata_bytes, allowed_root=attempt_directory)
+        metadata_sha = hashlib.sha256(metadata_bytes).hexdigest()
+        ledger = cls(
+            attempt_directory=attempt_directory,
+            local_root=local_root,
+            identity=identity,
+            protocol_version=PAIRED_PROTOCOL_VERSION,
+            comparison_key=comparison_key,
+            attempt_number=number,
+            previous_attempt_head_sha256=previous.head_sha256 if previous is not None else None,
+            head_sha256=metadata_sha,
+            batch_id=batch_id,
+            phase0a_manifest_sha256=phase0a_manifest_sha256,
+            recovery_provenance=recovery_provenance,
+            upstream_gate_provenance=upstream_gate_provenance,
+            metadata=metadata,
+            cleanup_only=cleanup_only,
+            recovery_primary_verdict=recovery_primary,
+            _record_head_sha256=metadata_sha,
+            _checkpoint_head_sha256=metadata_sha,
+            _inherited_plan_payloads=inherited,
         )
         ledger._append_journal_anchor()
         return ledger
@@ -477,7 +857,23 @@ class AppendOnlyAttemptLedger:
         )
 
     @classmethod
-    def open_current_protocol_for_resume(
+    def load_read_only(
+        cls,
+        directory: Path,
+        identity: BenchmarkIdentity | None = None,
+        *,
+        strict_identity: bool = True,
+    ) -> AppendOnlyAttemptLedger:
+        return cls._load_impl(
+            directory,
+            identity,
+            strict_identity=strict_identity,
+            expected_protocol_version=None,
+            repair_current_protocol=False,
+        )
+
+    @classmethod
+    def open_v3_for_resume(
         cls,
         directory: Path,
         identity: BenchmarkIdentity,
@@ -492,6 +888,25 @@ class AppendOnlyAttemptLedger:
             repair_current_protocol=True,
         )
         if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 resume requires protocol v3')
+        return ledger
+
+    @classmethod
+    def open_current_protocol_for_resume(
+        cls,
+        directory: Path,
+        identity: BenchmarkIdentity,
+        *,
+        strict_identity: bool = True,
+    ) -> AppendOnlyAttemptLedger:
+        ledger = cls._load_impl(
+            directory,
+            identity,
+            strict_identity=strict_identity,
+            expected_protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
+            repair_current_protocol=True,
+        )
+        if ledger.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal runner cannot resume legacy protocol')
         return ledger
 
@@ -522,6 +937,11 @@ class AppendOnlyAttemptLedger:
         )
         directory = _io_path(normal_directory)
         metadata_path = directory / 'metadata.json'
+        try:
+            if _is_reparse_point(metadata_path):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata is a reparse point')
+        except OSError as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata is unreadable') from exc
         metadata_raw = metadata_path.read_bytes()
         metadata = json.loads(metadata_raw)
         v1_keys = {
@@ -535,6 +955,12 @@ class AppendOnlyAttemptLedger:
             'recovery_primary_verdict',
         }
         v2_keys = v1_keys | {'protocol_version'}
+        v3_keys = v2_keys | {
+            'batch_id',
+            'phase0a_manifest_sha256',
+            'recovery_provenance',
+            'upstream_gate_provenance',
+        }
         if not isinstance(metadata, dict):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
         if set(metadata) == v1_keys:
@@ -542,11 +968,21 @@ class AppendOnlyAttemptLedger:
         elif (
             set(metadata) == v2_keys
             and type(metadata['protocol_version']) is int
+            and metadata['protocol_version'] == LEGACY_PAIRED_PROTOCOL_VERSION
+        ):
+            protocol_version = LEGACY_PAIRED_PROTOCOL_VERSION
+        elif (
+            set(metadata) == v3_keys
+            and type(metadata['protocol_version']) is int
             and metadata['protocol_version'] == PAIRED_PROTOCOL_VERSION
         ):
             protocol_version = PAIRED_PROTOCOL_VERSION
         else:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
+        if protocol_version == PAIRED_PROTOCOL_VERSION:
+            _validate_v3_attempt_file_inventory(directory)
+            if metadata_raw != _canonical_json(metadata):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 metadata encoding is invalid')
         if expected_protocol_version is not None and protocol_version != expected_protocol_version:
             raise HarnessFailure(
                 HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt protocol version does not match snapshot reader'
@@ -579,11 +1015,40 @@ class AppendOnlyAttemptLedger:
             if strict_identity and stored_identity != asdict(identity):
                 raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'attempt identity changed during resume')
 
+        batch_id = ''
+        phase0a_manifest_sha256 = ''
+        recovery_provenance: RecoveryProvenance | None = None
+        upstream_gate_provenance: UpstreamGateProvenance | None = None
+        if protocol_version == PAIRED_PROTOCOL_VERSION:
+            try:
+                recovery_provenance = _parse_exact_recovery_provenance(metadata['recovery_provenance'])
+                upstream_gate_provenance = _parse_exact_upstream_gate_provenance(metadata['upstream_gate_provenance'])
+                pipeline: PipelineName = 'gb' if recovery_provenance is not None else 'sk'
+                batch_id = derive_v3_batch_id(
+                    comparison_key=comparison_key,
+                    profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+                    pipeline=pipeline,
+                    phase0a_manifest_sha256=metadata['phase0a_manifest_sha256'],
+                    identity=identity,
+                    recovery_provenance=recovery_provenance,
+                    upstream_gate_provenance=upstream_gate_provenance,
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 metadata values are invalid') from exc
+            phase0a_manifest_sha256 = metadata['phase0a_manifest_sha256']
+            if metadata['batch_id'] != batch_id:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 metadata batch identity is invalid')
+            expected_reason = 'CLEANUP_RECOVERY' if metadata['cleanup_only'] else 'FORMAL_START'
+            if metadata['reason'] != expected_reason:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 metadata reason is invalid')
+
         metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
         record_head = metadata_sha
         checkpoint_head = metadata_sha
         sample_payloads: dict[tuple[str, int, str], dict[str, Any]] = {}
+        sample_started_payloads: dict[tuple[str, int, str], dict[str, Any]] = {}
         plan_payloads: dict[tuple[str, int, str], dict[str, Any]] = {}
+        plan_record_sha256s: dict[tuple[str, int, str], str] = {}
         first_group_sha256: str | None = None
         expanded_group_sha256: str | None = None
         cleanup_complete = False
@@ -594,7 +1059,7 @@ class AppendOnlyAttemptLedger:
         records = sorted((directory / 'records').glob('*.json'))
         checkpoints = sorted((directory / 'checkpoints').glob('*.json'))
         missing_committed_checkpoint = len(records) == len(checkpoints) + 1
-        if missing_committed_checkpoint and protocol_version != PAIRED_PROTOCOL_VERSION:
+        if missing_committed_checkpoint and protocol_version == 1:
             raise HarnessFailure(
                 HarnessVerdict.INCOMPLETE_EVIDENCE,
                 'protocol v1 audit cannot repair a missing committed checkpoint',
@@ -624,32 +1089,116 @@ class AppendOnlyAttemptLedger:
             }
             if checkpoint != expected_checkpoint:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'durable checkpoint chain is broken')
+            if protocol_version == PAIRED_PROTOCOL_VERSION and checkpoint_raw != _canonical_json(checkpoint):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 checkpoint encoding is invalid')
             checkpoint_head = hashlib.sha256(checkpoint_raw).hexdigest()
             kind = record.get('kind')
+            if protocol_version == PAIRED_PROTOCOL_VERSION and (
+                not isinstance(record, dict) or raw != _canonical_json(record)
+            ):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 record encoding is invalid')
             if evidence_committed or (cleanup_complete and kind not in ('evidence-prepared', 'evidence-committed')):
                 raise HarnessFailure(
                     HarnessVerdict.INCOMPLETE_EVIDENCE,
                     'success record sequence has a trailing record',
                 )
             if kind == 'sample':
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_record_envelope(
+                        record,
+                        {'kind', 'previous_record_sha256', 'metric', 'global_round', 'role', 'payload'},
+                    )
                 key = (record['metric'], record['global_round'], record['role'])
                 if key in sample_payloads:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample record is duplicated')
-                sample_payloads[key] = record['payload']
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    payload = _validate_v3_sample_payload(record['payload'])
+                    started = sample_started_payloads.get(key)
+                    if (
+                        key[0] not in ('wall', 'pws')
+                        or payload['role'] != key[2]
+                        or payload['global_round'] != key[1]
+                        or started is None
+                        or payload['sample_started_record_sha256'] != started['record_sha256']
+                        or payload['batch_id'] != batch_id
+                        or payload['input_sha256'] != started['input_sha256']
+                        or payload['binary_sha256'] != started['binary_sha256']
+                        or payload['git_head'] != identity.git_head
+                        or payload['repository_state_sha256'] != identity.repository_state_sha256
+                        or payload['machine_fingerprint_sha256'] != identity.machine_fingerprint_sha256
+                    ):
+                        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 sample linkage is invalid')
+                    sample_payloads[key] = payload
+                else:
+                    sample_payloads[key] = record['payload']
+            elif kind == 'sample-started':
+                if protocol_version != PAIRED_PROTOCOL_VERSION:
+                    raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy ledger has a v3 sample start')
+                _validate_v3_record_envelope(
+                    record,
+                    {
+                        'kind',
+                        'previous_record_sha256',
+                        'batch_id',
+                        'metric',
+                        'global_round',
+                        'role',
+                        'order',
+                        'input_sha256',
+                        'binary_sha256',
+                        'planned_output_record_sha256',
+                    },
+                )
+                payload = _validate_sample_started_payload(
+                    {key: value for key, value in record.items() if key not in {'kind', 'previous_record_sha256'}}
+                )
+                key = (payload['metric'], payload['global_round'], payload['role'])
+                plan = plan_payloads.get(key)
+                if (
+                    key in sample_started_payloads
+                    or payload['batch_id'] != batch_id
+                    or plan is None
+                    or payload['planned_output_record_sha256'] != plan_record_sha256s.get(key)
+                    or payload['input_sha256'] != identity.input_sha256
+                    or payload['binary_sha256'] != plan['binary_sha256']
+                ):
+                    raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 sample-start linkage is invalid')
+                sample_started_payloads[key] = payload | {'record_sha256': record_head}
             elif kind == 'planned-output':
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_record_envelope(
+                        record,
+                        {'kind', 'previous_record_sha256', 'metric', 'global_round', 'role', 'payload'},
+                    )
                 key = (record['metric'], record['global_round'], record['role'])
                 if key in plan_payloads:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output record is duplicated')
-                plan_payloads[key] = _validate_planned_output_payload(record['payload'])
+                plan_payload = _validate_planned_output_payload(record['payload'])
+                if protocol_version == PAIRED_PROTOCOL_VERSION and (
+                    (plan_payload['metric'], plan_payload['global_round'], plan_payload['role']) != key
+                    or plan_payload['batch_id'] != batch_id
+                    or not _is_sha256(plan_payload['batch_id'])
+                ):
+                    raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 planned-output linkage is invalid')
+                plan_payloads[key] = plan_payload
+                plan_record_sha256s[key] = record_head
             elif kind == 'first-group':
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_record_envelope(record, {'kind', 'previous_record_sha256', 'groups'})
                 if first_group_sha256 is not None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first group record is duplicated')
                 first_group_sha256 = record_head
             elif kind == 'expanded-group':
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_record_envelope(
+                        record, {'kind', 'previous_record_sha256', 'first_group_sha256', 'groups'}
+                    )
                 if expanded_group_sha256 is not None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group record is duplicated')
                 expanded_group_sha256 = record_head
             elif kind == 'cleanup-complete':
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_record_envelope(record, {'kind', 'previous_record_sha256', 'planned_output_count'})
                 if cleanup_complete or evidence_committed or first_group_sha256 is None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success record order is invalid')
                 cleanup_complete = True
@@ -658,21 +1207,37 @@ class AppendOnlyAttemptLedger:
                     raise HarnessFailure(
                         HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence record order is invalid'
                     )
-                prepared_evidence = _validate_prepared_evidence(record)
+                prepared_evidence = (
+                    _validate_v3_prepared_evidence(record, comparison_key=comparison_key)
+                    if protocol_version == PAIRED_PROTOCOL_VERSION
+                    else _validate_prepared_evidence(record)
+                )
             elif kind == 'evidence-committed':
                 if evidence_committed or not cleanup_complete or prepared_evidence is None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'evidence success record order is invalid')
-                _validate_committed_tail_record(
-                    record_path,
-                    raw,
-                    record,
-                    index=index,
-                    previous_record_head=previous_record_head,
-                    prepared_evidence=prepared_evidence,
-                )
+                if protocol_version == PAIRED_PROTOCOL_VERSION:
+                    _validate_v3_committed_tail_record(
+                        record_path,
+                        raw,
+                        record,
+                        index=index,
+                        previous_record_head=previous_record_head,
+                        prepared_evidence=prepared_evidence,
+                    )
+                else:
+                    _validate_committed_tail_record(
+                        record_path,
+                        raw,
+                        record,
+                        index=index,
+                        previous_record_head=previous_record_head,
+                        prepared_evidence=prepared_evidence,
+                    )
                 evidence_committed = True
                 committed_prior_record_head = previous_record_head
                 committed_prior_checkpoint_head = previous_checkpoint_head
+            elif protocol_version == PAIRED_PROTOCOL_VERSION:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 record kind is not closed')
 
         if missing_committed_checkpoint:
             if (directory / 'terminal.json').exists() or not cleanup_complete or prepared_evidence is None:
@@ -681,14 +1246,24 @@ class AppendOnlyAttemptLedger:
             record_path = records[-1]
             raw = record_path.read_bytes()
             record = json.loads(raw)
-            _validate_committed_tail_record(
-                record_path,
-                raw,
-                record,
-                index=index,
-                previous_record_head=record_head,
-                prepared_evidence=prepared_evidence,
-            )
+            if protocol_version == PAIRED_PROTOCOL_VERSION:
+                _validate_v3_committed_tail_record(
+                    record_path,
+                    raw,
+                    record,
+                    index=index,
+                    previous_record_head=record_head,
+                    prepared_evidence=prepared_evidence,
+                )
+            else:
+                _validate_committed_tail_record(
+                    record_path,
+                    raw,
+                    record,
+                    index=index,
+                    previous_record_head=record_head,
+                    prepared_evidence=prepared_evidence,
+                )
             committed_prior_record_head = record_head
             committed_prior_checkpoint_head = checkpoint_head
             record_head = hashlib.sha256(raw).hexdigest()
@@ -715,6 +1290,20 @@ class AppendOnlyAttemptLedger:
         if terminal_path.exists():
             terminal_raw_bytes = terminal_path.read_bytes()
             terminal = json.loads(terminal_raw_bytes)
+            if protocol_version == PAIRED_PROTOCOL_VERSION and (
+                not isinstance(terminal, dict)
+                or set(terminal)
+                != {
+                    'verdict',
+                    'primary_verdict',
+                    'raw_log_sha256',
+                    'record_count',
+                    'record_head_sha256',
+                    'checkpoint_head_sha256',
+                }
+                or terminal_raw_bytes != _canonical_json(terminal)
+            ):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 terminal schema is invalid')
             if terminal.get('record_count') != len(records) or terminal.get('record_head_sha256') != record_head:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sealed attempt record count/head mismatch')
             if terminal.get('checkpoint_head_sha256') != checkpoint_head:
@@ -751,6 +1340,10 @@ class AppendOnlyAttemptLedger:
             ) from exc
         if inherited and not cleanup_only:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'inherited outputs require cleanup-only metadata')
+        if protocol_version == PAIRED_PROTOCOL_VERSION and any(
+            payload['batch_id'] != batch_id or not _is_sha256(payload['batch_id']) for payload in inherited
+        ):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 inherited output batch is invalid')
         if terminal_verdict is None:
             if evidence_committed:
                 state = AttemptState.EVIDENCE_COMMITTED
@@ -776,6 +1369,19 @@ class AppendOnlyAttemptLedger:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'previous attempt head link is broken')
         elif previous_head is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first attempt cannot link a previous head')
+        if protocol_version == PAIRED_PROTOCOL_VERSION:
+            if attempt_number == 1 and cleanup_only:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first v3 attempt cannot be cleanup-only')
+            if attempt_number == 2 and (
+                not cleanup_only
+                or previous.terminal_verdict is not HarnessVerdict.CLEANUP_FAILED
+                or inherited != previous.all_planned_output_payloads()
+            ):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 cleanup successor linkage is invalid')
+            if attempt_number > 2:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt number is not closed')
+        if protocol_version == PAIRED_PROTOCOL_VERSION:
+            _validate_v3_journal_encoding(directory.parent / 'journal')
         journal_head, latest_anchors = _load_comparison_journal(directory.parent)
         expected_anchor = _journal_state_payload(
             attempt_number=attempt_number,
@@ -805,7 +1411,7 @@ class AppendOnlyAttemptLedger:
             )
             if latest_anchors.get(attempt_number) != prior_anchor:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
-            if protocol_version != PAIRED_PROTOCOL_VERSION:
+            if protocol_version == 1:
                 raise HarnessFailure(
                     HarnessVerdict.INCOMPLETE_EVIDENCE,
                     'protocol v1 audit cannot repair a comparison journal anchor',
@@ -822,6 +1428,11 @@ class AppendOnlyAttemptLedger:
             attempt_number=attempt_number,
             previous_attempt_head_sha256=previous_head,
             head_sha256=head,
+            batch_id=batch_id,
+            phase0a_manifest_sha256=phase0a_manifest_sha256,
+            recovery_provenance=recovery_provenance,
+            upstream_gate_provenance=upstream_gate_provenance,
+            metadata=dict(metadata),
             state=state,
             terminal_verdict=terminal_verdict,
             terminal_raw_log_sha256=terminal_raw,
@@ -835,7 +1446,9 @@ class AppendOnlyAttemptLedger:
             _checkpoint_head_sha256=checkpoint_head,
             _record_count=len(records),
             _sample_payloads=sample_payloads,
+            _sample_started_payloads=sample_started_payloads,
             _plan_payloads=plan_payloads,
+            _plan_record_sha256s=plan_record_sha256s,
             _inherited_plan_payloads=inherited,
             _prepared_evidence=prepared_evidence,
         )
@@ -845,7 +1458,7 @@ class AppendOnlyAttemptLedger:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot accept more records')
         if self.state is AttemptState.CLEANUP_COMPLETE and kind not in ('evidence-prepared', 'evidence-committed'):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success cannot accept benchmark records')
-        if self.state is AttemptState.EVIDENCE_COMMITTED:
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION and self.state is AttemptState.EVIDENCE_COMMITTED:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success cannot accept more records')
         if self.cleanup_only:
             raise HarnessFailure(
@@ -908,15 +1521,81 @@ class AppendOnlyAttemptLedger:
         global_round: int,
         role: BinaryRole,
         payload: dict[str, Any],
+        *,
+        sample_started_record_sha256: str | None = None,
     ) -> str:
+        if self.cleanup_only:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot record a sample')
         key = (metric, global_round, role)
         if key in self._sample_payloads:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'existing round record overwrite is forbidden')
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            started = self._sample_started_payloads.get(key)
+            candidate_payload = dict(payload)
+            candidate_payload['sample_started_record_sha256'] = sample_started_record_sha256
+            validated = _validate_v3_sample_payload(candidate_payload)
+            if validated['batch_id'] != self.batch_id:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample batch does not match ledger')
+            if (
+                started is None
+                or sample_started_record_sha256 != started['record_sha256']
+                or validated['role'] != role
+                or validated['global_round'] != global_round
+                or validated['input_sha256'] != started['input_sha256']
+                or validated['binary_sha256'] != started['binary_sha256']
+                or validated['git_head'] != self.identity.git_head
+                or validated['repository_state_sha256'] != self.identity.repository_state_sha256
+                or validated['machine_fingerprint_sha256'] != self.identity.machine_fingerprint_sha256
+            ):
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample identity or start linkage is invalid')
+            payload = validated
         digest = self._append(
             'sample',
             {'metric': metric, 'global_round': global_round, 'role': role, 'payload': payload},
         )
         self._sample_payloads[key] = payload
+        return digest
+
+    def record_sample_started(
+        self,
+        *,
+        batch_id: str,
+        metric: MetricName,
+        global_round: int,
+        role: BinaryRole,
+        order: tuple[BinaryRole, BinaryRole],
+        input_sha256: str,
+        binary_sha256: str,
+        planned_output_record_sha256: str,
+    ) -> str:
+        if self.cleanup_only:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot record sample start')
+        if self.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample start requires protocol v3')
+        if batch_id != self.batch_id:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample-started batch does not match ledger')
+        key = (metric, global_round, role)
+        if key in self._sample_started_payloads or key in self._sample_payloads:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample start is duplicate')
+        plan = self._plan_payloads.get(key)
+        if plan is None or self._plan_record_sha256s.get(key) != planned_output_record_sha256:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample start does not bind its planned output')
+        payload = _validate_sample_started_payload(
+            {
+                'batch_id': batch_id,
+                'metric': metric,
+                'global_round': global_round,
+                'role': role,
+                'order': list(order),
+                'input_sha256': input_sha256,
+                'binary_sha256': binary_sha256,
+                'planned_output_record_sha256': planned_output_record_sha256,
+            }
+        )
+        if input_sha256 != self.identity.input_sha256 or binary_sha256 != plan['binary_sha256']:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample start identity is invalid')
+        digest = self._append('sample-started', payload)
+        self._sample_started_payloads[key] = payload | {'record_sha256': digest}
         return digest
 
     def record_planned_output(
@@ -926,24 +1605,57 @@ class AppendOnlyAttemptLedger:
         role: BinaryRole,
         payload: dict[str, Any],
     ) -> str:
+        if self.cleanup_only:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot record planned output'
+            )
         validated = _validate_planned_output_payload(payload)
         key = (metric, global_round, role)
         if (validated['metric'], validated['global_round'], validated['role']) != key:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output key/payload mismatch')
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION and (
+            validated['batch_id'] != self.batch_id or not _is_sha256(validated['batch_id'])
+        ):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output batch does not match ledger')
         existing = self._plan_payloads.get(key)
         if existing is not None:
             if existing != validated:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned output changed during resume')
+            if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+                return self._plan_record_sha256s[key]
             return self.head_sha256
         digest = self._append(
             'planned-output',
             {'metric': metric, 'global_round': global_round, 'role': role, 'payload': validated},
         )
         self._plan_payloads[key] = validated
+        self._plan_record_sha256s[key] = digest
         return digest
 
     def sample_payload(self, metric: MetricName, global_round: int, role: BinaryRole) -> dict[str, Any] | None:
         return self._sample_payloads.get((metric, global_round, role))
+
+    def sample(self, metric: MetricName, global_round: int, role: BinaryRole) -> dict[str, Any]:
+        payload = self._sample_payloads.get((metric, global_round, role))
+        if payload is None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample record is missing')
+        return dict(payload)
+
+    def sample_started(self, metric: MetricName, global_round: int, role: BinaryRole) -> dict[str, Any]:
+        payload = self._sample_started_payloads.get((metric, global_round, role))
+        if payload is None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample-started record is missing')
+        return dict(payload)
+
+    def sample_started_sha(self, metric: MetricName, global_round: int, role: BinaryRole) -> str | None:
+        payload = self._sample_started_payloads.get((metric, global_round, role))
+        return payload['record_sha256'] if payload is not None else None
+
+    def planned_output(self, metric: MetricName, global_round: int, role: BinaryRole) -> dict[str, Any]:
+        payload = self._plan_payloads.get((metric, global_round, role))
+        if payload is None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output record is missing')
+        return dict(payload)
 
     def missing_samples(
         self,
@@ -1002,19 +1714,26 @@ class AppendOnlyAttemptLedger:
         artifact_basename: str,
         artifact_sha256: str,
         artifact_content: str,
+        marker_basename: str | None = None,
+        marker_sha256: str | None = None,
     ) -> str:
         if self.state is not AttemptState.CLEANUP_COMPLETE or self._prepared_evidence is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'prepared evidence transition is invalid')
-        payload = _validate_prepared_evidence(
-            {
-                'kind': 'evidence-prepared',
-                'previous_record_sha256': self._record_head_sha256,
-                'artifact_basename': artifact_basename,
-                'artifact_sha256': artifact_sha256,
-                'artifact_content': artifact_content,
-            }
-        )
-        _rebuild_prepared_artifact(payload)
+        record = {
+            'kind': 'evidence-prepared',
+            'previous_record_sha256': self._record_head_sha256,
+            'artifact_basename': artifact_basename,
+            'artifact_sha256': artifact_sha256,
+            'artifact_content': artifact_content,
+        }
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            record.update({'marker_basename': marker_basename, 'marker_sha256': marker_sha256})
+            payload = _validate_v3_prepared_evidence(record, comparison_key=self.comparison_key)
+        else:
+            if marker_basename is not None or marker_sha256 is not None:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy prepared evidence has no marker')
+            payload = _validate_prepared_evidence(record)
+            _rebuild_prepared_artifact(payload)
         digest = self._append('evidence-prepared', payload)
         self._prepared_evidence = payload
         return digest
@@ -1022,14 +1741,23 @@ class AppendOnlyAttemptLedger:
     def prepared_evidence(self) -> dict[str, str] | None:
         return dict(self._prepared_evidence) if self._prepared_evidence is not None else None
 
-    def mark_evidence_committed(self, *, artifact_sha256: str) -> str:
+    def mark_evidence_committed(self, *, artifact_sha256: str, marker_sha256: str | None = None) -> str:
         if (
             self.state is not AttemptState.CLEANUP_COMPLETE
             or self._prepared_evidence is None
             or artifact_sha256 != self._prepared_evidence['artifact_sha256']
         ):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'evidence success transition is invalid')
-        digest = self._append('evidence-committed', {'artifact_sha256': artifact_sha256})
+        payload = {'artifact_sha256': artifact_sha256}
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            if marker_sha256 != self._prepared_evidence['marker_sha256']:
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed marker does not match prepared marker'
+                )
+            payload['marker_sha256'] = marker_sha256
+        elif marker_sha256 is not None:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy committed evidence has no marker')
+        digest = self._append('evidence-committed', payload)
         self.state = AttemptState.EVIDENCE_COMMITTED
         return digest
 
@@ -1040,6 +1768,8 @@ class AppendOnlyAttemptLedger:
         raw_log_sha256: str | None = None,
         primary_verdict: HarnessVerdict | None = None,
     ) -> str:
+        if self.state is AttemptState.EVIDENCE_COMMITTED:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success is already sealed')
         if self.terminal_verdict is not None or (self.attempt_directory / 'terminal.json').exists():
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt is already sealed')
         if not isinstance(verdict, HarnessVerdict) or verdict is HarnessVerdict.VALIDATED:
@@ -1065,6 +1795,231 @@ class AppendOnlyAttemptLedger:
         self.head_sha256 = hashlib.sha256(raw).hexdigest()
         self._append_journal_anchor()
         return self.head_sha256
+
+
+def classify_v3_attempt_state(ledger: AppendOnlyAttemptLedger | None) -> V3AttemptClassification:
+    if ledger is None:
+        return 'NEW'
+    if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
+        return 'INVALID'
+    if ledger.cleanup_only:
+        return 'FAILED_TERMINAL' if ledger.terminal_verdict is not None else 'CLEANUP_ONLY'
+    if ledger.terminal_verdict is not None:
+        return 'FAILED_TERMINAL'
+    if ledger.state is AttemptState.EVIDENCE_COMMITTED:
+        return 'EVIDENCE_COMMITTED'
+    if ledger._prepared_evidence is not None:
+        return 'EVIDENCE_PREPARED'
+    if ledger.state is AttemptState.CLEANUP_COMPLETE:
+        return 'CLEANUP_COMPLETE'
+    started = set(ledger._sample_started_payloads)
+    samples = set(ledger._sample_payloads)
+    if not samples.issubset(started):
+        return 'INVALID'
+    if started - samples:
+        return 'STARTED_WITHOUT_SAMPLE'
+    return 'SAMPLING_RESUMABLE'
+
+
+def _validate_v3_record_envelope(record: object, keys: set[str]) -> None:
+    if not isinstance(record, dict) or set(record) != keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 record fields are not closed')
+
+
+def _validate_v3_attempt_file_inventory(directory: Path) -> None:
+    allowed = {'metadata.json', 'records', 'checkpoints', 'terminal.json'}
+    paths = tuple(directory.iterdir())
+    try:
+        if any(_is_reparse_point(path) for path in paths):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt contains a reparse point')
+    except OSError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt inventory is unreadable') from exc
+    children = {path.name for path in paths}
+    if not {'metadata.json', 'records', 'checkpoints'}.issubset(children) or not children.issubset(allowed):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt inventory is invalid')
+    if not (directory / 'records').is_dir() or not (directory / 'checkpoints').is_dir():
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt inventory is invalid')
+    record_paths = tuple((directory / 'records').iterdir())
+    checkpoint_paths = tuple((directory / 'checkpoints').iterdir())
+    try:
+        reparse_file = any(_is_reparse_point(path) for path in (*record_paths, *checkpoint_paths))
+        invalid_file = any(not path.is_file() or path.suffix != '.json' for path in (*record_paths, *checkpoint_paths))
+    except OSError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt inventory is unreadable') from exc
+    if reparse_file:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt contains a reparse point')
+    if invalid_file:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 attempt inventory is invalid')
+
+
+def _validate_v3_journal_encoding(directory: Path) -> None:
+    keys = {
+        'previous_journal_sha256',
+        'attempt_number',
+        'record_count',
+        'record_head_sha256',
+        'checkpoint_head_sha256',
+        'terminal_present',
+        'terminal_head_sha256',
+        'verdict',
+    }
+    for index, path in enumerate(sorted(directory.iterdir()), start=1):
+        try:
+            invalid_path = _is_reparse_point(path) or not path.is_file()
+        except OSError as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 journal is unreadable') from exc
+        if invalid_path or path.name != f'{index:06d}.json':
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 journal inventory is invalid')
+        raw = path.read_bytes()
+        entry = json.loads(raw)
+        if not isinstance(entry, dict) or set(entry) != keys or raw != _canonical_json(entry):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 journal encoding is invalid')
+
+
+def _validate_sample_started_payload(payload: object) -> dict[str, Any]:
+    keys = {
+        'batch_id',
+        'metric',
+        'global_round',
+        'role',
+        'order',
+        'input_sha256',
+        'binary_sha256',
+        'planned_output_record_sha256',
+    }
+    if not isinstance(payload, dict) or set(payload) != keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample-started payload fields are not closed')
+    metric = payload['metric']
+    role = payload['role']
+    global_round = payload['global_round']
+    expected_order = (
+        ['reference', 'candidate']
+        if type(global_round) is int and global_round % 2
+        else [
+            'candidate',
+            'reference',
+        ]
+    )
+    if (
+        metric not in ('wall', 'pws')
+        or role not in ('reference', 'candidate')
+        or type(global_round) is not int
+        or global_round not in range(1, 11)
+        or payload['order'] != expected_order
+        or not all(
+            _is_sha256(payload[key])
+            for key in ('batch_id', 'input_sha256', 'binary_sha256', 'planned_output_record_sha256')
+        )
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample-started payload values are invalid')
+    return dict(payload)
+
+
+def _validate_v3_sample_payload(payload: object) -> dict[str, Any]:
+    legacy_keys = {
+        'role',
+        'global_round',
+        'metric_value',
+        'exit_code',
+        'input_sha256',
+        'binary_sha256',
+        'git_head',
+        'repository_state_sha256',
+        'machine_fingerprint_sha256',
+        'local_unversioned_log_sha256',
+        'normal_run',
+    }
+    keys = legacy_keys | {'batch_id', 'sample_started_record_sha256'}
+    if not isinstance(payload, dict) or set(payload) != keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 sample payload fields are not closed')
+    if not _is_sha256(payload['batch_id']) or not _is_sha256(payload['sample_started_record_sha256']):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 sample linkage hashes are invalid')
+    _parse_exact_v2_sample({key: payload[key] for key in legacy_keys})
+    return dict(payload)
+
+
+def _derive_v3_marker_identity(artifact_basename: str, artifact_content: str) -> tuple[str, str]:
+    artifact_sha256 = hashlib.sha256(artifact_content.encode('utf-8')).hexdigest()
+    basis = {
+        'schema_version': 1,
+        'artifacts': [{'kind': 'benchmark', 'file_name': artifact_basename, 'sha256': artifact_sha256}],
+    }
+    batch_sha256 = hashlib.sha256(
+        json.dumps(basis, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    ).hexdigest()
+    marker_content = (
+        json.dumps({**basis, 'batch_sha256': batch_sha256}, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    )
+    return f'batch-{batch_sha256[:16]}.commit.json', hashlib.sha256(marker_content.encode('utf-8')).hexdigest()
+
+
+def _validate_v3_prepared_evidence(record: object, *, comparison_key: str) -> dict[str, str]:
+    keys = {
+        'kind',
+        'previous_record_sha256',
+        'artifact_basename',
+        'artifact_sha256',
+        'artifact_content',
+        'marker_basename',
+        'marker_sha256',
+    }
+    if not isinstance(record, dict) or set(record) != keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 prepared evidence fields are not closed')
+    basename = record['artifact_basename']
+    artifact_sha256 = record['artifact_sha256']
+    content = record['artifact_content']
+    marker_basename = record['marker_basename']
+    marker_sha256 = record['marker_sha256']
+    expected_marker = (
+        _derive_v3_marker_identity(basename, content)
+        if isinstance(basename, str) and isinstance(content, str)
+        else (None, None)
+    )
+    if (
+        record['kind'] != 'evidence-prepared'
+        or not _is_sha256(record['previous_record_sha256'])
+        or not isinstance(basename, str)
+        or Path(basename).name != basename
+        or basename != f'benchmark-v3-{comparison_key[:16]}.json'
+        or not isinstance(content, str)
+        or not _is_sha256(artifact_sha256)
+        or hashlib.sha256(content.encode('utf-8')).hexdigest() != artifact_sha256
+        or not isinstance(marker_basename, str)
+        or Path(marker_basename).name != marker_basename
+        or marker_basename != expected_marker[0]
+        or not _is_sha256(marker_sha256)
+        or marker_sha256 != expected_marker[1]
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 prepared evidence basename or marker is invalid')
+    return {
+        'artifact_basename': basename,
+        'artifact_sha256': artifact_sha256,
+        'artifact_content': content,
+        'marker_basename': marker_basename,
+        'marker_sha256': marker_sha256,
+    }
+
+
+def _validate_v3_committed_tail_record(
+    record_path: Path,
+    raw: bytes,
+    record: object,
+    *,
+    index: int,
+    previous_record_head: str,
+    prepared_evidence: dict[str, str],
+) -> None:
+    if (
+        record_path.name != f'{index:04d}-evidence-committed.json'
+        or not isinstance(record, dict)
+        or set(record) != {'kind', 'previous_record_sha256', 'artifact_sha256', 'marker_sha256'}
+        or record.get('kind') != 'evidence-committed'
+        or record.get('previous_record_sha256') != previous_record_head
+        or record.get('artifact_sha256') != prepared_evidence['artifact_sha256']
+        or record.get('marker_sha256') != prepared_evidence['marker_sha256']
+        or raw != _canonical_json(record)
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 committed evidence tail is invalid')
 
 
 def _parse_exact_legacy_identity(value: object) -> BenchmarkIdentity:
@@ -1097,7 +2052,11 @@ def parse_and_validate_ledger_snapshot(
     *,
     expected_protocol_version: int,
 ) -> AppendOnlyAttemptLedger:
-    if type(expected_protocol_version) is not int or expected_protocol_version not in (1, PAIRED_PROTOCOL_VERSION):
+    if type(expected_protocol_version) is not int or expected_protocol_version not in (
+        1,
+        LEGACY_PAIRED_PROTOCOL_VERSION,
+        PAIRED_PROTOCOL_VERSION,
+    ):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'snapshot protocol version is not supported')
     try:
         return AppendOnlyAttemptLedger._load_impl(
@@ -1254,7 +2213,7 @@ def _load_comparison_journal(comparison_directory: Path) -> tuple[str, dict[int,
 
 def derive_batch_id(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
     payload = {
-        'protocol_version': PAIRED_PROTOCOL_VERSION,
+        'protocol_version': LEGACY_PAIRED_PROTOCOL_VERSION,
         'profile': request.comparison_profile.value,
         'pipeline': request.pipeline,
         **asdict(identity),
@@ -2101,7 +3060,7 @@ def _authorize_v3_recovery(
         candidate_sha256=static.candidate_sha256,
     )
     if (
-        approved.parent_protocol_version != PAIRED_PROTOCOL_VERSION
+        approved.parent_protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION
         or approved.parent_comparison_key != expected_key
         or approved.parent_attempt != 1
         or approved.parent_inventory_entry_count != 134
@@ -3043,8 +4002,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
     identity = _capture_identity(request)
     baseline = _load_approved_phase0a_baseline(request, identity)
     batch_id = derive_batch_id(request, identity)
-    comparison_key = derive_comparison_key(
-        protocol_version=PAIRED_PROTOCOL_VERSION,
+    comparison_key = derive_v2_comparison_key(
         pipeline=request.pipeline,
         comparison_profile=request.comparison_profile,
         reference_label=request.reference_label,
@@ -3054,7 +4012,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         candidate_sha256=identity.candidate_sha256,
     )
     expected_basename = expected_benchmark_artifact_name(
-        protocol_version=PAIRED_PROTOCOL_VERSION,
+        protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
         comparison_key=comparison_key,
     )
     if request.evidence_path.name != expected_basename:
@@ -3923,8 +4881,7 @@ def _build_paired_evidence(
     identity: BenchmarkIdentity,
     direction_diagnostics: tuple[DirectionDiagnosticEvidence, ...],
 ) -> BenchmarkManifestEvidence:
-    expected_comparison_key = derive_comparison_key(
-        protocol_version=PAIRED_PROTOCOL_VERSION,
+    expected_comparison_key = derive_v2_comparison_key(
         pipeline=request.pipeline,
         comparison_profile=request.comparison_profile,
         reference_label=request.reference_label,
@@ -3933,7 +4890,7 @@ def _build_paired_evidence(
         reference_sha256=identity.reference_sha256,
         candidate_sha256=identity.candidate_sha256,
     )
-    if attempt.protocol_version != PAIRED_PROTOCOL_VERSION or attempt.comparison_key != expected_comparison_key:
+    if attempt.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION or attempt.comparison_key != expected_comparison_key:
         raise HarnessFailure(
             HarnessVerdict.INCOMPLETE_EVIDENCE,
             'paired attempt protocol/comparison identity is invalid',
@@ -3982,7 +4939,7 @@ def _build_paired_evidence(
     )
     return BenchmarkManifestEvidence(
         schema_version=2,
-        protocol_version=PAIRED_PROTOCOL_VERSION,
+        protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
         profile=request.comparison_profile,
         pipeline=request.pipeline,
         input_alias=PathAlias.GB_INPUT if request.pipeline == 'gb' else PathAlias.SK_INPUT,

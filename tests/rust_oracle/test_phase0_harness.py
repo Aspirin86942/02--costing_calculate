@@ -27,7 +27,10 @@ from tests.rust_oracle.benchmark_protocol import (
     MetricSample,
     NormalRunEvidence,
     PairedRound,
+    RecoveryProvenance,
+    RecoveryReason,
     RuntimeEvidence,
+    UpstreamGateProvenance,
     assert_same_benchmark_batch,
     build_round_plan,
 )
@@ -142,9 +145,48 @@ def _full_identity() -> BenchmarkIdentity:
     return BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
 
 
+def _test_recovery_provenance() -> RecoveryProvenance:
+    return RecoveryProvenance(
+        parent_protocol_version=2,
+        parent_comparison_key='0' * 64,
+        parent_attempt=1,
+        parent_terminal_sha256='1' * 64,
+        parent_comparison_tree_sha256='2' * 64,
+        parent_journal_head_sha256='3' * 64,
+        parent_inventory_entry_count=134,
+        reason=RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    )
+
+
+def _test_upstream_gate_provenance() -> UpstreamGateProvenance:
+    return UpstreamGateProvenance(
+        pipeline='gb',
+        protocol_version=3,
+        schema_version=3,
+        comparison_key='4' * 64,
+        artifact_basename=f'benchmark-v3-{"4" * 16}.json',
+        artifact_sha256='5' * 64,
+        marker_basename=f'batch-{"4" * 16}.commit.json',
+        marker_sha256='6' * 64,
+        validated_commit_sha='7' * 40,
+    )
+
+
+def _recovery_payload(value: RecoveryProvenance) -> dict[str, object]:
+    return {
+        'parent_protocol_version': value.parent_protocol_version,
+        'parent_comparison_key': value.parent_comparison_key,
+        'parent_attempt': value.parent_attempt,
+        'parent_terminal_sha256': value.parent_terminal_sha256,
+        'parent_comparison_tree_sha256': value.parent_comparison_tree_sha256,
+        'parent_journal_head_sha256': value.parent_journal_head_sha256,
+        'parent_inventory_entry_count': value.parent_inventory_entry_count,
+        'reason': value.reason.value,
+    }
+
+
 def _comparison_key(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
-    return phase0_harness.derive_comparison_key(
-        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+    return phase0_harness.derive_v2_comparison_key(
         pipeline=request.pipeline,
         comparison_profile=request.comparison_profile,
         reference_label=request.reference_label,
@@ -2489,8 +2531,7 @@ def _install_formal_paired(
 ) -> tuple[PairedBenchmarkRequest, list[dict[str, object]]]:
     request = _request(tmp_path)
     identity = _full_identity()
-    comparison_key = phase0_harness.derive_comparison_key(
-        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+    comparison_key = phase0_harness.derive_v2_comparison_key(
         pipeline=request.pipeline,
         comparison_profile=request.comparison_profile,
         reference_label=request.reference_label,
@@ -2855,8 +2896,7 @@ def _prepare_formal_evidence_recovery(
     request = replace(request, input_path=sanitized_input)
     monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', lambda self, **kwargs: None)
     identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
-    comparison_key = phase0_harness.derive_comparison_key(
-        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+    comparison_key = phase0_harness.derive_v2_comparison_key(
         pipeline=request.pipeline,
         comparison_profile=request.comparison_profile,
         reference_label=request.reference_label,
@@ -3481,3 +3521,414 @@ def test_prior_evidence_claim_content_participates_in_identity(
     with pytest.raises(HarnessFailure, match='prior evidence'):
         phase0_harness._capture_identity(request)
     assert first.repository_state_sha256
+
+
+def _v3_batch_id_kwargs(
+    *,
+    comparison_key: str = 'c' * 64,
+    pipeline: str = 'gb',
+    recovery_provenance: RecoveryProvenance | None = None,
+    upstream_gate_provenance: UpstreamGateProvenance | None = None,
+) -> dict[str, object]:
+    if recovery_provenance is None and upstream_gate_provenance is None:
+        recovery_provenance = _test_recovery_provenance() if pipeline == 'gb' else None
+        upstream_gate_provenance = _test_upstream_gate_provenance() if pipeline == 'sk' else None
+    return {
+        'comparison_key': comparison_key,
+        'profile': ComparisonProfile.PHASE0B_VS_PHASE0A,
+        'pipeline': pipeline,
+        'phase0a_manifest_sha256': '9' * 64,
+        'identity': _full_identity(),
+        'recovery_provenance': recovery_provenance,
+        'upstream_gate_provenance': upstream_gate_provenance,
+    }
+
+
+def _v3_ledger(
+    tmp_path: Path,
+    *,
+    batch_id: str | None = None,
+    comparison_key: str = 'c' * 64,
+) -> AppendOnlyAttemptLedger:
+    ledger = AppendOnlyAttemptLedger.create_v3_once(
+        tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+        _full_identity(),
+        comparison_key=comparison_key,
+        phase0a_manifest_sha256='9' * 64,
+        recovery_provenance=_test_recovery_provenance(),
+        upstream_gate_provenance=None,
+    )
+    if batch_id is not None:
+        assert ledger.batch_id == batch_id
+    return ledger
+
+
+def _v3_planned_payload(
+    *,
+    batch_id: str,
+    role: str = 'reference',
+    metric: str = 'wall',
+    global_round: int = 1,
+) -> dict[str, object]:
+    identity = _full_identity()
+    binary_sha256 = identity.reference_sha256 if role == 'reference' else identity.candidate_sha256
+    return {
+        'pipeline': 'gb',
+        'batch_id': batch_id,
+        'metric': metric,
+        'binary_sha256': binary_sha256,
+        'global_round': global_round,
+        'role': role,
+        'relative_path': (f'gb/.perf-runs/{batch_id}/{metric}/{binary_sha256}/{global_round}/{role}.xlsx'),
+    }
+
+
+def _v3_sample_payload(*, batch_id: str, role: str = 'reference') -> dict[str, object]:
+    return {
+        **_synthetic_v2_sample_payload(_full_identity(), metric='wall', global_round=1, role=role),
+        'batch_id': batch_id,
+    }
+
+
+def _record_v3_sample_start(ledger: AppendOnlyAttemptLedger, *, role: str = 'reference') -> tuple[str, str]:
+    plan_sha = ledger.record_planned_output(
+        'wall',
+        1,
+        role,  # type: ignore[arg-type]
+        _v3_planned_payload(batch_id=ledger.batch_id, role=role),
+    )
+    started_sha = ledger.record_sample_started(
+        batch_id=ledger.batch_id,
+        metric='wall',
+        global_round=1,
+        role=role,  # type: ignore[arg-type]
+        order=('reference', 'candidate'),
+        input_sha256=_full_identity().input_sha256,
+        binary_sha256=(_full_identity().reference_sha256 if role == 'reference' else _full_identity().candidate_sha256),
+        planned_output_record_sha256=plan_sha,
+    )
+    return plan_sha, started_sha
+
+
+def test_v3_sample_started_is_durable_before_capture(tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    _plan_sha, started_sha = _record_v3_sample_start(ledger)
+
+    assert tuple((ledger.attempt_directory / 'records').glob('*sample-started.json'))
+    loaded = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity())
+    assert loaded.sample_started_sha('wall', 1, 'reference') == started_sha
+
+
+def test_reloaded_plan_returns_original_record_sha_for_sample_start(tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    original_plan_sha = ledger.record_planned_output(
+        'wall', 1, 'reference', _v3_planned_payload(batch_id=ledger.batch_id)
+    )
+    ledger.record_planned_output(
+        'wall', 1, 'candidate', _v3_planned_payload(batch_id=ledger.batch_id, role='candidate')
+    )
+
+    reloaded = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, _full_identity())
+
+    assert (
+        reloaded.record_planned_output('wall', 1, 'reference', _v3_planned_payload(batch_id=ledger.batch_id))
+        == original_plan_sha
+    )
+
+
+def test_v3_batch_id_matches_exact_13_key_payload_and_is_bound_everywhere(tmp_path: Path) -> None:
+    recovery = _test_recovery_provenance()
+    identity = _full_identity()
+    comparison_key = 'c' * 64
+    expected_payload = {
+        'protocol_version': 3,
+        'comparison_key': comparison_key,
+        'profile': 'phase0b-vs-phase0a',
+        'pipeline': 'gb',
+        'phase0a_manifest_sha256': '9' * 64,
+        'input_sha256': identity.input_sha256,
+        'reference_sha256': identity.reference_sha256,
+        'candidate_sha256': identity.candidate_sha256,
+        'git_head': identity.git_head,
+        'repository_state_sha256': identity.repository_state_sha256,
+        'machine_fingerprint_sha256': identity.machine_fingerprint_sha256,
+        'recovery_provenance': _recovery_payload(recovery),
+        'upstream_gate_provenance': None,
+    }
+    expected = hashlib.sha256(
+        json.dumps(expected_payload, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+    actual = phase0_harness.derive_v3_batch_id(**_v3_batch_id_kwargs(comparison_key=comparison_key))
+    assert actual == expected
+    ledger = _v3_ledger(tmp_path, batch_id=actual, comparison_key=comparison_key)
+    assert ledger.metadata['batch_id'] == actual
+    plan_sha, started_sha = _record_v3_sample_start(ledger)
+    assert plan_sha
+    ledger.record_sample(
+        'wall',
+        1,
+        'reference',
+        _v3_sample_payload(batch_id=actual),
+        sample_started_record_sha256=started_sha,
+    )
+    reloaded = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, identity)
+    assert reloaded.planned_output('wall', 1, 'reference')['batch_id'] == actual
+    assert reloaded.sample_started('wall', 1, 'reference')['batch_id'] == actual
+    assert reloaded.sample('wall', 1, 'reference')['batch_id'] == actual
+    assert reloaded.sample('wall', 1, 'reference')['sample_started_record_sha256'] == started_sha
+
+
+@pytest.mark.parametrize('record_kind', ('planned-output', 'sample-started', 'sample'))
+def test_v3_ledger_rejects_record_from_wrong_batch(record_kind: str, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    wrong_batch = 'd' * 64
+    with pytest.raises(HarnessFailure, match='batch'):
+        if record_kind == 'planned-output':
+            ledger.record_planned_output('wall', 1, 'reference', _v3_planned_payload(batch_id=wrong_batch))
+        else:
+            _plan_sha, started_sha = _record_v3_sample_start(ledger)
+            if record_kind == 'sample-started':
+                ledger.record_sample_started(
+                    batch_id=wrong_batch,
+                    metric='wall',
+                    global_round=2,
+                    role='reference',
+                    order=('candidate', 'reference'),
+                    input_sha256=_full_identity().input_sha256,
+                    binary_sha256=_full_identity().reference_sha256,
+                    planned_output_record_sha256=started_sha,
+                )
+            else:
+                ledger.record_sample(
+                    'wall',
+                    1,
+                    'reference',
+                    _v3_sample_payload(batch_id=wrong_batch),
+                    sample_started_record_sha256=started_sha,
+                )
+
+
+@pytest.mark.parametrize('mutation', ('parent_tree', 'parent_journal', 'gb_artifact', 'gb_marker', 'gb_commit'))
+def test_v3_batch_id_changes_for_every_recovery_or_upstream_anchor(mutation: str) -> None:
+    if mutation.startswith('parent_'):
+        recovery = _test_recovery_provenance()
+        field = {
+            'parent_tree': 'parent_comparison_tree_sha256',
+            'parent_journal': 'parent_journal_head_sha256',
+        }[mutation]
+        before = _v3_batch_id_kwargs(recovery_provenance=recovery)
+        after = _v3_batch_id_kwargs(recovery_provenance=replace(recovery, **{field: 'f' * 64}))
+    else:
+        upstream = _test_upstream_gate_provenance()
+        field = {
+            'gb_artifact': 'artifact_sha256',
+            'gb_marker': 'marker_sha256',
+            'gb_commit': 'validated_commit_sha',
+        }[mutation]
+        replacement = 'f' * (40 if field == 'validated_commit_sha' else 64)
+        before = _v3_batch_id_kwargs(pipeline='sk', recovery_provenance=None, upstream_gate_provenance=upstream)
+        after = _v3_batch_id_kwargs(
+            pipeline='sk',
+            recovery_provenance=None,
+            upstream_gate_provenance=replace(upstream, **{field: replacement}),
+        )
+    assert phase0_harness.derive_v3_batch_id(**before) != phase0_harness.derive_v3_batch_id(**after)
+
+
+def test_v3_batch_payload_rejects_unknown_key_string_number_bool_as_int_and_illegal_inventory() -> None:
+    recovery = _recovery_payload(_test_recovery_provenance())
+    payload = {
+        'protocol_version': 3,
+        'comparison_key': 'c' * 64,
+        'profile': 'phase0b-vs-phase0a',
+        'pipeline': 'gb',
+        'phase0a_manifest_sha256': '9' * 64,
+        **asdict(_full_identity()),
+        'recovery_provenance': recovery,
+        'upstream_gate_provenance': None,
+    }
+    invalid_payloads = (
+        payload | {'unknown': None},
+        payload | {'protocol_version': '3'},
+        payload | {'recovery_provenance': recovery | {'parent_attempt': True}},
+        payload | {'recovery_provenance': recovery | {'parent_inventory_entry_count': 135}},
+    )
+    for invalid in invalid_payloads:
+        with pytest.raises(ValueError):
+            phase0_harness._parse_exact_v3_batch_payload(invalid)
+
+
+def test_started_without_sample_is_terminal_and_never_reinvokes_capture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    ledger = _v3_ledger(tmp_path)
+    _record_v3_sample_start(ledger)
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_rust_normal_captured',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('capture must not rerun')),
+    )
+
+    with pytest.raises(HarnessFailure) as caught:
+        AppendOnlyAttemptLedger.create_v3_once(
+            ledger.attempt_directory.parents[1],
+            _full_identity(),
+            comparison_key=ledger.comparison_key,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
+        )
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert (
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity()).terminal_verdict
+        is HarnessVerdict.INCOMPLETE_EVIDENCE
+    )
+
+
+@pytest.mark.parametrize(
+    'terminal',
+    tuple(
+        verdict
+        for verdict in HarnessVerdict
+        if verdict not in (HarnessVerdict.VALIDATED, HarnessVerdict.CLEANUP_FAILED)
+    ),
+)
+def test_v3_failure_terminal_never_creates_sampling_successor(terminal: HarnessVerdict, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.finish(terminal)
+    with pytest.raises(HarnessFailure):
+        AppendOnlyAttemptLedger.create_v3_once(
+            ledger.attempt_directory.parents[1],
+            _full_identity(),
+            comparison_key=ledger.comparison_key,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
+        )
+
+
+def test_cleanup_only_successor_prohibits_all_benchmark_records(tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.finish(HarnessVerdict.CLEANUP_FAILED, primary_verdict=HarnessVerdict.CANDIDATE_FAILED)
+    successor = AppendOnlyAttemptLedger.create_v3_once(
+        ledger.attempt_directory.parents[1],
+        _full_identity(),
+        comparison_key=ledger.comparison_key,
+        phase0a_manifest_sha256='9' * 64,
+        recovery_provenance=_test_recovery_provenance(),
+        upstream_gate_provenance=None,
+    )
+    for operation in (
+        lambda: successor.record_planned_output('wall', 1, 'reference', {}),
+        lambda: successor.record_sample_started(
+            batch_id=successor.batch_id,
+            metric='wall',
+            global_round=1,
+            role='reference',
+            order=('reference', 'candidate'),
+            input_sha256='3' * 64,
+            binary_sha256='1' * 64,
+            planned_output_record_sha256='4' * 64,
+        ),
+        lambda: successor.record_sample('wall', 1, 'reference', {}, sample_started_record_sha256='5' * 64),
+    ):
+        with pytest.raises(HarnessFailure, match='cleanup-only'):
+            operation()
+
+
+def test_committed_state_binds_artifact_and_marker_and_is_sealed(tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.mark_cleanup_complete()
+    artifact_content = '{}'
+    artifact_sha256 = hashlib.sha256(artifact_content.encode('utf-8')).hexdigest()
+    artifact_basename = f'benchmark-v3-{ledger.comparison_key[:16]}.json'
+    marker_basename, marker_sha256 = _expected_v3_marker_identity(artifact_basename, artifact_content)
+    ledger.prepare_evidence(
+        artifact_basename=artifact_basename,
+        artifact_sha256=artifact_sha256,
+        artifact_content=artifact_content,
+        marker_basename=marker_basename,
+        marker_sha256=marker_sha256,
+    )
+    ledger.mark_evidence_committed(artifact_sha256=artifact_sha256, marker_sha256=marker_sha256)
+    loaded = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity())
+    assert loaded.state is AttemptState.EVIDENCE_COMMITTED
+    with pytest.raises(HarnessFailure):
+        loaded.record_sample('wall', 1, 'reference', {}, sample_started_record_sha256='5' * 64)
+
+
+@pytest.mark.parametrize('link_kind', ('file', 'directory'))
+def test_v3_read_only_loader_rejects_reparse_inventory(link_kind: str, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.record_planned_output('wall', 1, 'reference', _v3_planned_payload(batch_id=ledger.batch_id))
+    link = (
+        next((ledger.attempt_directory / 'records').glob('*.json'))
+        if link_kind == 'file'
+        else ledger.attempt_directory / 'records'
+    )
+    target = tmp_path / f'outside-{link_kind}'
+    link.rename(target)
+    try:
+        link.symlink_to(target, target_is_directory=link_kind == 'directory')
+    except OSError as exc:
+        pytest.skip(f'symlink creation is unavailable: {exc}')
+
+    with pytest.raises(HarnessFailure, match='reparse'):
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity())
+
+
+@pytest.mark.parametrize('field', ('input_sha256', 'binary_sha256'))
+def test_v3_sample_identity_must_match_durable_start(field: str, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    _plan_sha, started_sha = _record_v3_sample_start(ledger)
+    payload = _v3_sample_payload(batch_id=ledger.batch_id)
+    payload[field] = 'f' * 64
+
+    with pytest.raises(HarnessFailure, match='identity'):
+        ledger.record_sample(
+            'wall',
+            1,
+            'reference',
+            payload,
+            sample_started_record_sha256=started_sha,
+        )
+
+
+def _expected_v3_marker_identity(artifact_basename: str, artifact_content: str) -> tuple[str, str]:
+    artifact_sha256 = hashlib.sha256(artifact_content.encode('utf-8')).hexdigest()
+    basis = {
+        'schema_version': 1,
+        'artifacts': [{'kind': 'benchmark', 'file_name': artifact_basename, 'sha256': artifact_sha256}],
+    }
+    batch_sha256 = hashlib.sha256(
+        json.dumps(basis, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    ).hexdigest()
+    marker_content = (
+        json.dumps({**basis, 'batch_sha256': batch_sha256}, ensure_ascii=False, indent=2, allow_nan=False) + '\n'
+    )
+    return f'batch-{batch_sha256[:16]}.commit.json', hashlib.sha256(marker_content.encode('utf-8')).hexdigest()
+
+
+@pytest.mark.parametrize('mutation', ('artifact_basename', 'marker_basename'))
+def test_v3_prepared_evidence_binds_exact_artifact_and_marker_names(mutation: str, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.mark_cleanup_complete()
+    artifact_content = '{}'
+    artifact_basename = f'benchmark-v3-{ledger.comparison_key[:16]}.json'
+    if mutation == 'artifact_basename':
+        artifact_basename = 'benchmark-v3-ffffffffffffffff.json'
+    marker_basename, marker_sha256 = _expected_v3_marker_identity(artifact_basename, artifact_content)
+    if mutation == 'marker_basename':
+        marker_basename = 'batch-ffffffffffffffff.commit.json'
+
+    with pytest.raises(HarnessFailure, match='basename|marker'):
+        ledger.prepare_evidence(
+            artifact_basename=artifact_basename,
+            artifact_sha256=hashlib.sha256(artifact_content.encode('utf-8')).hexdigest(),
+            artifact_content=artifact_content,
+            marker_basename=marker_basename,
+            marker_sha256=marker_sha256,
+        )

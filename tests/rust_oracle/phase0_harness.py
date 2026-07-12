@@ -193,6 +193,7 @@ class ApprovedRecoveryParent:
     comparison_profile: Literal[ComparisonProfile.PHASE0B_VS_PHASE0A]
     reference_label: Literal[ClosedBinaryLabel.PHASE0A]
     candidate_label: Literal[ClosedBinaryLabel.PHASE0B]
+    phase0a_manifest_sha256: str
     input_sha256: str
     reference_sha256: str
     candidate_sha256: str
@@ -212,6 +213,7 @@ APPROVED_RECOVERY_PARENTS: tuple[ApprovedRecoveryParent, ...] = (
         comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
         reference_label=ClosedBinaryLabel.PHASE0A,
         candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256='17faa1f08a0601fac52186ab64a4ebb4519312a259c59b7d64e69c748bab56df',
         input_sha256='6aa5e3e7fdc547ebaaef968eb5b95d4d630c4ec9915184f94346f60687b8e7ee',
         reference_sha256='f75f7ee17cc222765537f6bbe02f90e76cd041c55c8990b0261788e6fa63db56',
         candidate_sha256='d06470e4e7c9e6dc8f54efc9d26d996d3cbbbddec04cb7dffef6e6869802b629',
@@ -1888,15 +1890,15 @@ def _is_valid_journal_record_name(name: str) -> bool:
 
 
 def comparison_tree_digest(path: Path) -> ComparisonTreeDigest:
-    root = _safe_harness_path(
-        path,
-        allowed_roots=(_trusted_local_root() / 'batches',),
-        purpose='parent tree',
-        create_parent=False,
-    )
     entries: list[dict[str, object]] = []
-    pending = [root]
     try:
+        root = _safe_harness_path(
+            path,
+            allowed_roots=(_trusted_local_root() / 'batches',),
+            purpose='parent tree',
+            create_parent=False,
+        )
+        pending = [root]
         while pending:
             directory = pending.pop()
             with os.scandir(directory) as scan:
@@ -1928,8 +1930,23 @@ def comparison_tree_digest(path: Path) -> ComparisonTreeDigest:
                         'recovery parent has unknown entry type',
                     )
         entries.sort(key=lambda entry: str(entry['path']))
-        journal = sorted((root / 'journal').glob('*.json'))
-        if not journal or not all(_is_valid_journal_record_name(item.name) for item in journal):
+        with os.scandir(root / 'journal') as scan:
+            journal_entries = sorted(scan, key=lambda child: child.name)
+        journal: list[Path] = []
+        for child in journal_entries:
+            item = Path(child.path)
+            if (
+                child.is_symlink()
+                or _is_reparse_point(item)
+                or not child.is_file(follow_symlinks=False)
+                or not _is_valid_journal_record_name(child.name)
+            ):
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE,
+                    'recovery parent journal is empty or invalid',
+                )
+            journal.append(item)
+        if not journal:
             raise HarnessFailure(
                 HarnessVerdict.INCOMPLETE_EVIDENCE,
                 'recovery parent journal is empty or invalid',
@@ -1948,6 +1965,7 @@ def _approved_parent_matches_static(approved: ApprovedRecoveryParent, static: St
         and approved.comparison_profile is static.comparison_profile
         and approved.reference_label is static.reference_label
         and approved.candidate_label is static.candidate_label
+        and approved.phase0a_manifest_sha256 == static.phase0a_manifest_sha256
         and approved.input_sha256 == static.input_sha256
         and approved.reference_sha256 == static.reference_sha256
         and approved.candidate_sha256 == static.candidate_sha256

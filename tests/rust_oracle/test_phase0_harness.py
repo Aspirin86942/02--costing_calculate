@@ -619,6 +619,7 @@ def _write_synthetic_v2_recovery_parent(
         comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
         reference_label=ClosedBinaryLabel.PHASE0A,
         candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256=static.phase0a_manifest_sha256,
         input_sha256=identity.input_sha256,
         reference_sha256=identity.reference_sha256,
         candidate_sha256=identity.candidate_sha256,
@@ -646,6 +647,10 @@ def _set_synthetic_journal_shape(parent: SyntheticV2Parent, journal_shape: str) 
     elif journal_shape == 'invalid-name':
         latest = sorted(journal.glob('*.json'))[-1]
         latest.rename(journal / 'invalid.json')
+    elif journal_shape == 'junk-file':
+        (journal / 'junk.tmp').write_bytes(b'junk')
+    elif journal_shape == 'directory':
+        (journal / 'extra').mkdir()
     else:
         raise ValueError(f'unknown journal shape: {journal_shape}')
 
@@ -703,7 +708,7 @@ def test_comparison_tree_digest_is_path_order_stable_and_rejects_reparse(
         phase0_harness.comparison_tree_digest(parent.comparison)
 
 
-@pytest.mark.parametrize('journal_shape', ('missing', 'empty', 'invalid-name'))
+@pytest.mark.parametrize('journal_shape', ('missing', 'empty', 'invalid-name', 'junk-file', 'directory'))
 def test_comparison_tree_digest_rejects_invalid_journal(
     journal_shape: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -715,6 +720,44 @@ def test_comparison_tree_digest_rejects_invalid_journal(
     with pytest.raises(HarnessFailure) as caught:
         phase0_harness.comparison_tree_digest(parent.comparison)
     assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+def test_comparison_tree_digest_maps_root_validation_oserror_to_incomplete_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        phase0_harness,
+        '_safe_harness_path',
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError('root validation failed')),
+    )
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.comparison_tree_digest(tmp_path / 'batches' / ('a' * 64))
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+def test_recovery_parent_manifest_drift_fails_before_v3_create_or_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    drifted = replace(parent.static, phase0a_manifest_sha256='6' + parent.static.phase0a_manifest_sha256[1:])
+    monkeypatch.setattr(
+        AppendOnlyAttemptLedger,
+        'create_v3_once',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('v3 create must not run')),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        '_write_create_new',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('authorization must not write')),
+    )
+    before = _tree_bytes(parent.comparison)
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._authorize_v3_recovery(drifted, approved=parent.approved)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert _tree_bytes(parent.comparison) == before
 
 
 @pytest.mark.parametrize('mutation', ('journal', 'attempt-0002', 'unknown-file'))

@@ -104,7 +104,10 @@ def derive_comparison_key(
     ):
         raise ValueError('comparison identity uses a non-closed pipeline/profile/label')
     hashes = (input_sha256, reference_sha256, candidate_sha256)
-    if any(len(value) != 64 or any(character not in '0123456789abcdef' for character in value) for value in hashes):
+    if any(
+        type(value) is not str or len(value) != 64 or any(character not in '0123456789abcdef' for character in value)
+        for value in hashes
+    ):
         raise ValueError('comparison identity hashes must be lowercase SHA-256')
     payload = {
         'protocol_version': protocol_version,

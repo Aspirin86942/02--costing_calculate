@@ -76,6 +76,26 @@ def test_protocol_v2_comparison_key_binds_every_comparison_identity_field() -> N
     assert all(derive_comparison_key(**{**common, **variant}) != base for variant in variants)
 
 
+@pytest.mark.parametrize(
+    'invalid_hash',
+    (None, 1, b'1' * 64, ['1'] * 64, '1' * 63, 'A' * 64),
+)
+def test_protocol_v2_comparison_key_rejects_non_string_or_non_lowercase_sha256(
+    invalid_hash: object,
+) -> None:
+    with pytest.raises(ValueError, match='lowercase SHA-256'):
+        derive_comparison_key(
+            protocol_version=PAIRED_PROTOCOL_VERSION,
+            pipeline='gb',
+            comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+            reference_label=ClosedBinaryLabel.PHASE0A,
+            candidate_label=ClosedBinaryLabel.PHASE0B,
+            input_sha256=invalid_hash,  # type: ignore[arg-type]
+            reference_sha256='2' * 64,
+            candidate_sha256='3' * 64,
+        )
+
+
 def test_one_resolved_metric_cannot_have_ratio_and_absolute_direct_gates() -> None:
     with pytest.raises(ValueError, match='one direct gate'):
         resolve_direct_metric_gate('wall', {'wall_ratio': Decimal('1.05'), 'wall_seconds': Decimal('20')})
@@ -132,6 +152,35 @@ def test_absolute_pws_gate_normalizes_candidate_n10_median() -> None:
     assert diagnostic.direct_gate == 'absolute'
     assert diagnostic.direct_limit == Decimal('2147483648')
     assert diagnostic.normalized_to_limit == Decimal('2150000000') / Decimal('2147483648')
+
+
+@pytest.mark.parametrize(
+    ('metric', 'limits', 'candidate_value', 'normalized', 'expected_near'),
+    (
+        ('wall', {'wall_ratio': Decimal('1')}, '0.97', Decimal('0.97'), True),
+        ('wall', {'wall_ratio': Decimal('1')}, '1.03', Decimal('1.03'), True),
+        ('wall', {'wall_ratio': Decimal('1')}, '0.9699', Decimal('0.9699'), False),
+        ('wall', {'wall_ratio': Decimal('1')}, '1.0301', Decimal('1.0301'), False),
+        ('pws', {'pws_bytes': 100}, '97', Decimal('0.97'), True),
+        ('pws', {'pws_bytes': 100}, '103', Decimal('1.03'), True),
+        ('pws', {'pws_bytes': 100}, '96.99', Decimal('0.9699'), False),
+        ('pws', {'pws_bytes': 100}, '103.01', Decimal('1.0301'), False),
+    ),
+)
+def test_direction_diagnostic_includes_exact_three_percent_boundary(
+    metric: str,
+    limits: dict[str, Decimal | int],
+    candidate_value: str,
+    normalized: Decimal,
+    expected_near: bool,
+) -> None:
+    diagnostic = build_direction_diagnostic(
+        _group(metric=metric, start=1, candidate_value=candidate_value),
+        _group(metric=metric, start=6, candidate_value=candidate_value),
+        limits=limits,
+    )
+    assert diagnostic.normalized_to_limit == normalized
+    assert diagnostic.near_boundary is expected_near
 
 
 def _runtime(*, pipeline: str = 'sk', output_size_bytes: int | None = 1000) -> RuntimeEvidence:

@@ -36,7 +36,6 @@ from tests.rust_oracle.benchmark_protocol import (
 )
 from tests.rust_oracle.evidence import (
     ApprovedSheet,
-    BenchmarkManifestEvidence,
     EvidenceSanitizer,
     SmokeSummaryEvidence,
     expected_benchmark_artifact_name,
@@ -137,7 +136,7 @@ def _request(tmp_path: Path) -> PairedBenchmarkRequest:
 
 
 def _identity() -> BenchmarkIdentity:
-    return BenchmarkIdentity('3' * 8, '1' * 8, '2' * 8, 'head', '4' * 8, '5' * 8)
+    return _full_identity()
 
 
 def _full_identity() -> BenchmarkIdentity:
@@ -197,12 +196,7 @@ def _comparison_key(request: PairedBenchmarkRequest, identity: BenchmarkIdentity
 
 
 def _ledger(tmp_path: Path) -> AppendOnlyAttemptLedger:
-    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
-    return AppendOnlyAttemptLedger.create(
-        local_root / 'batches',
-        _identity(),
-        comparison_key='a' * 64,
-    )
+    return _v3_ledger(tmp_path, comparison_key='a' * 64)
 
 
 def _rewrite_metadata_and_matching_empty_journal(attempt: Path, **changes: object) -> None:
@@ -876,7 +870,7 @@ def _install_runner(
     validation_fail_role: str | None = None,
     exception_role: str | None = None,
     interrupt_role: str | None = None,
-    oracle_sha: str = 'oracle',
+    oracle_sha: str = '8' * 64,
 ) -> list[tuple[str, ...]]:
     commands: list[tuple[str, ...]] = []
 
@@ -897,20 +891,20 @@ def _install_runner(
         return CapturedNormalRun(
             normal_run=NormalRunEvidence(Decimal('1.0'), None, _runtime(pipeline), oracle_sha),
             exit_code=0,
-            local_unversioned_log_sha256='l' * 64,
+            local_unversioned_log_sha256='7' * 64,
         )
 
     monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
-    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda request: _identity())
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda request: _full_identity())
     monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
     return commands
 
 
 def _group_request(tmp_path: Path) -> MetricGroupRequest:
-    ledger = _ledger(tmp_path)
+    ledger = _v3_ledger(tmp_path)
     return MetricGroupRequest(
         _request(tmp_path),
-        'b' * 8,
+        ledger.batch_id,
         'wall',
         build_round_plan(global_round_start=1, round_count=5),
         ledger.attempt_directory,
@@ -925,7 +919,7 @@ def test_formal_group_capture_records_actual_dimensions_when_runtime_omits_them(
 ) -> None:
     _install_runner(monkeypatch, tmp_path)
     request = _group_request(tmp_path)
-    request = replace(request, batch_id='b' * 64, metric=metric)
+    request = replace(request, metric=metric)
 
     def captured(output: Path, *, peak: int | None) -> CapturedNormalRun:
         _write_approved_test_workbook(output)
@@ -953,7 +947,7 @@ def test_formal_group_capture_records_actual_dimensions_when_runtime_omits_them(
     assert {paired.candidate.normal_run.runtime.sheet_dimensions for paired in group.rounds} == {
         _APPROVED_TEST_DIMENSIONS
     }
-    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _full_identity())
     recorded = {
         phase0_harness._sample_from_payload(
             ledger.sample_payload(metric, round_number, role)
@@ -1063,7 +1057,7 @@ def _with_output_sizes(
 
 def _phase0a_baseline(output_size: int = 100) -> phase0_harness._ApprovedPhase0ABaseline:
     return phase0_harness._ApprovedPhase0ABaseline(
-        '5' * 8,
+        _full_identity().machine_fingerprint_sha256,
         output_size,
         (Decimal('1'),) * 5,
         (Decimal('100'),) * 5,
@@ -1199,6 +1193,7 @@ def _install_smoke_capture(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             kwargs['local_root'], kwargs['batch_id'], kwargs['global_round'], kwargs['role']
         )
         for path in (artifacts.result_path, artifacts.stdout_path, artifacts.stderr_path, artifacts.driver_log_path):
+            phase0_harness._io_path(path.parent).mkdir(parents=True, exist_ok=True)
             phase0_harness._io_path(path).write_text('{}', encoding='utf-8')
         output_path = kwargs['output_path']
         assert isinstance(output_path, Path)
@@ -1905,31 +1900,33 @@ def test_wall_group_rejects_input_reference_candidate_or_git_drift(
         run_normal_wall_group(_group_request(tmp_path))
 
 
-def test_wall_group_deletes_workbooks_on_success(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_v3_wall_group_leaves_workbooks_for_outer_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_runner(monkeypatch, tmp_path)
-    run_normal_wall_group(_group_request(tmp_path))
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    request = _group_request(tmp_path)
+    run_normal_wall_group(request)
+    assert len(list((tmp_path / 'data').rglob('*.xlsx'))) == 10
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
-def test_wall_group_deletes_workbooks_after_process_or_oracle_failure(
+def test_v3_wall_group_leaves_failure_artifacts_for_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _install_runner(monkeypatch, tmp_path, fail_role='candidate')
+    request = _group_request(tmp_path)
     with pytest.raises(HarnessFailure):
-        run_normal_wall_group(_group_request(tmp_path))
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+        run_normal_wall_group(request)
+    assert list((tmp_path / 'data').rglob('*.xlsx'))
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
-def test_cleanup_failure_prevents_versionable_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_v3_inner_group_never_attempts_cleanup_or_publication(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _install_runner(monkeypatch, tmp_path)
     monkeypatch.setattr(
         Path,
         'unlink',
         lambda self, **kwargs: (_ for _ in ()).throw(PermissionError('locked')) if self.suffix == '.xlsx' else None,
     )
-    with pytest.raises(HarnessFailure) as caught:
-        run_normal_wall_group(_group_request(tmp_path))
-    assert caught.value.verdict is HarnessVerdict.CLEANUP_FAILED
+    run_normal_wall_group(_group_request(tmp_path))
     assert not _request(tmp_path).evidence_path.exists()
 
 
@@ -1995,16 +1992,16 @@ def test_batch_id_explicitly_contains_protocol_v2_identity(tmp_path: Path) -> No
     assert current != legacy
 
 
-def test_v2_ledger_metadata_records_exact_integer_protocol_version(tmp_path: Path) -> None:
+def test_current_ledger_metadata_records_exact_integer_protocol_version(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     payload = json.loads((ledger.attempt_directory / 'metadata.json').read_text(encoding='utf-8'))
-    assert payload['protocol_version'] == 2
+    assert payload['protocol_version'] == 3
     assert type(payload['protocol_version']) is int
-    assert ledger.protocol_version == 2
-    assert phase0_harness._batch_attempt(ledger, 'b' * 64, AttemptState.CREATED).protocol_version == 2
+    assert ledger.protocol_version == 3
+    assert phase0_harness._batch_attempt(ledger, ledger.batch_id, AttemptState.CREATED).protocol_version == 3
 
 
-@pytest.mark.parametrize('invalid', (True, '2', 0, 3))
+@pytest.mark.parametrize('invalid', (True, '3', 0, 2, 4))
 def test_ledger_rejects_unknown_or_non_integer_protocol_version(invalid: object, tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     _rewrite_metadata_and_matching_empty_journal(ledger.attempt_directory, protocol_version=invalid)
@@ -2028,12 +2025,12 @@ def test_v2_start_does_not_mutate_synthetic_v1_terminal(tmp_path: Path) -> None:
     terminal = v1_attempt / 'terminal.json'
     before = terminal.read_bytes()
     before_sha = hashlib.sha256(before).hexdigest()
-    v2 = AppendOnlyAttemptLedger.create(
-        tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
-        _identity(),
-        comparison_key='b' * 64,
-    )
-    assert v2.attempt_number == 1
+    with pytest.raises(HarnessFailure, match='read-only'):
+        AppendOnlyAttemptLedger.create(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _identity(),
+            comparison_key='b' * 64,
+        )
     assert terminal.read_bytes() == before
     assert hashlib.sha256(terminal.read_bytes()).hexdigest() == before_sha
 
@@ -2042,7 +2039,7 @@ def test_v2_create_refuses_to_append_synthetic_v1_comparison_directory(tmp_path:
     attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
     comparison = attempt.parent
     before = _file_snapshot(comparison)
-    with pytest.raises(HarnessFailure, match='protocol v1') as caught:
+    with pytest.raises(HarnessFailure, match='read-only') as caught:
         AppendOnlyAttemptLedger.create(
             tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
             _identity(),
@@ -2106,7 +2103,7 @@ def test_v2_create_does_not_repair_v1_before_rejecting(
             'artifact_content': record['artifact_content'],
         },
     )
-    with pytest.raises(HarnessFailure, match='protocol v1'):
+    with pytest.raises(HarnessFailure, match='read-only'):
         AppendOnlyAttemptLedger.create(
             tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
             _identity(),
@@ -2163,22 +2160,36 @@ def test_second_round_one_to_five_attempt_is_rejected(tmp_path: Path) -> None:
 
 def test_existing_round_record_cannot_be_overwritten(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.record_sample('wall', 1, 'reference', {'value': 1})
+    _plan_sha, started_sha = _record_v3_sample_start(ledger)
+    payload = _v3_sample_payload(batch_id=ledger.batch_id)
+    ledger.record_sample(
+        'wall',
+        1,
+        'reference',
+        payload,
+        sample_started_record_sha256=started_sha,
+    )
     with pytest.raises(HarnessFailure, match='overwrite'):
-        ledger.record_sample('wall', 1, 'reference', {'value': 2})
+        ledger.record_sample(
+            'wall',
+            1,
+            'reference',
+            payload,
+            sample_started_record_sha256=started_sha,
+        )
 
 
 def test_expanded_group_requires_original_first_group_sha(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    first = ledger.commit_first_group({'wall': 'one', 'pws': 'two'})
+    first = ledger.commit_first_group(_v3_groups())
     with pytest.raises(HarnessFailure, match='first group'):
-        ledger.commit_expanded_group({'wall': 'three'}, first_group_sha256='0' * 64)
-    ledger.commit_expanded_group({'wall': 'three', 'pws': 'four'}, first_group_sha256=first)
+        ledger.commit_expanded_group(_v3_groups(), first_group_sha256='0' * 64)
+    ledger.commit_expanded_group(_v3_groups(), first_group_sha256=first)
 
 
 def test_pws_only_resample_is_rejected(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    with pytest.raises(HarnessFailure, match='wall and pws'):
+    with pytest.raises(HarnessFailure, match='group mapping'):
         ledger.commit_first_group({'pws': 'only'})
 
 
@@ -2420,20 +2431,14 @@ def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) 
         reference_sizes=(101,) * 5,
         candidate_sizes=(110,) * 5,
     )
-    attempt = BatchAttempt(
-        protocol_version=2,
-        comparison_key=_comparison_key(request, identity),
-        batch_id=wall.batch_id,
-        attempt_number=1,
-        state=AttemptState.CLEANUP_COMPLETE,
-        previous_attempt_head_sha256=None,
-        first_group_sha256='a' * 64,
-        expanded_group_sha256=None,
-        ledger_head_sha256='b' * 64,
-        attempt_directory=tmp_path,
-    )
+    ledger = _v3_ledger(tmp_path)
+    wall = replace(wall, batch_id=ledger.batch_id)
+    pws = replace(pws, batch_id=ledger.batch_id)
+    ledger.commit_first_group(phase0_harness._group_commit_payload(wall, pws))
+    ledger.mark_cleanup_complete()
+    attempt = phase0_harness._batch_attempt(ledger, ledger.batch_id, AttemptState.CLEANUP_COMPLETE)
 
-    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
+    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, (), ledger=ledger)
 
     assert {item.role: item.value for item in evidence.output_bytes} == {'reference': 101, 'candidate': 110}
 
@@ -2447,31 +2452,33 @@ def test_expanded_paired_evidence_contains_exact_wall_then_pws_diagnostics(tmp_p
     pws_second = _metric_group('pws', start=6, reference='1', candidate='1.01')
     wall = phase0_harness.merge_metric_groups(wall_first, wall_second)
     pws = phase0_harness.merge_metric_groups(pws_first, pws_second)
-    attempt = BatchAttempt(
-        protocol_version=2,
-        comparison_key=_comparison_key(request, identity),
-        batch_id=wall.batch_id,
-        attempt_number=1,
-        state=AttemptState.CLEANUP_COMPLETE,
-        previous_attempt_head_sha256=None,
-        first_group_sha256='a' * 64,
-        expanded_group_sha256='b' * 64,
-        ledger_head_sha256='c' * 64,
-        attempt_directory=tmp_path,
+    ledger = _v3_ledger(tmp_path)
+    wall_first = replace(wall_first, batch_id=ledger.batch_id)
+    wall_second = replace(wall_second, batch_id=ledger.batch_id)
+    pws_first = replace(pws_first, batch_id=ledger.batch_id)
+    pws_second = replace(pws_second, batch_id=ledger.batch_id)
+    wall = phase0_harness.merge_metric_groups(wall_first, wall_second)
+    pws = phase0_harness.merge_metric_groups(pws_first, pws_second)
+    first_sha = ledger.commit_first_group(phase0_harness._group_commit_payload(wall_first, pws_first))
+    ledger.commit_expanded_group(
+        phase0_harness._group_commit_payload(wall_second, pws_second),
+        first_group_sha256=first_sha,
     )
+    ledger.mark_cleanup_complete()
+    attempt = phase0_harness._batch_attempt(ledger, ledger.batch_id, AttemptState.CLEANUP_COMPLETE)
 
     limits = phase0_harness.COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
     diagnostics = (
         phase0_harness.build_direction_diagnostic(wall_first, wall_second, limits=limits),
         phase0_harness.build_direction_diagnostic(pws_first, pws_second, limits=limits),
     )
-    value = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, diagnostics)
+    value = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, diagnostics, ledger=ledger)
     artifact = EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(value)
 
     assert tuple(item.metric for item in value.direction_diagnostics) == ('wall', 'pws')
     assert value.direction_diagnostics[0].first_group_ratio == Decimal('1.03')
     assert value.direction_diagnostics[0].second_group_ratio == Decimal('0.95')
-    assert artifact.file_name.startswith('benchmark-v2-')
+    assert artifact.file_name.startswith('benchmark-v3-')
 
 
 def test_v2_evidence_rejects_attempt_comparison_key_mismatch(tmp_path: Path) -> None:
@@ -2496,53 +2503,6 @@ def test_v2_evidence_rejects_attempt_comparison_key_mismatch(tmp_path: Path) -> 
         phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
 
     assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
-
-
-def test_loader_repairs_only_tail_committed_record_missing_checkpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
-    original_write = phase0_harness._write_create_new
-    failed = False
-
-    def fail_checkpoint(path: Path, content: bytes, *, allowed_root: Path) -> None:
-        nonlocal failed
-        if path.parent.name == 'checkpoints' and not failed:
-            failed = True
-            raise OSError('checkpoint interrupted')
-        original_write(path, content, allowed_root=allowed_root)
-
-    monkeypatch.setattr(phase0_harness, '_write_create_new', fail_checkpoint)
-    with pytest.raises(OSError, match='checkpoint interrupted'):
-        ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
-
-    recovered = AppendOnlyAttemptLedger.open_current_protocol_for_resume(ledger.attempt_directory, ledger.identity)
-    assert recovered.state is AttemptState.EVIDENCE_COMMITTED
-    assert len(tuple((ledger.attempt_directory / 'records').glob('*.json'))) == len(
-        tuple((ledger.attempt_directory / 'checkpoints').glob('*.json'))
-    )
-
-
-def test_loader_repairs_only_missing_journal_anchor_after_committed_checkpoint(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
-    failed = False
-    original_anchor = ledger._append_journal_anchor
-
-    def fail_anchor() -> str:
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OSError('journal interrupted')
-        return original_anchor()
-
-    monkeypatch.setattr(ledger, '_append_journal_anchor', fail_anchor)
-    with pytest.raises(OSError, match='journal interrupted'):
-        ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
-
-    recovered = AppendOnlyAttemptLedger.open_current_protocol_for_resume(ledger.attempt_directory, ledger.identity)
-    assert recovered.state is AttemptState.EVIDENCE_COMMITTED
 
 
 def _approved_phase0a_payload(*, wall_value: str = '1', pws_value: str = '100') -> dict[str, object]:
@@ -2905,67 +2865,6 @@ def test_equal_to_one_group_direction_is_not_inconclusive(
     )
 
 
-def _prepare_formal_evidence_recovery(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> tuple[PairedBenchmarkRequest, AppendOnlyAttemptLedger, object]:
-    request, _ = _install_formal_paired(monkeypatch, tmp_path)
-    sanitized_input = tmp_path / 'confidential-gb-source.xlsx'
-    sanitized_input.write_bytes(b'input')
-    request = replace(request, input_path=sanitized_input)
-    monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', lambda self, **kwargs: None)
-    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
-    comparison_key = phase0_harness.derive_v2_comparison_key(
-        pipeline=request.pipeline,
-        comparison_profile=request.comparison_profile,
-        reference_label=request.reference_label,
-        candidate_label=request.candidate_label,
-        input_sha256=identity.input_sha256,
-        reference_sha256=identity.reference_sha256,
-        candidate_sha256=identity.candidate_sha256,
-    )
-    ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
-    ledger.commit_first_group({'wall': 'wall', 'pws': 'pws'})
-    ledger.mark_cleanup_complete()
-    batch_id = derive_batch_id(request, identity)
-    wall = replace(_metric_group('wall'), batch_id=batch_id)
-    pws = replace(_metric_group('pws', reference='100', candidate='100'), batch_id=batch_id)
-    attempt = phase0_harness._batch_attempt(ledger, batch_id, AttemptState.CLEANUP_COMPLETE)
-    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
-    artifact = EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(evidence)
-    ledger.prepare_evidence(
-        artifact_basename=artifact.file_name,
-        artifact_sha256=hashlib.sha256(artifact.content.encode('utf-8')).hexdigest(),
-        artifact_content=artifact.content,
-    )
-    return request, ledger, artifact
-
-
-def test_prepared_evidence_recovery_rejects_v1_payload(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    _request, _ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
-    assert isinstance(artifact.source, BenchmarkManifestEvidence)
-    legacy_source = replace(
-        artifact.source,
-        schema_version=1,
-        protocol_version=None,
-        direction_diagnostics=(),
-    )
-    legacy_artifact = EvidenceSanitizer.closed_policy().rebuild_benchmark_manifest(legacy_source)
-    payload = {
-        'artifact_basename': legacy_artifact.file_name,
-        'artifact_sha256': hashlib.sha256(legacy_artifact.content.encode('utf-8')).hexdigest(),
-        'artifact_content': legacy_artifact.content,
-    }
-
-    with pytest.raises(HarnessFailure) as caught:
-        phase0_harness._rebuild_prepared_artifact(payload)
-
-    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
-
-
 def test_paired_batch_rejects_evidence_basename_that_differs_from_typed_artifact(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -3014,41 +2913,49 @@ def test_wall_and_pws_groups_share_attempt_batch_and_n(monkeypatch: pytest.Monke
     assert_same_benchmark_batch(wall, pws)
 
 
-def test_interrupted_attempt_resumes_only_missing_samples(
+def test_interrupted_v3_attempt_never_retries_started_sample(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     first_commands = _install_runner(monkeypatch, tmp_path, interrupt_role='candidate')
-    with pytest.raises(KeyboardInterrupt):
-        run_normal_wall_group(_group_request(tmp_path))
+    request = _group_request(tmp_path)
+    with pytest.raises(HarnessFailure) as first:
+        run_normal_wall_group(request)
+    assert first.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
     assert [item[0] for item in first_commands] == ['reference', 'candidate']
 
     resumed_commands = _install_runner(monkeypatch, tmp_path)
-    run_normal_wall_group(_group_request(tmp_path))
-    assert resumed_commands[0][0] == 'candidate'
-    assert len(resumed_commands) == 9
+    with pytest.raises(HarnessFailure, match='started sample'):
+        run_normal_wall_group(request)
+    assert resumed_commands == []
 
 
 def test_failed_candidate_sha_cannot_be_retried(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     ledger.finish(HarnessVerdict.CANDIDATE_FAILED)
-    with pytest.raises(HarnessFailure, match='candidate SHA'):
-        AppendOnlyAttemptLedger.create(
+    with pytest.raises(HarnessFailure, match='sealed'):
+        AppendOnlyAttemptLedger.create_v3_once(
             tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
             _identity(),
             comparison_key='a' * 64,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
         )
 
 
-def test_environment_recovery_attempt_links_previous_ledger_head(tmp_path: Path) -> None:
+def test_environment_terminal_never_creates_sampling_successor(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     ledger.finish(HarnessVerdict.ENVIRONMENT_DRIFT)
-    recovered = AppendOnlyAttemptLedger.create(
-        tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
-        _identity(),
-        comparison_key='a' * 64,
-    )
-    assert recovered.previous_attempt_head_sha256 == ledger.head_sha256
+    with pytest.raises(HarnessFailure, match='sealed'):
+        AppendOnlyAttemptLedger.create_v3_once(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _identity(),
+            comparison_key='a' * 64,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
+        )
 
 
 def test_terminal_verdict_is_unique_and_cannot_change_retry_eligibility(tmp_path: Path) -> None:
@@ -3059,10 +2966,15 @@ def test_terminal_verdict_is_unique_and_cannot_change_retry_eligibility(tmp_path
     with pytest.raises(HarnessFailure, match='terminal'):
         ledger.finish(HarnessVerdict.ENVIRONMENT_DRIFT)
     with pytest.raises(HarnessFailure, match='terminal'):
-        ledger.record_sample('wall', 2, 'reference', {'value': 2})
+        ledger.record_planned_output(
+            'wall',
+            2,
+            'reference',
+            _v3_planned_payload(batch_id=ledger.batch_id, global_round=2),
+        )
 
 
-def test_candidate_failure_is_terminal_before_wall_runner_raises(
+def test_candidate_failure_is_left_for_outer_terminal_owner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3072,11 +2984,10 @@ def test_candidate_failure_is_terminal_before_wall_runner_raises(
         run_normal_wall_group(request)
     assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
     loaded = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
-    assert loaded.terminal_verdict is HarnessVerdict.CANDIDATE_FAILED
-    assert loaded.terminal_raw_log_sha256 == 'f' * 64
+    assert loaded.terminal_verdict is None
 
 
-def test_correctness_failure_is_terminal_with_raw_log_sha(
+def test_correctness_failure_preserves_raw_log_for_outer_terminal_owner(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3086,11 +2997,11 @@ def test_correctness_failure_is_terminal_with_raw_log_sha(
         run_normal_wall_group(request)
     assert caught.value.verdict is HarnessVerdict.CORRECTNESS_FAILED
     loaded = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
-    assert loaded.terminal_verdict is HarnessVerdict.CORRECTNESS_FAILED
-    assert loaded.terminal_raw_log_sha256 == 'e' * 64
+    assert caught.value.raw_log_sha256 == 'e' * 64
+    assert loaded.terminal_verdict is None
 
 
-def test_wall_dimension_mismatch_is_terminal_and_cleans_captured_artifacts(
+def test_wall_dimension_mismatch_preserves_artifacts_for_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3119,10 +3030,9 @@ def test_wall_dimension_mismatch_is_terminal_and_cleans_captured_artifacts(
     assert caught.value.verdict is HarnessVerdict.CORRECTNESS_FAILED
     assert caught.value.raw_log_sha256 == raw_log_sha256
     loaded = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
-    assert loaded.terminal_verdict is HarnessVerdict.CORRECTNESS_FAILED
-    assert loaded.terminal_raw_log_sha256 == raw_log_sha256
-    assert not raw_log.exists()
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    assert loaded.terminal_verdict is None
+    assert raw_log.exists()
+    assert list((tmp_path / 'data').rglob('*.xlsx'))
     assert not request.benchmark.evidence_path.exists()
 
 
@@ -3136,15 +3046,19 @@ def test_capture_boundary_exception_maps_to_closed_terminal_verdict(
         run_normal_wall_group(request)
     assert caught.value.verdict is HarnessVerdict.CORRECTNESS_FAILED
     assert isinstance(caught.value.__cause__, RuntimeError)
-    assert (
-        AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict
-        is HarnessVerdict.CORRECTNESS_FAILED
-    )
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
 def test_sealed_attempt_rejects_deleted_tail_sample(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.record_sample('wall', 1, 'candidate', {'value': 1})
+    _plan_sha, started_sha = _record_v3_sample_start(ledger, role='candidate')
+    ledger.record_sample(
+        'wall',
+        1,
+        'candidate',
+        _v3_sample_payload(batch_id=ledger.batch_id, role='candidate'),
+        sample_started_record_sha256=started_sha,
+    )
     ledger.finish(HarnessVerdict.CANDIDATE_FAILED)
     sample_record = next((ledger.attempt_directory / 'records').glob('*-sample.json'))
     sample_record.unlink()
@@ -3156,29 +3070,43 @@ def test_comparison_journal_rejects_deleted_terminal(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
     ledger.finish(HarnessVerdict.CANDIDATE_FAILED)
     (ledger.attempt_directory / 'terminal.json').unlink()
-    with pytest.raises(HarnessFailure, match='journal'):
+    with pytest.raises(HarnessFailure, match='journal|sequence'):
         AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
 
 
 def test_comparison_journal_rejects_tail_record_and_checkpoint_rollback(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.record_sample('wall', 1, 'candidate', {'value': 1})
+    _plan_sha, started_sha = _record_v3_sample_start(ledger, role='candidate')
+    ledger.record_sample(
+        'wall',
+        1,
+        'candidate',
+        _v3_sample_payload(batch_id=ledger.batch_id, role='candidate'),
+        sample_started_record_sha256=started_sha,
+    )
     next((ledger.attempt_directory / 'records').glob('*-sample.json')).unlink()
     next((ledger.attempt_directory / 'checkpoints').glob('*.json')).unlink()
-    with pytest.raises(HarnessFailure, match='journal'):
+    with pytest.raises(HarnessFailure, match='journal|sequence'):
         AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
 
 
 def test_unsealed_attempt_does_not_turn_deleted_candidate_sample_into_missing(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.record_sample('wall', 1, 'candidate', {'value': 1})
+    _plan_sha, started_sha = _record_v3_sample_start(ledger, role='candidate')
+    ledger.record_sample(
+        'wall',
+        1,
+        'candidate',
+        _v3_sample_payload(batch_id=ledger.batch_id, role='candidate'),
+        sample_started_record_sha256=started_sha,
+    )
     sample_record = next((ledger.attempt_directory / 'records').glob('*-sample.json'))
     sample_record.unlink()
     with pytest.raises(HarnessFailure, match='checkpoint'):
         AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
 
 
-def test_transient_cleanup_failure_is_closed_and_outer_retry_removes_workbook(
+def test_inner_group_does_not_consume_outer_cleanup_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3194,13 +3122,12 @@ def test_transient_cleanup_failure_is_closed_and_outer_retry_removes_workbook(
         real_remove(path)
 
     monkeypatch.setattr(phase0_harness, '_remove_workbook', transient)
-    with pytest.raises(HarnessFailure) as caught:
-        run_normal_wall_group(_group_request(tmp_path))
-    assert caught.value.verdict is HarnessVerdict.ENVIRONMENT_DRIFT
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    run_normal_wall_group(_group_request(tmp_path))
+    assert failures_left == 1
+    assert list((tmp_path / 'data').rglob('*.xlsx'))
 
 
-def test_persistent_cleanup_failure_preserves_primary_verdict(
+def test_inner_failure_does_not_invoke_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3219,11 +3146,11 @@ def test_persistent_cleanup_failure_preserves_primary_verdict(
     monkeypatch.setattr(phase0_harness, '_remove_workbook', fail_after_reference)
     with pytest.raises(HarnessFailure) as caught:
         run_normal_wall_group(_group_request(tmp_path))
-    assert caught.value.verdict is HarnessVerdict.CLEANUP_FAILED
-    assert caught.value.primary_verdict is HarnessVerdict.CANDIDATE_FAILED
+    assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
+    assert calls == 0
 
 
-def test_cleanup_recovery_attempt_cleans_historical_planned_outputs_before_resume(
+def test_cleanup_recovery_successor_never_runs_benchmark_child(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -3232,46 +3159,35 @@ def test_cleanup_recovery_attempt_cleans_historical_planned_outputs_before_resum
         'wall',
         1,
         'reference',
-        {
-            'pipeline': 'gb',
-            'batch_id': 'b' * 32,
-            'metric': 'wall',
-            'binary_sha256': '1' * 64,
-            'global_round': 1,
-            'role': 'reference',
-            'relative_path': 'gb/.perf-runs/' + '/'.join(('b' * 32, 'wall', '1' * 64, '1', 'reference.xlsx')),
-        },
+        _v3_planned_payload(batch_id=ledger.batch_id),
     )
     monkeypatch.setattr(phase0_harness, 'repo_root', lambda: tmp_path)
     historical = phase0_harness._planned_paths(ledger.all_planned_output_payloads())[0]
     historical.write_bytes(b'partial')
     ledger.finish(HarnessVerdict.CLEANUP_FAILED, primary_verdict=HarnessVerdict.CANDIDATE_FAILED)
-    recovered = AppendOnlyAttemptLedger.create(
+    recovered = AppendOnlyAttemptLedger.create_v3_once(
         tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
         _identity(),
         comparison_key='a' * 64,
+        phase0a_manifest_sha256='9' * 64,
+        recovery_provenance=_test_recovery_provenance(),
+        upstream_gate_provenance=None,
     )
     assert recovered.all_planned_output_payloads()
     assert recovered.cleanup_only is True
     commands = _install_runner(monkeypatch, tmp_path)
     request = MetricGroupRequest(
         _request(tmp_path),
-        'b' * 8,
+        recovered.batch_id,
         'wall',
         build_round_plan(global_round_start=1, round_count=5),
         recovered.attempt_directory,
     )
     with pytest.raises(HarnessFailure) as caught:
         run_normal_wall_group(request)
-    assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
     assert commands == []
-    assert not historical.exists()
-    with pytest.raises(HarnessFailure, match='candidate SHA'):
-        AppendOnlyAttemptLedger.create(
-            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
-            _identity(),
-            comparison_key='a' * 64,
-        )
+    assert historical.exists()
 
 
 def test_cleanup_only_ledger_rejects_benchmark_records_but_can_finish(tmp_path: Path) -> None:
@@ -3287,11 +3203,16 @@ def test_cleanup_only_ledger_rejects_benchmark_records_but_can_finish(tmp_path: 
 
 def test_success_ledger_rejects_benchmark_records_after_cleanup(tmp_path: Path) -> None:
     ledger = _ledger(tmp_path)
-    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.commit_first_group(_v3_groups())
     ledger.mark_cleanup_complete()
 
     with pytest.raises(HarnessFailure, match='cleanup|success'):
-        ledger.record_sample('wall', 1, 'reference', {'value': 1})
+        ledger.record_planned_output(
+            'wall',
+            1,
+            'reference',
+            _v3_planned_payload(batch_id=ledger.batch_id),
+        )
 
     with pytest.raises(HarnessFailure, match='evidence success'):
         ledger.mark_evidence_committed(artifact_sha256='8' * 64)
@@ -3323,19 +3244,25 @@ def test_wall_runner_requires_repository_trusted_local_roots(
 def test_attempt_ledger_rejects_non_closed_comparison_key(comparison_key: str, tmp_path: Path) -> None:
     local_root = tmp_path / 'rust' / 'target' / 'perf-local'
     with pytest.raises(HarnessFailure, match='comparison_key'):
-        AppendOnlyAttemptLedger.create(
+        AppendOnlyAttemptLedger.create_v3_once(
             local_root / 'batches',
             _identity(),
             comparison_key=comparison_key,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
         )
 
 
 def test_attempt_ledger_rejects_root_outside_local_root(tmp_path: Path) -> None:
     with pytest.raises(HarnessFailure, match='local root'):
-        AppendOnlyAttemptLedger.create(
+        AppendOnlyAttemptLedger.create_v3_once(
             tmp_path / 'outside',
             _identity(),
             comparison_key='a' * 64,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
         )
 
 
@@ -3350,10 +3277,13 @@ def test_attempt_ledger_rejects_raw_symlink_component(tmp_path: Path) -> None:
     except OSError as exc:
         pytest.skip(f'symlink creation is unavailable: {exc}')
     with pytest.raises(HarnessFailure, match='reparse|symlink'):
-        AppendOnlyAttemptLedger.create(
+        AppendOnlyAttemptLedger.create_v3_once(
             linked,
             _identity(),
             comparison_key='a' * 64,
+            phase0a_manifest_sha256='9' * 64,
+            recovery_provenance=_test_recovery_provenance(),
+            upstream_gate_provenance=None,
         )
 
 
@@ -3618,7 +3548,16 @@ def test_outer_paired_runner_cleans_and_seals_interrupted_started_sample_once(
     )
     monkeypatch.setattr(phase0_harness, '_run_git', lambda *_args: '')
     monkeypatch.setattr(phase0_harness, '_capture_identity', lambda _request: _full_identity())
-    monkeypatch.setattr(phase0_harness, '_load_approved_phase0a_baseline', lambda *_args: _phase0a_baseline(8))
+    monkeypatch.setattr(
+        phase0_harness,
+        '_load_approved_phase0a_baseline',
+        lambda *_args: phase0_harness._ApprovedPhase0ABaseline(
+            _full_identity().machine_fingerprint_sha256,
+            8,
+            (Decimal('1'),) * 5,
+            (Decimal('1'),) * 5,
+        ),
+    )
     cleanup_calls = 0
     original_cleanup = phase0_harness._cleanup_all
 
@@ -3725,7 +3664,7 @@ def test_formal_v3_runner_publishes_current_typed_evidence_after_cleanup(
             value = _metric_group('wall', reference='1', candidate='0.90')
         else:
             value = _metric_group('pws', reference='100', candidate='900')
-        return replace(value, batch_id=group_request.batch_id)
+        return _record_durable_v3_group(group_request, value)
 
     publications: list[dict[str, object]] = []
     monkeypatch.setattr(phase0_harness, 'run_normal_wall_group', group)
@@ -3748,6 +3687,507 @@ def test_formal_v3_runner_publishes_current_typed_evidence_after_cleanup(
     assert artifacts[0].source.schema_version == artifacts[0].source.protocol_version == 3
     committed = AppendOnlyAttemptLedger.load_read_only(result.attempt.attempt_directory, _full_identity())
     assert phase0_harness.classify_v3_attempt_state(committed) == 'EVIDENCE_COMMITTED'
+    assert len(committed._plan_payloads) == 20
+    assert len(committed._sample_started_payloads) == 20
+    assert len(committed._sample_payloads) == 20
+
+
+def _install_formal_v3_test_request(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    state: str = 'NEW',
+    ledger: AppendOnlyAttemptLedger | None = None,
+) -> tuple[PairedBenchmarkRequest, str]:
+    request = _request(tmp_path)
+    comparison_key = 'c' * 64
+    evidence_root = tmp_path / 'docs' / 'performance' / 'runs' / 'phase0b-v3'
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    request = replace(
+        request,
+        evidence_path=evidence_root
+        / expected_benchmark_artifact_name(protocol_version=3, comparison_key=comparison_key),
+    )
+    static = StaticComparisonInputs(
+        pipeline='gb',
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        phase0a_manifest_sha256='9' * 64,
+        input_sha256=_full_identity().input_sha256,
+        reference_sha256=_full_identity().reference_sha256,
+        candidate_sha256=_full_identity().candidate_sha256,
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'derive_expected_formal_v3_identity',
+        lambda _request: phase0_harness.ExpectedFormalV3Identity(
+            static,
+            _test_recovery_provenance(),
+            comparison_key,
+            request.evidence_path.name,
+            state,
+            ledger,
+        ),
+    )
+    monkeypatch.setattr(phase0_harness, '_run_git', lambda *_args: '')
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda _request: _full_identity())
+    monkeypatch.setattr(
+        phase0_harness,
+        '_load_approved_phase0a_baseline',
+        lambda *_args: phase0_harness._ApprovedPhase0ABaseline(
+            _full_identity().machine_fingerprint_sha256,
+            8,
+            (Decimal('1'),) * 5,
+            (Decimal('1'),) * 5,
+        ),
+    )
+    monkeypatch.setattr(EvidenceSanitizer, 'write_batch', lambda self, **_kwargs: None)
+    return request, comparison_key
+
+
+def _record_durable_v3_group(group_request: MetricGroupRequest, group: MetricGroup) -> MetricGroup:
+    ledger = AppendOnlyAttemptLedger.open_v3_for_resume(group_request.attempt_directory, _full_identity())
+    durable = replace(group, batch_id=ledger.batch_id)
+    for paired in durable.rounds:
+        for role, sample in (('reference', paired.reference), ('candidate', paired.candidate)):
+            payload = phase0_harness._planned_output_payload(
+                group_request,
+                _full_identity(),
+                paired.plan.global_round,
+                role,
+            )
+            plan_sha = ledger.record_planned_output(
+                group_request.metric,
+                paired.plan.global_round,
+                role,
+                payload,
+            )
+            started_sha = ledger.record_sample_started(
+                batch_id=ledger.batch_id,
+                metric=group_request.metric,
+                global_round=paired.plan.global_round,
+                role=role,
+                order=paired.plan.order,
+                input_sha256=_full_identity().input_sha256,
+                binary_sha256=(
+                    _full_identity().reference_sha256 if role == 'reference' else _full_identity().candidate_sha256
+                ),
+                planned_output_record_sha256=plan_sha,
+            )
+            ledger.record_sample(
+                group_request.metric,
+                paired.plan.global_round,
+                role,
+                phase0_harness._sample_to_payload(sample, batch_id=ledger.batch_id),
+                sample_started_record_sha256=started_sha,
+            )
+    return durable
+
+
+@pytest.mark.parametrize('boundary', ('validate_metric_group', 'assert_same_benchmark_batch', 'merge_metric_groups'))
+def test_v3_semantic_value_error_after_durable_samples_is_outer_sealed_once(
+    boundary: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, comparison_key = _install_formal_v3_test_request(monkeypatch, tmp_path)
+    cleanup_calls = 0
+    original_cleanup = phase0_harness._cleanup_all
+
+    def cleanup(paths: list[Path]) -> tuple[str, ...]:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return original_cleanup(paths)
+
+    def group(group_request: MetricGroupRequest) -> MetricGroup:
+        start = group_request.plans[0].global_round
+        value = _metric_group(
+            group_request.metric,
+            start=start,
+            reference='1',
+            candidate='1' if group_request.metric == 'pws' else '0.90',
+        )
+        durable = _record_durable_v3_group(group_request, value)
+        if boundary == 'validate_metric_group':
+            phase0_harness.validate_metric_group(durable)
+        return durable
+
+    monkeypatch.setattr(phase0_harness, '_cleanup_all', cleanup)
+    monkeypatch.setattr(phase0_harness, 'run_normal_wall_group', group)
+    monkeypatch.setattr(phase0_harness, 'run_pws_group', group)
+    monkeypatch.setattr(
+        phase0_harness,
+        boundary,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError(f'{boundary} semantic failure')),
+    )
+    if boundary == 'merge_metric_groups':
+        monkeypatch.setattr(phase0_harness, '_paired_groups_require_expansion', lambda *_args: True)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert cleanup_calls == 1
+    attempt = request.attempt_ledger_root / comparison_key / 'attempt-0001'
+    sealed = AppendOnlyAttemptLedger.load_read_only(attempt, _full_identity())
+    assert sealed.terminal_verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert len(sealed._sample_payloads) >= 10
+
+    with pytest.raises(HarnessFailure):
+        phase0_harness.run_paired_normal_batch(request)
+    assert cleanup_calls == 1
+
+
+def test_phase0b_v3_pws_only_diagnostic_boundary_requires_paired_expansion(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    wall = _metric_group('wall', reference='1', candidate='0.80')
+    pws = _metric_group('pws', reference='1', candidate='0.98')
+
+    assert phase0_harness._paired_groups_require_expansion(request, wall, pws)
+
+
+def _preload_durable_v3_group_pair(
+    request: PairedBenchmarkRequest,
+    ledger: AppendOnlyAttemptLedger,
+    *,
+    start: int,
+    wall_candidate: str,
+    pws_candidate: str,
+    first_group_sha256: str | None = None,
+) -> tuple[MetricGroup, MetricGroup]:
+    plans = build_round_plan(global_round_start=start, round_count=5)  # type: ignore[arg-type]
+    wall_request = MetricGroupRequest(
+        request,
+        ledger.batch_id,
+        'wall',
+        plans,
+        ledger.attempt_directory,
+        first_group_sha256=first_group_sha256,
+    )
+    pws_request = replace(wall_request, metric='pws')
+    wall = _record_durable_v3_group(
+        wall_request,
+        _metric_group('wall', start=start, reference='1', candidate=wall_candidate),
+    )
+    pws = _record_durable_v3_group(
+        pws_request,
+        _metric_group('pws', start=start, reference='1', candidate=pws_candidate),
+    )
+    return wall, pws
+
+
+def test_v3_first_group_complete_reuses_durable_rounds_without_duplicate_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger = _v3_ledger(tmp_path)
+    request, _comparison_key = _install_formal_v3_test_request(monkeypatch, tmp_path)
+    wall, pws = _preload_durable_v3_group_pair(
+        request,
+        ledger,
+        start=1,
+        wall_candidate='0.80',
+        pws_candidate='9',
+    )
+    ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, _full_identity())
+    first_sha = ledger.commit_first_group(phase0_harness._group_commit_payload(wall, pws))
+    first_record = next((ledger.attempt_directory / 'records').glob('*first-group.json')).read_bytes()
+    sealed = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity())
+    _install_formal_v3_test_request(
+        monkeypatch,
+        tmp_path,
+        state='FIRST_GROUP_COMPLETE',
+        ledger=sealed,
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_normal_wall_group',
+        lambda _request: (_ for _ in ()).throw(AssertionError('durable first group must be reused')),
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_pws_group',
+        lambda _request: (_ for _ in ()).throw(AssertionError('durable first group must be reused')),
+    )
+
+    result = phase0_harness.run_paired_normal_batch(request)
+
+    assert result.verdict is HarnessVerdict.VALIDATED
+    assert result.wall == wall
+    assert result.pws == pws
+    assert next((ledger.attempt_directory / 'records').glob('*first-group.json')).read_bytes() == first_record
+    assert (
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity()).first_group_sha256
+        == first_sha
+    )
+
+
+def test_v3_expanded_group_complete_reuses_all_durable_rounds_without_child_or_group_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ledger = _v3_ledger(tmp_path)
+    request, _comparison_key = _install_formal_v3_test_request(monkeypatch, tmp_path)
+    wall_first, pws_first = _preload_durable_v3_group_pair(
+        request,
+        ledger,
+        start=1,
+        wall_candidate='0.80',
+        pws_candidate='0.98',
+    )
+    ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, _full_identity())
+    first_sha = ledger.commit_first_group(phase0_harness._group_commit_payload(wall_first, pws_first))
+    wall_second, pws_second = _preload_durable_v3_group_pair(
+        request,
+        ledger,
+        start=6,
+        wall_candidate='0.80',
+        pws_candidate='0.98',
+        first_group_sha256=first_sha,
+    )
+    ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, _full_identity())
+    ledger.commit_expanded_group(
+        phase0_harness._group_commit_payload(wall_second, pws_second),
+        first_group_sha256=first_sha,
+    )
+    group_records = {
+        path.name: path.read_bytes() for path in (ledger.attempt_directory / 'records').glob('*group.json')
+    }
+    sealed = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, _full_identity())
+    _install_formal_v3_test_request(
+        monkeypatch,
+        tmp_path,
+        state='EXPANDED_GROUP_COMPLETE',
+        ledger=sealed,
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_normal_wall_group',
+        lambda _request: (_ for _ in ()).throw(AssertionError('durable expanded group must be reused')),
+    )
+    monkeypatch.setattr(
+        phase0_harness,
+        'run_pws_group',
+        lambda _request: (_ for _ in ()).throw(AssertionError('durable expanded group must be reused')),
+    )
+
+    result = phase0_harness.run_paired_normal_batch(request)
+
+    assert result.verdict is HarnessVerdict.VALIDATED
+    assert len(result.wall.rounds) == len(result.pws.rounds) == 10
+    assert {
+        path.name: path.read_bytes() for path in (ledger.attempt_directory / 'records').glob('*group.json')
+    } == group_records
+
+
+@pytest.mark.parametrize('cleanup_error', (('PermissionError:13',), ('OSError:28',)))
+def test_v3_success_cleanup_failure_is_called_once_and_sealed_with_validated_primary(
+    cleanup_error: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, comparison_key = _install_formal_v3_test_request(monkeypatch, tmp_path)
+    cleanup_calls = 0
+
+    def group(group_request: MetricGroupRequest) -> MetricGroup:
+        value = _metric_group(
+            group_request.metric,
+            reference='1',
+            candidate='9' if group_request.metric == 'pws' else '0.80',
+        )
+        return _record_durable_v3_group(group_request, value)
+
+    def cleanup(_paths: list[Path]) -> tuple[str, ...]:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return cleanup_error
+
+    monkeypatch.setattr(phase0_harness, 'run_normal_wall_group', group)
+    monkeypatch.setattr(phase0_harness, 'run_pws_group', group)
+    monkeypatch.setattr(phase0_harness, '_cleanup_all', cleanup)
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+
+    assert cleanup_calls == 1
+    assert caught.value.verdict is HarnessVerdict.CLEANUP_FAILED
+    assert caught.value.primary_verdict is HarnessVerdict.VALIDATED
+    sealed = AppendOnlyAttemptLedger.load_read_only(
+        request.attempt_ledger_root / comparison_key / 'attempt-0001',
+        _full_identity(),
+    )
+    assert sealed.terminal_verdict is HarnessVerdict.CLEANUP_FAILED
+    assert sealed.terminal_primary_verdict is HarnessVerdict.VALIDATED
+
+
+def test_v3_terminal_allows_validated_primary_only_for_cleanup_failure(tmp_path: Path) -> None:
+    valid = _v3_ledger(tmp_path, comparison_key='c' * 64)
+    valid.finish(HarnessVerdict.CLEANUP_FAILED, primary_verdict=HarnessVerdict.VALIDATED)
+    loaded = AppendOnlyAttemptLedger.load_read_only(valid.attempt_directory, _full_identity())
+    assert loaded.terminal_primary_verdict is HarnessVerdict.VALIDATED
+
+    invalid = _v3_ledger(tmp_path, comparison_key='d' * 64)
+    with pytest.raises(HarnessFailure, match='VALIDATED|primary'):
+        invalid.finish(HarnessVerdict.CANDIDATE_FAILED, primary_verdict=HarnessVerdict.VALIDATED)
+
+
+@pytest.mark.parametrize(
+    ('metric', 'failure_boundary'),
+    (
+        ('wall', 'dimensions'),
+        ('pws', 'dimensions'),
+        ('wall', 'identity'),
+        ('pws', 'identity'),
+        ('wall', 'record_sample'),
+    ),
+)
+def test_v3_capture_registers_raw_log_before_post_capture_failure(
+    metric: str,
+    failure_boundary: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, comparison_key = _install_formal_v3_test_request(monkeypatch, tmp_path)
+    raw_log_sha256 = hashlib.sha256(f'{metric}:{failure_boundary}'.encode()).hexdigest()
+    raw_log = request.local_root / 'raw-logs' / f'{raw_log_sha256}.json'
+    capture_returned = False
+    pws_paths: tuple[Path, ...] = ()
+
+    def capture(*args: object, **kwargs: object) -> CapturedNormalRun:
+        nonlocal capture_returned, pws_paths
+        output = Path(args[3]) if metric == 'wall' else Path(kwargs['output_path'])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b'partial')
+        raw_log.parent.mkdir(parents=True, exist_ok=True)
+        raw_log.write_text('{}', encoding='utf-8')
+        if metric == 'pws':
+            artifacts = phase0_harness._pws_local_artifact_paths(
+                request.local_root,
+                kwargs['batch_id'],
+                kwargs['global_round'],
+                kwargs['role'],
+            )
+            pws_paths = (
+                artifacts.result_path,
+                artifacts.stdout_path,
+                artifacts.stderr_path,
+                artifacts.driver_log_path,
+            )
+            for path in pws_paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('{}', encoding='utf-8')
+        capture_returned = True
+        return CapturedNormalRun(
+            NormalRunEvidence(
+                Decimal('1'),
+                100 if metric == 'pws' else None,
+                _runtime(),
+                '8' * 64,
+            ),
+            0,
+            raw_log_sha256,
+        )
+
+    def capture_identity(_request: PairedBenchmarkRequest) -> BenchmarkIdentity:
+        if failure_boundary == 'identity' and capture_returned:
+            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'post-capture identity changed')
+        return _full_identity()
+
+    if metric == 'pws':
+
+        def wall_group(group_request: MetricGroupRequest) -> MetricGroup:
+            return _record_durable_v3_group(
+                group_request,
+                _metric_group('wall', reference='1', candidate='0.80'),
+            )
+
+        monkeypatch.setattr(phase0_harness, 'run_normal_wall_group', wall_group)
+        monkeypatch.setattr(phase0_harness, '_invoke_pws_single_sample', capture)
+    else:
+        monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', capture)
+    monkeypatch.setattr(phase0_harness, '_capture_identity', capture_identity)
+    if failure_boundary == 'dimensions':
+        monkeypatch.setattr(
+            phase0_harness,
+            '_with_actual_workbook_dimensions',
+            lambda *_args: (_ for _ in ()).throw(
+                HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'dimension enrichment failed')
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            phase0_harness,
+            '_with_actual_workbook_dimensions',
+            lambda captured, _output: captured,
+        )
+    if failure_boundary == 'record_sample':
+        monkeypatch.setattr(
+            AppendOnlyAttemptLedger,
+            'record_sample',
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample structure is invalid')
+            ),
+        )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+
+    assert caught.value.raw_log_sha256 == raw_log_sha256
+    assert not raw_log.exists()
+    assert not list((tmp_path / 'data' / 'processed').rglob('*.xlsx'))
+    assert all(not path.exists() for path in pws_paths)
+    sealed = AppendOnlyAttemptLedger.load_read_only(
+        request.attempt_ledger_root / comparison_key / 'attempt-0001',
+        _full_identity(),
+    )
+    assert sealed.terminal_raw_log_sha256 == raw_log_sha256
+
+
+def test_protocol_v2_formal_create_append_finish_and_metric_runners_are_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    ledger = AppendOnlyAttemptLedger.load_read_only(
+        parent.comparison / 'attempt-0001',
+        _full_identity(),
+    )
+    request = MetricGroupRequest(
+        _request(tmp_path),
+        'b' * 8,
+        'wall',
+        build_round_plan(global_round_start=1, round_count=5),
+        ledger.attempt_directory,
+    )
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda _request: _full_identity())
+    before = _file_snapshot(parent.comparison)
+
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        AppendOnlyAttemptLedger.create(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _full_identity(),
+            comparison_key='b' * 64,
+        )
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        ledger.record_sample('wall', 1, 'reference', {'value': 1})
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        ledger.finish(HarnessVerdict.INCOMPLETE_EVIDENCE)
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        run_normal_wall_group(request)
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        phase0_harness.run_pws_group(replace(request, metric='pws'))
+    attempt = phase0_harness._batch_attempt(ledger, '9' * 64, AttemptState.FAILED)
+    with pytest.raises(HarnessFailure, match='read-only|protocol v2'):
+        phase0_harness._build_paired_evidence(
+            _request(tmp_path),
+            _metric_group('wall'),
+            _metric_group('pws'),
+            attempt,
+            _full_identity(),
+            (),
+        )
+    assert _file_snapshot(parent.comparison) == before
 
 
 def _v3_planned_payload(
@@ -4429,23 +4869,6 @@ def test_v3_scalar_grammar_rejects_bool_number_and_null_confusion(
 
     with pytest.raises(HarnessFailure):
         AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, ledger.identity)
-
-
-def test_v2_committed_success_still_rejects_appended_records(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
-    ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
-
-    with pytest.raises(HarnessFailure, match='committed'):
-        ledger.record_sample('wall', 10, 'reference', {'value': 1})
-
-
-def test_v2_committed_success_preserves_legacy_finish_behavior(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _request, ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
-    ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
-
-    ledger.finish(HarnessVerdict.INCONCLUSIVE)
-
-    assert ledger.terminal_verdict is HarnessVerdict.INCONCLUSIVE
 
 
 def _v3_groups() -> dict[str, str]:

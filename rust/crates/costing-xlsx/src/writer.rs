@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use costing_core::error::{CleanupFailureMeta, ErrorContext, ErrorStage, IoFailureMeta};
-use costing_core::model::{CellValue, WorkbookPayload};
+use costing_core::model::{CellValue, SheetModel, WorkbookPayload};
 use rust_decimal::prelude::ToPrimitive;
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet};
 
@@ -15,6 +15,53 @@ const DEFAULT_SHEET_NAMES: [&str; 3] = [
     "成本计算单数量聚合维度",
     "成本分析工单维度",
 ];
+
+enum ColumnBehavior {
+    Text,
+    Numeric(Format),
+}
+
+#[cfg(feature = "low-memory")]
+const LOW_MEMORY_CELL_SLOT_THRESHOLD: usize = 5_000_000;
+
+#[cfg(feature = "low-memory")]
+struct TempWorkspace {
+    directory: tempfile::TempDir,
+}
+
+#[cfg(feature = "low-memory")]
+impl TempWorkspace {
+    fn create(parent: &Path, request_id: &str) -> std::io::Result<Self> {
+        let sanitized = request_id
+            .chars()
+            .take(48)
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let request_part = if sanitized.is_empty() {
+            "request"
+        } else {
+            &sanitized
+        };
+        let directory = tempfile::Builder::new()
+            .prefix(&format!(".costing-tmp-{request_part}-"))
+            .tempdir_in(parent)?;
+        Ok(Self { directory })
+    }
+
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+
+    fn close(self) -> std::io::Result<()> {
+        self.directory.close()
+    }
+}
 
 pub struct WriterContext {
     pub request_id: String,
@@ -57,7 +104,6 @@ pub fn write_workbook(
     path: &Path,
     payload: &WorkbookPayload,
 ) -> Result<WorkbookWriteReport, WriterError> {
-    let artifact_state = OutputArtifactState::NotCreated;
     validate_default_sheet_contract(payload).map_err(|error| {
         writer_error(
             context,
@@ -67,104 +113,19 @@ pub fn write_workbook(
         )
     })?;
 
-    let writer_populate_started = Instant::now();
-    let mut workbook = Workbook::new();
-    for sheet in &payload.sheet_models {
-        let worksheet = workbook.add_worksheet();
-        worksheet
-            .set_name(&sheet.sheet_name)
-            .map_err(CostingXlsxError::Writer)
-            .map_err(|error| {
-                writer_error(
-                    context,
-                    path,
-                    ErrorStage::PopulateWorkbook,
-                    WriterPrimaryError::Xlsx(error),
-                )
-            })?;
+    let sheet_modes = payload
+        .sheet_models
+        .iter()
+        .map(|sheet| use_low_memory_for_shape(sheet.rows.len(), sheet.columns.len()))
+        .collect::<Vec<_>>();
+    let needs_low_memory = sheet_modes.iter().any(|enabled| *enabled);
 
-        let header_format = Format::new()
-            .set_bold()
-            .set_background_color(Color::RGB(0xD9E1F2))
-            .set_border(FormatBorder::Thin)
-            .set_align(FormatAlign::Center)
-            .set_align(FormatAlign::VerticalCenter);
-        let text_format = Format::new()
-            .set_align(FormatAlign::Left)
-            .set_align(FormatAlign::VerticalCenter);
-
-        write_header_row(
-            worksheet,
-            &sheet.columns,
-            &sheet.number_formats,
-            sheet.fixed_width,
-            &header_format,
-            &text_format,
-        )
-        .map_err(|error| {
-            writer_error(
-                context,
-                path,
-                ErrorStage::PopulateWorkbook,
-                primary_from_xlsx_error(error),
-            )
-        })?;
-        write_data_rows(
-            worksheet,
-            &sheet.columns,
-            &sheet.rows,
-            &sheet.number_formats,
-            &text_format,
-        )
-        .map_err(|error| {
-            writer_error(
-                context,
-                path,
-                ErrorStage::PopulateWorkbook,
-                primary_from_xlsx_error(error),
-            )
-        })?;
-
-        if sheet.auto_filter && !sheet.columns.is_empty() {
-            let last_row = sheet.rows.len() as u32;
-            let last_col = (sheet.columns.len() - 1) as u16;
-            worksheet
-                .autofilter(0, 0, last_row, last_col)
-                .map_err(CostingXlsxError::Writer)
-                .map_err(|error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        WriterPrimaryError::Xlsx(error),
-                    )
-                })?;
-        }
-        if let Some(freeze_panes) = &sheet.freeze_panes {
-            let (row, col) = parse_freeze_panes(freeze_panes).map_err(|error| {
-                writer_error(
-                    context,
-                    path,
-                    ErrorStage::PopulateWorkbook,
-                    primary_from_xlsx_error(error),
-                )
-            })?;
-            worksheet
-                .set_freeze_panes(row, col)
-                .map_err(CostingXlsxError::Writer)
-                .map_err(|error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        WriterPrimaryError::Xlsx(error),
-                    )
-                })?;
-        }
-    }
-    let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
-
-    if let Some(parent) = path.parent() {
+    #[cfg(feature = "low-memory")]
+    let temp_workspace = if needs_low_memory {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|error| {
             writer_error(
                 context,
@@ -173,93 +134,327 @@ pub fn write_workbook(
                 WriterPrimaryError::Io(error),
             )
         })?;
+        Some(
+            TempWorkspace::create(parent, &context.request_id).map_err(|error| {
+                writer_error(
+                    context,
+                    parent,
+                    ErrorStage::CreateTempWorkspace,
+                    WriterPrimaryError::Io(error),
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "low-memory"))]
+    debug_assert!(!needs_low_memory);
+
+    let mut workbook = Workbook::new();
+
+    #[cfg(feature = "low-memory")]
+    if let Some(workspace) = temp_workspace.as_ref() {
+        if let Err(error) = workbook.set_compression_level(5) {
+            drop(workbook);
+            return finish_with_temp_cleanup(
+                context,
+                Err(writer_error(
+                    context,
+                    workspace.path(),
+                    ErrorStage::InitializeLowMemoryTempWriter,
+                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                )),
+                temp_workspace,
+            );
+        }
+        if let Err(error) = workbook.set_tempdir(workspace.path()) {
+            drop(workbook);
+            return finish_with_temp_cleanup(
+                context,
+                Err(writer_error(
+                    context,
+                    workspace.path(),
+                    ErrorStage::InitializeLowMemoryTempWriter,
+                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                )),
+                temp_workspace,
+            );
+        }
     }
-    // 在真正写出时原子创建目标文件，避免前置 exists 检查与保存之间的并发覆盖竞态。
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            finish_writer_failure(
+
+    let mut artifact_state = OutputArtifactState::NotCreated;
+    let primary_result = (|| -> Result<WorkbookWriteReport, WriterError> {
+        let writer_populate_started = Instant::now();
+        for (sheet, use_low_memory) in payload.sheet_models.iter().zip(&sheet_modes) {
+            let worksheet = add_worksheet_for_mode(&mut workbook, *use_low_memory);
+            worksheet
+                .set_name(&sheet.sheet_name)
+                .map_err(CostingXlsxError::Writer)
+                .map_err(|error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        WriterPrimaryError::Xlsx(error),
+                    )
+                })?;
+
+            let header_format = Format::new()
+                .set_bold()
+                .set_background_color(Color::RGB(0xD9E1F2))
+                .set_border(FormatBorder::Thin)
+                .set_align(FormatAlign::Center)
+                .set_align(FormatAlign::VerticalCenter);
+            let text_format = Format::new()
+                .set_align(FormatAlign::Left)
+                .set_align(FormatAlign::VerticalCenter);
+            let column_behaviors = sheet
+                .columns
+                .iter()
+                .map(|column| {
+                    sheet
+                        .number_formats
+                        .get(column)
+                        .map_or(ColumnBehavior::Text, |number_format| {
+                            ColumnBehavior::Numeric(numeric_format(number_format))
+                        })
+                })
+                .collect::<Vec<_>>();
+
+            if *use_low_memory {
+                configure_sheet_metadata(worksheet, sheet).map_err(|error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        primary_from_xlsx_error(error),
+                    )
+                })?;
+            }
+            write_header_row(
+                worksheet,
+                &sheet.columns,
+                &column_behaviors,
+                sheet.fixed_width,
+                &header_format,
+                &text_format,
+            )
+            .map_err(|error| {
                 writer_error(
                     context,
                     path,
-                    ErrorStage::CreateFinalOutput,
-                    WriterPrimaryError::Io(error),
-                ),
-                artifact_state,
-                path,
-            )
-        })?;
-    let artifact_state = OutputArtifactState::CreatedByCurrentRun;
+                    ErrorStage::PopulateWorkbook,
+                    primary_from_xlsx_error(error),
+                )
+            })?;
+            write_data_rows(worksheet, &sheet.rows, &column_behaviors, &text_format).map_err(
+                |error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        primary_from_xlsx_error(error),
+                    )
+                },
+            )?;
+            if !*use_low_memory {
+                configure_sheet_metadata(worksheet, sheet).map_err(|error| {
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::PopulateWorkbook,
+                        primary_from_xlsx_error(error),
+                    )
+                })?;
+            }
+        }
+        let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
 
-    let xlsx_save_started = Instant::now();
-    let xlsx_save_seconds = match workbook.save_to_writer(&mut file) {
-        Ok(()) => xlsx_save_started.elapsed().as_secs_f64(),
-        Err(error) => {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::PrepareOutputDirectory,
+                    WriterPrimaryError::Io(error),
+                )
+            })?;
+        }
+        // 在真正写出时原子创建目标文件，避免前置 exists 检查与保存之间的并发覆盖竞态。
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|error| {
+                finish_writer_failure(
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::CreateFinalOutput,
+                        WriterPrimaryError::Io(error),
+                    ),
+                    artifact_state,
+                    path,
+                )
+            })?;
+        artifact_state = OutputArtifactState::CreatedByCurrentRun;
+
+        let xlsx_save_started = Instant::now();
+        let xlsx_save_seconds = match workbook.save_to_writer(&mut file) {
+            Ok(()) => xlsx_save_started.elapsed().as_secs_f64(),
+            Err(error) => {
+                drop(file);
+                return Err(finish_writer_failure(
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::SaveWorkbook,
+                        WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                    ),
+                    artifact_state,
+                    path,
+                ));
+            }
+        };
+
+        if let Err(error) = file.flush() {
             drop(file);
             return Err(finish_writer_failure(
                 writer_error(
                     context,
                     path,
                     ErrorStage::SaveWorkbook,
-                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-                ),
-                artifact_state,
-                path,
-            ));
-        }
-    };
-
-    if let Err(error) = file.flush() {
-        drop(file);
-        return Err(finish_writer_failure(
-            writer_error(
-                context,
-                path,
-                ErrorStage::SaveWorkbook,
-                WriterPrimaryError::Io(error),
-            ),
-            artifact_state,
-            path,
-        ));
-    }
-    drop(file);
-
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) => {
-            return Err(finish_writer_failure(
-                writer_error(
-                    context,
-                    path,
-                    ErrorStage::ReadOutputMetadata,
                     WriterPrimaryError::Io(error),
                 ),
                 artifact_state,
                 path,
             ));
         }
-    };
-    if metadata.len() == 0 {
-        return Err(finish_writer_failure(
-            writer_error(
-                context,
+        drop(file);
+
+        let metadata = match std::fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(finish_writer_failure(
+                    writer_error(
+                        context,
+                        path,
+                        ErrorStage::ReadOutputMetadata,
+                        WriterPrimaryError::Io(error),
+                    ),
+                    artifact_state,
+                    path,
+                ));
+            }
+        };
+        if metadata.len() == 0 {
+            return Err(finish_writer_failure(
+                writer_error(
+                    context,
+                    path,
+                    ErrorStage::ReadOutputMetadata,
+                    WriterPrimaryError::Contract("written workbook is empty".to_string()),
+                ),
+                artifact_state,
                 path,
-                ErrorStage::ReadOutputMetadata,
-                WriterPrimaryError::Contract("written workbook is empty".to_string()),
-            ),
-            artifact_state,
-            path,
-        ));
+            ));
+        }
+        artifact_state = OutputArtifactState::CompletedByCurrentRun;
+        Ok(WorkbookWriteReport {
+            writer_populate_seconds,
+            xlsx_save_seconds,
+            output_size_bytes: metadata.len(),
+        })
+    })();
+
+    drop(workbook);
+    debug_assert!(
+        primary_result.is_err() || artifact_state == OutputArtifactState::CompletedByCurrentRun
+    );
+
+    #[cfg(feature = "low-memory")]
+    return finish_with_temp_cleanup(context, primary_result, temp_workspace);
+
+    #[cfg(not(feature = "low-memory"))]
+    primary_result
+}
+
+fn use_low_memory_for_shape(row_count: usize, column_count: usize) -> bool {
+    #[cfg(feature = "low-memory")]
+    {
+        row_count > 0
+            && column_count > 0
+            && row_count.saturating_mul(column_count) >= LOW_MEMORY_CELL_SLOT_THRESHOLD
     }
-    let artifact_state = OutputArtifactState::CompletedByCurrentRun;
-    debug_assert_eq!(artifact_state, OutputArtifactState::CompletedByCurrentRun);
-    Ok(WorkbookWriteReport {
-        writer_populate_seconds,
-        xlsx_save_seconds,
-        output_size_bytes: metadata.len(),
-    })
+
+    #[cfg(not(feature = "low-memory"))]
+    {
+        let _ = (row_count, column_count);
+        false
+    }
+}
+
+fn add_worksheet_for_mode(workbook: &mut Workbook, use_low_memory: bool) -> &mut Worksheet {
+    #[cfg(feature = "low-memory")]
+    if use_low_memory {
+        return workbook.add_worksheet_with_low_memory();
+    }
+
+    let _ = use_low_memory;
+    workbook.add_worksheet()
+}
+
+fn configure_sheet_metadata(
+    worksheet: &mut Worksheet,
+    sheet: &SheetModel,
+) -> Result<(), CostingXlsxError> {
+    if sheet.auto_filter && !sheet.columns.is_empty() {
+        let last_row = sheet.rows.len() as u32;
+        let last_col = (sheet.columns.len() - 1) as u16;
+        worksheet
+            .autofilter(0, 0, last_row, last_col)
+            .map_err(CostingXlsxError::Writer)?;
+    }
+    if let Some(freeze_panes) = &sheet.freeze_panes {
+        let (row, col) = parse_freeze_panes(freeze_panes)?;
+        worksheet
+            .set_freeze_panes(row, col)
+            .map_err(CostingXlsxError::Writer)?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "low-memory")]
+fn finish_with_temp_cleanup(
+    context: &WriterContext,
+    primary_result: Result<WorkbookWriteReport, WriterError>,
+    workspace: Option<TempWorkspace>,
+) -> Result<WorkbookWriteReport, WriterError> {
+    let Some(workspace) = workspace else {
+        return primary_result;
+    };
+    let workspace_path = workspace.path().to_path_buf();
+    match (primary_result, workspace.close()) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(merge_cleanup_failure(
+            error,
+            ErrorStage::CleanupTempWorkspace,
+            workspace_path,
+            cleanup_error,
+        )),
+        (Ok(_), Err(cleanup_error)) => {
+            let mut error = writer_error(
+                context,
+                &workspace_path,
+                ErrorStage::CleanupTempWorkspace,
+                WriterPrimaryError::Io(cleanup_error),
+            );
+            error.context.details.final_output_valid = true;
+            Err(error)
+        }
+    }
 }
 
 fn writer_error(
@@ -349,7 +544,7 @@ fn validate_default_sheet_contract(payload: &WorkbookPayload) -> Result<(), Cost
 fn write_header_row(
     worksheet: &mut Worksheet,
     columns: &[String],
-    number_formats: &std::collections::BTreeMap<String, String>,
+    column_behaviors: &[ColumnBehavior],
     fixed_width: Option<f64>,
     header_format: &Format,
     text_format: &Format,
@@ -364,12 +559,12 @@ fn write_header_row(
                 .set_column_width(col_idx, normalized_column_width(width))
                 .map_err(CostingXlsxError::Writer)?;
         }
-        let column_format = number_formats
-            .get(column)
-            .map(|format| numeric_format(format))
-            .unwrap_or_else(|| text_format.clone());
+        let column_format = match &column_behaviors[col_idx as usize] {
+            ColumnBehavior::Text => text_format,
+            ColumnBehavior::Numeric(format) => format,
+        };
         worksheet
-            .set_column_format(col_idx, &column_format)
+            .set_column_format(col_idx, column_format)
             .map_err(CostingXlsxError::Writer)?;
     }
     Ok(())
@@ -377,42 +572,33 @@ fn write_header_row(
 
 fn write_data_rows(
     worksheet: &mut Worksheet,
-    columns: &[String],
     rows: &[Vec<CellValue>],
-    number_formats: &std::collections::BTreeMap<String, String>,
+    column_behaviors: &[ColumnBehavior],
     text_format: &Format,
 ) -> Result<(), CostingXlsxError> {
     for (row_idx, row) in rows.iter().enumerate() {
         let excel_row = (row_idx + 1) as u32;
-        for (col_idx, value) in row.iter().enumerate() {
-            let Some(column_name) = columns.get(col_idx) else {
+        for (col_idx, (value, behavior)) in row.iter().zip(column_behaviors).enumerate() {
+            if matches!(value, CellValue::Blank) {
                 continue;
-            };
+            }
             let excel_col = col_idx as u16;
-            let number_format = number_formats
-                .get(column_name)
-                .map(|format| numeric_format(format));
-            match (value, number_format.as_ref()) {
-                (CellValue::Blank, _) => {}
-                (CellValue::Decimal(value), Some(format)) => {
-                    worksheet
-                        .write_number_with_format(
-                            excel_row,
-                            excel_col,
-                            decimal_to_f64(value)?,
-                            format,
-                        )
-                        .map_err(CostingXlsxError::Writer)?;
-                }
-                (CellValue::Decimal(value), None) => {
+            match value {
+                CellValue::Blank => {}
+                CellValue::Decimal(value) => {
                     worksheet
                         .write_number(excel_row, excel_col, decimal_to_f64(value)?)
                         .map_err(CostingXlsxError::Writer)?;
                 }
-                (CellValue::Text(value) | CellValue::DateLike(value), _) => {
-                    worksheet
-                        .write_string_with_format(excel_row, excel_col, value, text_format)
-                        .map_err(CostingXlsxError::Writer)?;
+                CellValue::Text(value) | CellValue::DateLike(value) => {
+                    match behavior {
+                        ColumnBehavior::Text => worksheet
+                            .write_string(excel_row, excel_col, value)
+                            .map_err(CostingXlsxError::Writer)?,
+                        ColumnBehavior::Numeric(_) => worksheet
+                            .write_string_with_format(excel_row, excel_col, value, text_format)
+                            .map_err(CostingXlsxError::Writer)?,
+                    };
                 }
             }
         }
@@ -529,6 +715,38 @@ mod tests {
             error_log: Vec::new(),
             stage_timings: StageTimings::default(),
         }
+    }
+
+    #[cfg(feature = "low-memory")]
+    #[test]
+    fn low_memory_threshold_uses_saturating_cell_slots() {
+        assert!(!use_low_memory_for_shape(0, LOW_MEMORY_CELL_SLOT_THRESHOLD));
+        assert!(!use_low_memory_for_shape(
+            1,
+            LOW_MEMORY_CELL_SLOT_THRESHOLD - 1
+        ));
+        assert!(use_low_memory_for_shape(1, LOW_MEMORY_CELL_SLOT_THRESHOLD));
+        assert!(use_low_memory_for_shape(usize::MAX, 2));
+    }
+
+    #[cfg(feature = "low-memory")]
+    #[test]
+    fn temp_workspace_is_created_and_removed_below_output_parent() {
+        let parent = unique_temp_path("workspace-parent");
+        std::fs::create_dir(&parent).unwrap();
+
+        let workspace = TempWorkspace::create(&parent, "request/with:path").unwrap();
+        let workspace_path = workspace.path().to_path_buf();
+
+        assert_eq!(workspace_path.parent(), Some(parent.as_path()));
+        assert!(workspace_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".costing-tmp-request_with_path-"));
+        workspace.close().unwrap();
+        assert!(!workspace_path.exists());
+        std::fs::remove_dir(parent).unwrap();
     }
 
     #[test]

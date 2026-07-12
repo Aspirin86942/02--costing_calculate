@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = []
+default = ["low-memory"]
 low-memory = ["costing-xlsx/low-memory"]
 zlib = ["costing-xlsx/zlib"]
 zmij = ["costing-xlsx/zmij"]

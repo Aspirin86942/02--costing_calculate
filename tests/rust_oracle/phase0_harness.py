@@ -555,105 +555,11 @@ class AppendOnlyAttemptLedger:
         *,
         comparison_key: str,
     ) -> AppendOnlyAttemptLedger:
-        if not _is_sha256(comparison_key):
-            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison_key must be 64 lowercase hex')
-        trusted_local_root = _trusted_local_root()
-        safe_local_root = _safe_harness_path(
-            trusted_local_root,
-            allowed_roots=(trusted_local_root,),
-            purpose='attempt local root is invalid',
-            create_parent=True,
+        del root, identity, comparison_key
+        raise HarnessFailure(
+            HarnessVerdict.INCOMPLETE_EVIDENCE,
+            'protocol v2 ledger creation is read-only and no longer available',
         )
-        if _normal_path(root).absolute() != (trusted_local_root / 'batches').absolute():
-            raise HarnessFailure(
-                HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt root must equal trusted local root/batches'
-            )
-        safe_root = _safe_harness_path(
-            root,
-            allowed_roots=(safe_local_root,),
-            purpose='attempt root must stay below the ignored local root',
-            create_parent=True,
-        )
-        comparison_directory = _safe_harness_path(
-            safe_root / comparison_key,
-            allowed_roots=(safe_root,),
-            purpose='comparison_key escaped the attempt root',
-            create_parent=True,
-        )
-        attempts = sorted(path for path in _io_path(comparison_directory).glob('attempt-*') if path.is_dir())
-        previous_head: str | None = None
-        inherited: tuple[dict[str, Any], ...] = ()
-        cleanup_only = False
-        recovery_primary: HarnessVerdict | None = None
-        if attempts:
-            previous = cls.load(attempts[-1], identity, strict_identity=False)
-            if previous.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION:
-                raise HarnessFailure(
-                    HarnessVerdict.INCOMPLETE_EVIDENCE,
-                    'protocol v2 cannot append to a protocol v1 comparison directory',
-                )
-            if previous.terminal_verdict is None:
-                return _load_current_protocol_ledger(attempts[-1], identity)
-            if previous.terminal_verdict not in (
-                HarnessVerdict.ENVIRONMENT_DRIFT,
-                HarnessVerdict.REFERENCE_FAILED,
-                HarnessVerdict.CLEANUP_FAILED,
-            ):
-                raise HarnessFailure(
-                    HarnessVerdict.INCOMPLETE_EVIDENCE,
-                    'failed candidate SHA cannot be retried after candidate, correctness, '
-                    'gate, or inconclusive failure',
-                )
-            previous_head = previous.head_sha256
-            if previous.terminal_verdict is HarnessVerdict.CLEANUP_FAILED:
-                inherited = previous.all_planned_output_payloads()
-                cleanup_only = True
-                recovery_primary = previous.terminal_primary_verdict
-
-        number = len(attempts) + 1
-        attempt_directory = _io_path(comparison_directory / f'attempt-{number:04d}')
-        attempt_directory.mkdir()
-        (attempt_directory / 'records').mkdir()
-        (attempt_directory / 'checkpoints').mkdir()
-        _io_path(comparison_directory / 'journal').mkdir(exist_ok=True)
-        _safe_harness_path(
-            attempt_directory,
-            allowed_roots=(safe_root,),
-            purpose='attempt directory escaped local root after creation',
-            create_parent=False,
-        )
-        metadata = {
-            'protocol_version': LEGACY_PAIRED_PROTOCOL_VERSION,
-            'comparison_key': comparison_key,
-            'attempt_number': number,
-            'identity': asdict(identity),
-            'previous_attempt_head_sha256': previous_head,
-            'reason': 'ENVIRONMENT_RECOVERED' if previous_head else 'FORMAL_START',
-            'inherited_planned_outputs': inherited,
-            'cleanup_only': cleanup_only,
-            'recovery_primary_verdict': recovery_primary.value if recovery_primary else None,
-        }
-        metadata_bytes = _canonical_json(metadata)
-        _write_create_new(attempt_directory / 'metadata.json', metadata_bytes, allowed_root=attempt_directory)
-        metadata_sha = hashlib.sha256(metadata_bytes).hexdigest()
-        ledger = cls(
-            attempt_directory=attempt_directory,
-            local_root=safe_local_root,
-            identity=identity,
-            protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
-            comparison_key=comparison_key,
-            attempt_number=number,
-            previous_attempt_head_sha256=previous_head,
-            head_sha256=metadata_sha,
-            _record_head_sha256=metadata_sha,
-            _checkpoint_head_sha256=metadata_sha,
-            _inherited_plan_payloads=inherited,
-            cleanup_only=cleanup_only,
-            recovery_primary_verdict=recovery_primary,
-            metadata=metadata,
-        )
-        ledger._append_journal_anchor()
-        return ledger
 
     @classmethod
     def create_v3_once(
@@ -666,6 +572,8 @@ class AppendOnlyAttemptLedger:
         recovery_provenance: RecoveryProvenance | None,
         upstream_gate_provenance: UpstreamGateProvenance | None,
     ) -> AppendOnlyAttemptLedger:
+        if not _is_sha256(comparison_key):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison_key must be 64 lowercase hex')
         pipeline: PipelineName = 'gb' if recovery_provenance is not None else 'sk'
         batch_id = derive_v3_batch_id(
             comparison_key=comparison_key,
@@ -1536,6 +1444,8 @@ class AppendOnlyAttemptLedger:
         )
 
     def _append(self, kind: str, payload: dict[str, Any]) -> str:
+        if self.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 ledgers are read-only')
         if self.terminal_verdict is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot accept more records')
         if self.state is AttemptState.CLEANUP_COMPLETE and kind not in ('evidence-prepared', 'evidence-committed'):
@@ -1606,6 +1516,8 @@ class AppendOnlyAttemptLedger:
         *,
         sample_started_record_sha256: str | None = None,
     ) -> str:
+        if self.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 ledgers are read-only')
         if self.cleanup_only:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot record a sample')
         key = (metric, global_round, role)
@@ -1868,6 +1780,8 @@ class AppendOnlyAttemptLedger:
         raw_log_sha256: str | None = None,
         primary_verdict: HarnessVerdict | None = None,
     ) -> str:
+        if self.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 ledgers are read-only')
         if self.protocol_version == PAIRED_PROTOCOL_VERSION and self.state is AttemptState.EVIDENCE_COMMITTED:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'committed success is already sealed')
         if self.terminal_verdict is not None or (self.attempt_directory / 'terminal.json').exists():
@@ -1876,6 +1790,13 @@ class AppendOnlyAttemptLedger:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal failure verdict must be closed')
         if primary_verdict is not None and not isinstance(primary_verdict, HarnessVerdict):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal primary verdict must be closed')
+        if primary_verdict is HarnessVerdict.VALIDATED and (
+            self.protocol_version != PAIRED_PROTOCOL_VERSION or verdict is not HarnessVerdict.CLEANUP_FAILED
+        ):
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'VALIDATED primary verdict requires a protocol v3 cleanup failure',
+            )
         if raw_log_sha256 is not None and not _is_sha256(raw_log_sha256):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal raw log SHA is invalid')
         terminal = {
@@ -1976,7 +1897,12 @@ def _validate_v3_checkpoint_scalars(checkpoint: object) -> None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 checkpoint scalar types are invalid')
 
 
-def _validate_v3_optional_verdict(value: object, *, purpose: str) -> HarnessVerdict | None:
+def _validate_v3_optional_verdict(
+    value: object,
+    *,
+    purpose: str,
+    allow_validated: bool = False,
+) -> HarnessVerdict | None:
     if value is None:
         return None
     if type(value) is not str:
@@ -1985,14 +1911,18 @@ def _validate_v3_optional_verdict(value: object, *, purpose: str) -> HarnessVerd
         verdict = HarnessVerdict(value)
     except ValueError as exc:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{purpose} is invalid') from exc
-    if verdict is HarnessVerdict.VALIDATED:
+    if verdict is HarnessVerdict.VALIDATED and not allow_validated:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{purpose} cannot be VALIDATED')
     return verdict
 
 
 def _validate_v3_terminal_scalars(terminal: dict[str, Any]) -> None:
     verdict = _validate_v3_optional_verdict(terminal['verdict'], purpose='v3 terminal verdict')
-    primary = _validate_v3_optional_verdict(terminal['primary_verdict'], purpose='v3 terminal primary verdict')
+    primary = _validate_v3_optional_verdict(
+        terminal['primary_verdict'],
+        purpose='v3 terminal primary verdict',
+        allow_validated=True,
+    )
     if (
         verdict is None
         or type(terminal['record_count']) is not int
@@ -2000,7 +1930,7 @@ def _validate_v3_terminal_scalars(terminal: dict[str, Any]) -> None:
         or not _is_sha256(terminal['record_head_sha256'])
         or not _is_sha256(terminal['checkpoint_head_sha256'])
         or (terminal['raw_log_sha256'] is not None and not _is_sha256(terminal['raw_log_sha256']))
-        or (primary is not None and primary is HarnessVerdict.VALIDATED)
+        or (primary is HarnessVerdict.VALIDATED and verdict is not HarnessVerdict.CLEANUP_FAILED)
     ):
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 terminal scalar types are invalid')
 
@@ -2475,6 +2405,7 @@ def _run_v3_metric_group(
                 binary_sha256=identity.reference_sha256 if role == 'reference' else identity.candidate_sha256,
                 planned_output_record_sha256=plan_sha,
             )
+            capture: CapturedNormalRun | None = None
             try:
                 if request.metric == 'wall':
                     capture = run_rust_normal_captured(
@@ -2526,9 +2457,22 @@ def _run_v3_metric_group(
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal sample was interrupted') from exc
             except (RustNormalProcessError, RustNormalValidationError) as exc:
                 raise _capture_boundary_failure(role, request.metric, exc) from exc
-            except HarnessFailure:
-                raise
+            except HarnessFailure as exc:
+                if capture is None or exc.raw_log_sha256 is not None:
+                    raise
+                raise HarnessFailure(
+                    exc.verdict,
+                    str(exc),
+                    primary_verdict=exc.primary_verdict,
+                    raw_log_sha256=capture.local_unversioned_log_sha256,
+                ) from exc
             except Exception as exc:
+                if capture is not None:
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE,
+                        'captured sample could not be durably recorded',
+                        raw_log_sha256=capture.local_unversioned_log_sha256,
+                    ) from exc
                 raise _capture_boundary_failure(role, request.metric, exc) from exc
         if (
             captured['reference'].normal_run.workbook_oracle_sha256
@@ -2551,188 +2495,40 @@ def _run_v3_metric_group(
     return group
 
 
+def _metric_group_from_v3_ledger(
+    ledger: AppendOnlyAttemptLedger,
+    *,
+    metric: MetricName,
+    global_round_start: Literal[1, 6],
+) -> MetricGroup:
+    plans = build_round_plan(global_round_start=global_round_start, round_count=5)
+    rounds = tuple(
+        PairedRound(
+            plan,
+            _sample_from_payload(ledger.sample(metric, plan.global_round, 'reference')),
+            _sample_from_payload(ledger.sample(metric, plan.global_round, 'candidate')),
+        )
+        for plan in plans
+    )
+    pipeline: PipelineName = 'gb' if ledger.recovery_provenance is not None else 'sk'
+    group = MetricGroup(ledger.batch_id, pipeline, metric, global_round_start, rounds)
+    validate_metric_group(group)
+    return group
+
+
 def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
     if request.metric != 'wall':
         raise ValueError('normal wall runner accepts wall metric only')
     _validate_trusted_request_paths(request.benchmark)
     identity = _capture_identity(request.benchmark)
     snapshot = AppendOnlyAttemptLedger.load_read_only(request.attempt_directory, identity)
-    if snapshot.protocol_version == PAIRED_PROTOCOL_VERSION:
-        return _run_v3_metric_group(
-            request,
-            identity,
-            AppendOnlyAttemptLedger.open_v3_for_resume(request.attempt_directory, identity),
-        )
-    ledger = _load_current_protocol_ledger(request.attempt_directory, identity)
-    if ledger.terminal_verdict is not None:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot be resumed')
-    if request.first_group_sha256 is not None and request.first_group_sha256 != ledger.first_group_sha256:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group first-group SHA does not match ledger')
-
-    role_executables = {
-        'reference': request.benchmark.reference_executable,
-        'candidate': request.benchmark.candidate_executable,
-    }
-    rule = PROFILE_RULES[request.benchmark.comparison_profile][request.benchmark.pipeline]
-    schemas: dict[BinaryRole, RuntimeSchema] = {
-        'reference': rule.reference_schema,
-        'candidate': rule.candidate_schema,
-    }
-    cleanup_paths = list(_planned_paths(ledger.all_planned_output_payloads()))
-    if ledger.cleanup_only:
-        cleanup_errors = _cleanup_all(cleanup_paths)
-        if cleanup_errors:
-            final_verdict = HarnessVerdict.CLEANUP_FAILED
-            primary_verdict = ledger.recovery_primary_verdict
-        else:
-            final_verdict = ledger.recovery_primary_verdict or HarnessVerdict.ENVIRONMENT_DRIFT
-            primary_verdict = None
-        ledger.finish(final_verdict, primary_verdict=primary_verdict)
-        raise HarnessFailure(
-            final_verdict,
-            'cleanup-only recovery completed' if not cleanup_errors else 'cleanup-only recovery failed',
-            primary_verdict=primary_verdict,
-        )
-    pairs: list[PairedRound] = []
-    result_group: MetricGroup | None = None
-    primary_error: HarnessFailure | None = None
-
-    initial_cleanup_errors = _cleanup_all(cleanup_paths)
-    if initial_cleanup_errors:
-        primary_error = HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'historical workbook cleanup was transient')
-    else:
-        try:
-            for plan in request.plans:
-                captured: dict[BinaryRole, MetricSample] = {}
-                for role in plan.order:
-                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
-                    existing = ledger.sample_payload(request.metric, plan.global_round, role)
-                    if existing is not None:
-                        captured[role] = _sample_from_payload(existing)
-                        continue
-                    payload = _planned_output_payload(request, identity, plan.global_round, role)
-                    ledger.record_planned_output(request.metric, plan.global_round, role, payload)
-                    output = next(iter(_planned_paths((payload,))))
-                    cleanup_paths.append(output)
-                    try:
-                        capture = run_rust_normal_captured(
-                            role_executables[role],
-                            request.benchmark.pipeline,
-                            request.benchmark.input_path,
-                            output,
-                            schema=schemas[role],
-                            local_log_root=request.benchmark.local_root / 'raw-logs',
-                            workbook_oracle_fn=_stable_workbook_oracle,
-                        )
-                    except RustNormalProcessError as exc:
-                        cleanup_paths.append(request.benchmark.local_root / 'raw-logs' / f'{exc.log_sha256}.json')
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CANDIDATE_FAILED
-                        )
-                        raise HarnessFailure(
-                            verdict,
-                            f'{role} process failed with exit code {exc.returncode}',
-                            raw_log_sha256=exc.log_sha256,
-                        ) from exc
-                    except RustNormalValidationError as exc:
-                        cleanup_paths.append(request.benchmark.local_root / 'raw-logs' / f'{exc.log_sha256}.json')
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED
-                            if role == 'reference'
-                            else HarnessVerdict.CORRECTNESS_FAILED
-                        )
-                        raise HarnessFailure(
-                            verdict,
-                            f'{role} runtime or workbook validation failed',
-                            raw_log_sha256=exc.log_sha256,
-                        ) from exc
-                    except Exception as exc:
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED
-                            if role == 'reference'
-                            else HarnessVerdict.CORRECTNESS_FAILED
-                        )
-                        raise HarnessFailure(verdict, f'{role} capture boundary failed') from exc
-                    cleanup_paths.append(
-                        request.benchmark.local_root / 'raw-logs' / f'{capture.local_unversioned_log_sha256}.json'
-                    )
-                    try:
-                        capture = _with_actual_workbook_dimensions(capture, output)
-                    except HarnessFailure as exc:
-                        raise HarnessFailure(
-                            exc.verdict,
-                            str(exc),
-                            primary_verdict=exc.primary_verdict,
-                            raw_log_sha256=capture.local_unversioned_log_sha256,
-                        ) from exc
-                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
-                    sample = _metric_sample(
-                        role,
-                        plan,
-                        identity,
-                        (capture.normal_run, capture.local_unversioned_log_sha256),
-                    )
-                    ledger.record_sample(request.metric, plan.global_round, role, _sample_to_payload(sample))
-                    captured[role] = sample
-                    try:
-                        _remove_workbook(output)
-                    except OSError as exc:
-                        raise HarnessFailure(
-                            HarnessVerdict.ENVIRONMENT_DRIFT,
-                            'immediate workbook cleanup failed; outer cleanup will retry',
-                        ) from exc
-                if (
-                    captured['reference'].normal_run.workbook_oracle_sha256
-                    != captured['candidate'].normal_run.workbook_oracle_sha256
-                ):
-                    raise HarnessFailure(
-                        HarnessVerdict.CORRECTNESS_FAILED,
-                        'reference/candidate workbook oracle mismatch',
-                        raw_log_sha256=captured['candidate'].local_unversioned_log_sha256,
-                    )
-                pairs.append(PairedRound(plan, captured['reference'], captured['candidate']))
-            result_group = MetricGroup(
-                request.batch_id,
-                request.benchmark.pipeline,
-                'wall',
-                request.plans[0].global_round,  # type: ignore[arg-type]
-                tuple(pairs),
-            )
-            validate_metric_group(result_group)
-        except (KeyboardInterrupt, SystemExit) as interruption:
-            cleanup_errors = _cleanup_all(cleanup_paths)
-            if cleanup_errors:
-                ledger.finish(HarnessVerdict.CLEANUP_FAILED)
-                raise HarnessFailure(
-                    HarnessVerdict.CLEANUP_FAILED,
-                    f'workbook cleanup failed during interruption: {cleanup_errors!r}',
-                ) from interruption
-            raise
-        except HarnessFailure as exc:
-            primary_error = exc
-        except Exception as exc:
-            primary_error = HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'wall runner failed closed')
-            primary_error.__cause__ = exc
-
-    cleanup_errors = _cleanup_all(cleanup_paths)
-    final_error = primary_error
-    if cleanup_errors:
-        final_error = HarnessFailure(
-            HarnessVerdict.CLEANUP_FAILED,
-            f'workbook cleanup failed: {cleanup_errors!r}',
-            primary_verdict=primary_error.verdict if primary_error else None,
-            raw_log_sha256=primary_error.raw_log_sha256 if primary_error else None,
-        )
-    if final_error is not None:
-        ledger.finish(
-            final_error.verdict,
-            raw_log_sha256=final_error.raw_log_sha256,
-            primary_verdict=final_error.primary_verdict,
-        )
-        raise final_error
-    if result_group is None:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'wall group produced no result')
-    return result_group
+    if snapshot.protocol_version != PAIRED_PROTOCOL_VERSION:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 metric runners are read-only')
+    return _run_v3_metric_group(
+        request,
+        identity,
+        AppendOnlyAttemptLedger.open_v3_for_resume(request.attempt_directory, identity),
+    )
 
 
 def _metric_sample(
@@ -3791,10 +3587,19 @@ def _pws_local_artifact_paths(
         )
         for path in raw_paths
     )
-    for parent in {path.parent for path in validated}:
+    return PwsLocalArtifacts(*validated, log_root)
+
+
+def _prepare_pws_local_artifacts(artifacts: PwsLocalArtifacts) -> None:
+    paths = (
+        artifacts.result_path,
+        artifacts.stdout_path,
+        artifacts.stderr_path,
+        artifacts.driver_log_path,
+    )
+    for parent in {path.parent for path in paths}:
         _io_path(parent).mkdir(parents=True, exist_ok=True)
         _reject_existing_reparse_components(parent)
-    return PwsLocalArtifacts(*validated, log_root)
 
 
 def _reject_duplicate_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -4111,6 +3916,7 @@ def _invoke_pws_single_sample(
     allow_resume_artifacts: bool = True,
 ) -> CapturedNormalRun:
     artifacts = _pws_local_artifact_paths(local_root, batch_id, global_round, role)
+    _prepare_pws_local_artifacts(artifacts)
     command = _build_pws_script_command(
         mode='Normal',
         pipeline=pipeline,
@@ -4182,213 +3988,13 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
     )
     identity = _capture_identity(request.benchmark)
     snapshot = AppendOnlyAttemptLedger.load_read_only(request.attempt_directory, identity)
-    if snapshot.protocol_version == PAIRED_PROTOCOL_VERSION:
-        return _run_v3_metric_group(
-            request,
-            identity,
-            AppendOnlyAttemptLedger.open_v3_for_resume(request.attempt_directory, identity),
-        )
-    ledger = _load_current_protocol_ledger(request.attempt_directory, identity)
-    if ledger.terminal_verdict is not None:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot be resumed')
-    if request.first_group_sha256 is not None and request.first_group_sha256 != ledger.first_group_sha256:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group first-group SHA does not match ledger')
-
-    role_executables = {
-        'reference': request.benchmark.reference_executable,
-        'candidate': request.benchmark.candidate_executable,
-    }
-    rule = PROFILE_RULES[request.benchmark.comparison_profile][request.benchmark.pipeline]
-    schemas: dict[BinaryRole, RuntimeSchema] = {
-        'reference': rule.reference_schema,
-        'candidate': rule.candidate_schema,
-    }
-    evidence_existed_before = request.benchmark.evidence_path.exists()
-    planned_payloads = ledger.all_planned_output_payloads()
-    cleanup_paths = list(_planned_paths(planned_payloads))
-    if ledger.cleanup_only:
-        cleanup_errors = _cleanup_all(cleanup_paths)
-        if cleanup_errors:
-            final_verdict = HarnessVerdict.CLEANUP_FAILED
-            primary_verdict = ledger.recovery_primary_verdict
-        else:
-            final_verdict = ledger.recovery_primary_verdict or HarnessVerdict.ENVIRONMENT_DRIFT
-            primary_verdict = None
-        ledger.finish(final_verdict, primary_verdict=primary_verdict)
-        raise HarnessFailure(
-            final_verdict,
-            'cleanup-only recovery completed' if not cleanup_errors else 'cleanup-only recovery failed',
-            primary_verdict=primary_verdict,
-        )
-
-    pairs: list[PairedRound] = []
-    result_group: MetricGroup | None = None
-    primary_error: HarnessFailure | None = None
-    recorded_cleanup_paths = [
-        _planned_paths((payload,))[0]
-        for payload in planned_payloads
-        if ledger.sample_payload(payload['metric'], payload['global_round'], payload['role']) is not None
-    ]
-    initial_cleanup_errors = _cleanup_all(recorded_cleanup_paths)
-    if initial_cleanup_errors:
-        primary_error = HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'historical workbook cleanup was transient')
-    else:
-        try:
-            for plan in request.plans:
-                captured: dict[BinaryRole, MetricSample] = {}
-                for role in plan.order:
-                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
-                    payload = _planned_output_payload(request, identity, plan.global_round, role)
-                    ledger.record_planned_output(request.metric, plan.global_round, role, payload)
-                    output = next(iter(_planned_paths((payload,))))
-                    if output not in cleanup_paths:
-                        cleanup_paths.append(output)
-                    raw_artifacts = _pws_local_artifact_paths(
-                        request.benchmark.local_root,
-                        request.batch_id,
-                        plan.global_round,
-                        role,
-                    )
-                    cleanup_paths.extend(
-                        (
-                            raw_artifacts.result_path,
-                            raw_artifacts.stdout_path,
-                            raw_artifacts.stderr_path,
-                            raw_artifacts.driver_log_path,
-                        )
-                    )
-                    existing = ledger.sample_payload(request.metric, plan.global_round, role)
-                    if existing is not None:
-                        captured[role] = _sample_from_payload(existing)
-                        try:
-                            _remove_workbook(output)
-                        except OSError as exc:
-                            raise HarnessFailure(
-                                HarnessVerdict.ENVIRONMENT_DRIFT,
-                                'recorded PWS sample residual workbook cleanup failed',
-                            ) from exc
-                        continue
-                    try:
-                        capture = _invoke_pws_single_sample(
-                            executable=role_executables[role],
-                            pipeline=request.benchmark.pipeline,
-                            input_path=request.benchmark.input_path,
-                            output_path=output,
-                            role=role,
-                            batch_id=request.batch_id,
-                            global_round=plan.global_round,
-                            schema=schemas[role],
-                            local_root=request.benchmark.local_root,
-                        )
-                    except RustNormalProcessError as exc:
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED if role == 'reference' else HarnessVerdict.CANDIDATE_FAILED
-                        )
-                        raise HarnessFailure(
-                            verdict,
-                            f'{role} PWS process failed with exit code {exc.returncode}',
-                            raw_log_sha256=exc.log_sha256,
-                        ) from exc
-                    except RustNormalValidationError as exc:
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED
-                            if role == 'reference'
-                            else HarnessVerdict.CORRECTNESS_FAILED
-                        )
-                        raise HarnessFailure(
-                            verdict,
-                            f'{role} PWS runtime or workbook validation failed',
-                            raw_log_sha256=exc.log_sha256,
-                        ) from exc
-                    except Exception as exc:
-                        verdict = (
-                            HarnessVerdict.REFERENCE_FAILED
-                            if role == 'reference'
-                            else HarnessVerdict.CORRECTNESS_FAILED
-                        )
-                        raise HarnessFailure(verdict, f'{role} PWS capture boundary failed') from exc
-                    capture = _with_actual_workbook_dimensions(capture, output)
-                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
-                    if capture.normal_run.peak_working_set_bytes is None:
-                        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS capture omitted PeakWorkingSet64')
-                    sample = _metric_sample(
-                        role,
-                        plan,
-                        identity,
-                        (capture.normal_run, capture.local_unversioned_log_sha256),
-                        metric_value=Decimal(capture.normal_run.peak_working_set_bytes),
-                    )
-                    ledger.record_sample(request.metric, plan.global_round, role, _sample_to_payload(sample))
-                    captured[role] = sample
-                    try:
-                        _remove_workbook(output)
-                    except OSError as exc:
-                        raise HarnessFailure(
-                            HarnessVerdict.ENVIRONMENT_DRIFT,
-                            'immediate workbook cleanup failed; outer cleanup will retry',
-                        ) from exc
-                if (
-                    captured['reference'].normal_run.workbook_oracle_sha256
-                    != captured['candidate'].normal_run.workbook_oracle_sha256
-                ):
-                    raise HarnessFailure(
-                        HarnessVerdict.CORRECTNESS_FAILED,
-                        'reference/candidate workbook oracle mismatch',
-                        raw_log_sha256=captured['candidate'].local_unversioned_log_sha256,
-                    )
-                pairs.append(PairedRound(plan, captured['reference'], captured['candidate']))
-            result_group = MetricGroup(
-                request.batch_id,
-                request.benchmark.pipeline,
-                'pws',
-                request.plans[0].global_round,  # type: ignore[arg-type]
-                tuple(pairs),
-            )
-            validate_metric_group(result_group)
-        except (KeyboardInterrupt, SystemExit) as interruption:
-            cleanup_errors = _cleanup_all(cleanup_paths)
-            if not evidence_existed_before:
-                try:
-                    _remove_new_batch_evidence(request.benchmark.evidence_path)
-                except OSError as exc:
-                    cleanup_errors = (*cleanup_errors, f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
-            if cleanup_errors:
-                ledger.finish(HarnessVerdict.CLEANUP_FAILED)
-                raise HarnessFailure(
-                    HarnessVerdict.CLEANUP_FAILED,
-                    f'workbook cleanup failed during interruption: {cleanup_errors!r}',
-                ) from interruption
-            raise
-        except HarnessFailure as exc:
-            primary_error = exc
-        except Exception as exc:
-            primary_error = HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS runner failed closed')
-            primary_error.__cause__ = exc
-
-    cleanup_errors = _cleanup_all(cleanup_paths)
-    if not evidence_existed_before:
-        try:
-            _remove_new_batch_evidence(request.benchmark.evidence_path)
-        except OSError as exc:
-            cleanup_errors = (*cleanup_errors, f'{type(exc).__name__}:{getattr(exc, "errno", None)}')
-    final_error = primary_error
-    if cleanup_errors:
-        final_error = HarnessFailure(
-            HarnessVerdict.CLEANUP_FAILED,
-            f'workbook cleanup failed: {cleanup_errors!r}',
-            primary_verdict=primary_error.verdict if primary_error else None,
-            raw_log_sha256=primary_error.raw_log_sha256 if primary_error else None,
-        )
-    if final_error is not None:
-        ledger.finish(
-            final_error.verdict,
-            raw_log_sha256=final_error.raw_log_sha256,
-            primary_verdict=final_error.primary_verdict,
-        )
-        raise final_error
-    if result_group is None:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS group produced no result')
-    return result_group
+    if snapshot.protocol_version != PAIRED_PROTOCOL_VERSION:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 metric runners are read-only')
+    return _run_v3_metric_group(
+        request,
+        identity,
+        AppendOnlyAttemptLedger.open_v3_for_resume(request.attempt_directory, identity),
+    )
 
 
 def _v3_registered_cleanup_paths(
@@ -4473,7 +4079,13 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
     status = tuple(
         line for line in _run_git(repo_root(), 'status', '--porcelain=v1', '--untracked-files=all').splitlines()
     )
-    if expected.state not in ('NEW', 'SAMPLING_RESUMABLE'):
+    resumable_sampling_states = (
+        'NEW',
+        'SAMPLING_RESUMABLE',
+        'FIRST_GROUP_COMPLETE',
+        'EXPANDED_GROUP_COMPLETE',
+    )
+    if expected.state not in resumable_sampling_states:
         if expected.ledger is None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 non-sampling state has no ledger')
         if expected.state == 'STARTED_WITHOUT_SAMPLE':
@@ -4515,44 +4127,77 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'opened v3 ledger has a different batch id')
 
     plans = build_round_plan(global_round_start=1, round_count=5)
+    phase = 'sampling'
     try:
-        wall_first = run_normal_wall_group(
-            MetricGroupRequest(request, batch_id, 'wall', plans, ledger.attempt_directory)
-        )
-        pws_first = run_pws_group(MetricGroupRequest(request, batch_id, 'pws', plans, ledger.attempt_directory))
-        assert_same_benchmark_batch(wall_first, pws_first)
-        _validate_phase0a_drift(wall_first, pws_first, baseline, identity)
-        ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, identity)
-        first_sha = ledger.commit_first_group(_group_commit_payload(wall_first, pws_first))
-        wall, pws = wall_first, pws_first
-        diagnostics: tuple[DirectionDiagnosticEvidence, ...] = ()
-        if _paired_groups_require_expansion(request, wall_first, pws_first):
-            expanded = build_round_plan(global_round_start=6, round_count=5)
-            wall_second = run_normal_wall_group(
-                MetricGroupRequest(
-                    request,
-                    batch_id,
-                    'wall',
-                    expanded,
-                    ledger.attempt_directory,
-                    first_group_sha256=first_sha,
-                )
+        if expected.state in ('FIRST_GROUP_COMPLETE', 'EXPANDED_GROUP_COMPLETE'):
+            wall_first = _metric_group_from_v3_ledger(ledger, metric='wall', global_round_start=1)
+            pws_first = _metric_group_from_v3_ledger(ledger, metric='pws', global_round_start=1)
+        else:
+            observed_wall_first = run_normal_wall_group(
+                MetricGroupRequest(request, batch_id, 'wall', plans, ledger.attempt_directory)
             )
-            pws_second = run_pws_group(
-                MetricGroupRequest(
-                    request,
-                    batch_id,
-                    'pws',
-                    expanded,
-                    ledger.attempt_directory,
-                    first_group_sha256=first_sha,
-                )
+            observed_pws_first = run_pws_group(
+                MetricGroupRequest(request, batch_id, 'pws', plans, ledger.attempt_directory)
             )
             ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, identity)
-            ledger.commit_expanded_group(
-                _group_commit_payload(wall_second, pws_second),
-                first_group_sha256=first_sha,
-            )
+            wall_first = _metric_group_from_v3_ledger(ledger, metric='wall', global_round_start=1)
+            pws_first = _metric_group_from_v3_ledger(ledger, metric='pws', global_round_start=1)
+            if observed_wall_first != wall_first or observed_pws_first != pws_first:
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE,
+                    'in-memory first group differs from the durable ledger',
+                )
+        assert_same_benchmark_batch(wall_first, pws_first)
+        _validate_phase0a_drift(wall_first, pws_first, baseline, identity)
+        if expected.state in ('FIRST_GROUP_COMPLETE', 'EXPANDED_GROUP_COMPLETE'):
+            first_sha = ledger.first_group_sha256
+            if first_sha is None:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'durable first-group record is missing')
+        else:
+            first_sha = ledger.commit_first_group(_group_commit_payload(wall_first, pws_first))
+        wall, pws = wall_first, pws_first
+        diagnostics: tuple[DirectionDiagnosticEvidence, ...] = ()
+        expansion_required = expected.state == 'EXPANDED_GROUP_COMPLETE' or _paired_groups_require_expansion(
+            request, wall_first, pws_first
+        )
+        if expansion_required:
+            expanded = build_round_plan(global_round_start=6, round_count=5)
+            if expected.state == 'EXPANDED_GROUP_COMPLETE':
+                wall_second = _metric_group_from_v3_ledger(ledger, metric='wall', global_round_start=6)
+                pws_second = _metric_group_from_v3_ledger(ledger, metric='pws', global_round_start=6)
+            else:
+                observed_wall_second = run_normal_wall_group(
+                    MetricGroupRequest(
+                        request,
+                        batch_id,
+                        'wall',
+                        expanded,
+                        ledger.attempt_directory,
+                        first_group_sha256=first_sha,
+                    )
+                )
+                observed_pws_second = run_pws_group(
+                    MetricGroupRequest(
+                        request,
+                        batch_id,
+                        'pws',
+                        expanded,
+                        ledger.attempt_directory,
+                        first_group_sha256=first_sha,
+                    )
+                )
+                ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, identity)
+                wall_second = _metric_group_from_v3_ledger(ledger, metric='wall', global_round_start=6)
+                pws_second = _metric_group_from_v3_ledger(ledger, metric='pws', global_round_start=6)
+                if observed_wall_second != wall_second or observed_pws_second != pws_second:
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE,
+                        'in-memory expanded group differs from the durable ledger',
+                    )
+                ledger.commit_expanded_group(
+                    _group_commit_payload(wall_second, pws_second),
+                    first_group_sha256=first_sha,
+                )
             limits = COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
             diagnostics = (
                 build_direction_diagnostic(wall_first, wall_second, limits=limits),
@@ -4573,13 +4218,21 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             )
         cleanup_errors = _cleanup_all(_v3_registered_cleanup_paths(request, ledger))
         if cleanup_errors:
-            raise HarnessFailure(
+            cleanup_failure = HarnessFailure(
                 HarnessVerdict.CLEANUP_FAILED,
                 f'formal artifact cleanup failed: {cleanup_errors!r}',
+                primary_verdict=HarnessVerdict.VALIDATED,
             )
+            ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, identity)
+            ledger.finish(
+                cleanup_failure.verdict,
+                primary_verdict=cleanup_failure.primary_verdict,
+            )
+            raise cleanup_failure
         ledger = AppendOnlyAttemptLedger.open_v3_for_resume(ledger.attempt_directory, identity)
         ledger.mark_cleanup_complete()
         attempt = _batch_attempt(ledger, batch_id, AttemptState.CLEANUP_COMPLETE)
+        phase = 'publication'
         evidence = _build_paired_evidence(
             request,
             wall,
@@ -4623,6 +4276,12 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
     except (KeyboardInterrupt, SystemExit) as exc:
         primary = HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal batch was interrupted')
         raise _seal_v3_outer_failure(request, ledger, primary) from exc
+    except ValueError as exc:
+        if phase != 'sampling':
+            raise
+        primary = HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal sampling semantics are invalid')
+        current = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, identity)
+        raise _seal_v3_outer_failure(request, current, primary) from exc
     except HarnessFailure as exc:
         current = AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, identity)
         if current.terminal_verdict is not None or current.prepared_evidence() is not None:
@@ -4977,6 +4636,10 @@ def _paired_groups_require_expansion(
     if any(
         key in limits and requires_mandatory_expansion(measured=value, limit=Decimal(limits[key]))
         for key, value in measured.items()
+    ):
+        return True
+    if request.comparison_profile is ComparisonProfile.PHASE0B_VS_PHASE0A and requires_mandatory_expansion(
+        measured=measured['pws_ratio'], limit=Decimal(1)
     ):
         return True
     for stage in ('ingest', 'writer_populate', 'xlsx_save'):
@@ -5336,33 +4999,16 @@ def _build_paired_evidence(
     ledger: AppendOnlyAttemptLedger | None = None,
 ) -> BenchmarkManifestEvidence:
     if ledger is None:
-        expected_comparison_key = derive_v2_comparison_key(
-            pipeline=request.pipeline,
-            comparison_profile=request.comparison_profile,
-            reference_label=request.reference_label,
-            candidate_label=request.candidate_label,
-            input_sha256=identity.input_sha256,
-            reference_sha256=identity.reference_sha256,
-            candidate_sha256=identity.candidate_sha256,
-        )
-        if (
-            attempt.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION
-            or attempt.comparison_key != expected_comparison_key
-        ):
-            raise HarnessFailure(
-                HarnessVerdict.INCOMPLETE_EVIDENCE,
-                'paired attempt protocol/comparison identity is invalid',
-            )
-    else:
-        if (
-            ledger.protocol_version != PAIRED_PROTOCOL_VERSION
-            or attempt.protocol_version != PAIRED_PROTOCOL_VERSION
-            or attempt.comparison_key != ledger.comparison_key
-            or attempt.batch_id != ledger.batch_id
-            or wall.batch_id != ledger.batch_id
-            or pws.batch_id != ledger.batch_id
-        ):
-            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 paired evidence identity is invalid')
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'protocol v1/v2 evidence construction is read-only')
+    if (
+        ledger.protocol_version != PAIRED_PROTOCOL_VERSION
+        or attempt.protocol_version != PAIRED_PROTOCOL_VERSION
+        or attempt.comparison_key != ledger.comparison_key
+        or attempt.batch_id != ledger.batch_id
+        or wall.batch_id != ledger.batch_id
+        or pws.batch_id != ledger.batch_id
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 paired evidence identity is invalid')
     machine = _capture_machine_evidence()
     rounds = tuple(
         BenchmarkRoundEvidence(
@@ -5406,8 +5052,8 @@ def _build_paired_evidence(
         for sample in (paired.reference, paired.candidate)
     )
     return BenchmarkManifestEvidence(
-        schema_version=3 if ledger is not None else 2,
-        protocol_version=PAIRED_PROTOCOL_VERSION if ledger is not None else LEGACY_PAIRED_PROTOCOL_VERSION,
+        schema_version=3,
+        protocol_version=PAIRED_PROTOCOL_VERSION,
         profile=request.comparison_profile,
         pipeline=request.pipeline,
         input_alias=PathAlias.GB_INPUT if request.pipeline == 'gb' else PathAlias.SK_INPUT,
@@ -5443,10 +5089,10 @@ def _build_paired_evidence(
         local_log_sha256=logs,
         verdict=HarnessVerdict.VALIDATED,
         direction_diagnostics=direction_diagnostics,
-        comparison_key=ledger.comparison_key if ledger is not None else None,
-        batch_id=ledger.batch_id if ledger is not None else None,
-        recovery_provenance=ledger.recovery_provenance if ledger is not None else None,
-        upstream_gate_provenance=ledger.upstream_gate_provenance if ledger is not None else None,
+        comparison_key=ledger.comparison_key,
+        batch_id=ledger.batch_id,
+        recovery_provenance=ledger.recovery_provenance,
+        upstream_gate_provenance=ledger.upstream_gate_provenance,
     )
 
 

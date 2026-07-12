@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use calamine::{open_workbook_auto, Data, Reader};
+use calamine::{open_workbook_auto, Data, Range, Reader};
 use costing_core::model::{CellValue, RawWorkbook};
 use rust_decimal::Decimal;
 pub use rust_xlsxwriter::XlsxError;
@@ -25,29 +25,30 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
         .first()
         .cloned()
         .ok_or_else(|| CostingXlsxError::Message("workbook has no sheets".to_string()))?;
-    let range = workbook.worksheet_range(&sheet_name)?;
-    let rows: Vec<Vec<Data>> = range.rows().map(|row| row.to_vec()).collect();
-    if rows.len() < 2 {
+    let mut range = workbook.worksheet_range(&sheet_name)?;
+    if range.height() < 2 {
         return Err(CostingXlsxError::Message(
             "workbook must contain two header rows".to_string(),
         ));
     }
-    let header_start = find_header_start(&rows)
+    let header_start = find_header_start(&range)
         .ok_or_else(|| CostingXlsxError::Message("未找到可识别的成本计算单双层表头".to_string()))?;
-    let max_width = rows
-        .iter()
-        .skip(header_start)
-        .map(Vec::len)
-        .max()
-        .unwrap_or(0);
-    let header_rows = [
-        normalize_header_row(rows.get(header_start).expect("checked len"), max_width),
-        normalize_header_row(rows.get(header_start + 1).expect("checked len"), max_width),
-    ];
-    let data_rows = rows
-        .iter()
-        .skip(header_start + 2)
-        .map(|row| normalize_data_row(row, max_width))
+    let height = range.height();
+    let width = range.width();
+    let header_rows = {
+        let mut rows = range.rows().skip(header_start);
+        [
+            normalize_header_row(rows.next().expect("checked len"), width),
+            normalize_header_row(rows.next().expect("checked len"), width),
+        ]
+    };
+    let data_rows = (header_start + 2..height)
+        .map(|row| {
+            range[row]
+                .iter_mut()
+                .map(|cell| normalize_data_cell(std::mem::take(cell)))
+                .collect()
+        })
         .collect();
     Ok(RawWorkbook {
         sheet_name,
@@ -56,9 +57,16 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
     })
 }
 
-fn find_header_start(rows: &[Vec<Data>]) -> Option<usize> {
-    rows.windows(2)
-        .position(|pair| is_header_pair(&pair[0], &pair[1]))
+fn find_header_start(range: &Range<Data>) -> Option<usize> {
+    let mut rows = range.rows();
+    let mut top = rows.next()?;
+    for (index, bottom) in rows.enumerate() {
+        if is_header_pair(top, bottom) {
+            return Some(index);
+        }
+        top = bottom;
+    }
+    None
 }
 
 fn is_header_pair(top: &[Data], bottom: &[Data]) -> bool {
@@ -89,26 +97,24 @@ fn normalize_header_row(row: &[Data], width: usize) -> Vec<String> {
         .collect()
 }
 
-fn normalize_data_row(row: &[Data], width: usize) -> Vec<CellValue> {
-    (0..width)
-        .map(|idx| match row.get(idx).unwrap_or(&Data::Empty) {
-            Data::Empty => CellValue::Blank,
-            Data::String(value) => {
-                if value.trim().is_empty() {
-                    CellValue::Blank
-                } else {
-                    CellValue::Text(value.clone())
-                }
+fn normalize_data_cell(cell: Data) -> CellValue {
+    match cell {
+        Data::Empty => CellValue::Blank,
+        Data::String(value) => {
+            if value.trim().is_empty() {
+                CellValue::Blank
+            } else {
+                CellValue::Text(value)
             }
-            Data::Float(value) => float_cell_value(*value),
-            Data::Int(value) => CellValue::Decimal(Decimal::from(*value)),
-            Data::Bool(value) => CellValue::Text(value.to_string()),
-            Data::DateTime(value) => CellValue::DateLike(value.to_string()),
-            Data::DateTimeIso(value) => CellValue::DateLike(value.clone()),
-            Data::DurationIso(value) => CellValue::Text(value.clone()),
-            Data::Error(value) => CellValue::Text(format!("{value:?}")),
-        })
-        .collect()
+        }
+        Data::Float(value) => float_cell_value(value),
+        Data::Int(value) => CellValue::Decimal(Decimal::from(value)),
+        Data::Bool(value) => CellValue::Text(value.to_string()),
+        Data::DateTime(value) => CellValue::DateLike(value.to_string()),
+        Data::DateTimeIso(value) => CellValue::DateLike(value),
+        Data::DurationIso(value) => CellValue::Text(value),
+        Data::Error(value) => CellValue::Text(format!("{value:?}")),
+    }
 }
 
 fn float_text(value: f64) -> String {

@@ -218,7 +218,20 @@ def _write_complete_raw_sample(
 
 
 def _identity() -> BenchmarkIdentity:
-    return BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, 'head', '4' * 64, '5' * 64)
+    return BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+
+
+def _recovery_provenance() -> phase0_harness.RecoveryProvenance:
+    return phase0_harness.RecoveryProvenance(
+        parent_protocol_version=2,
+        parent_comparison_key='0' * 64,
+        parent_attempt=1,
+        parent_terminal_sha256='1' * 64,
+        parent_comparison_tree_sha256='2' * 64,
+        parent_journal_head_sha256='3' * 64,
+        parent_inventory_entry_count=134,
+        reason=phase0_harness.RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    )
 
 
 def _request(tmp_path: Path) -> PairedBenchmarkRequest:
@@ -246,11 +259,18 @@ def _request(tmp_path: Path) -> PairedBenchmarkRequest:
 
 def _group_request(tmp_path: Path, *, start: int = 1) -> MetricGroupRequest:
     request = _request(tmp_path)
-    ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, _identity(), comparison_key='a' * 64)
-    first_group_sha256 = ledger.commit_first_group({'wall': {}, 'pws': {}}) if start == 6 else None
+    ledger = AppendOnlyAttemptLedger.create_v3_once(
+        request.attempt_ledger_root,
+        _identity(),
+        comparison_key='a' * 64,
+        phase0a_manifest_sha256='9' * 64,
+        recovery_provenance=_recovery_provenance(),
+        upstream_gate_provenance=None,
+    )
+    first_group_sha256 = ledger.commit_first_group({'wall': '7' * 64, 'pws': '8' * 64}) if start == 6 else None
     return MetricGroupRequest(
         request,
-        'b' * 64,
+        ledger.batch_id,
         'pws',
         build_round_plan(global_round_start=start, round_count=5),  # type: ignore[arg-type]
         ledger.attempt_directory,
@@ -279,7 +299,9 @@ def _install_runner(
         global_round: int,
         schema: object,
         local_root: Path,
+        allow_resume_artifacts: bool = False,
     ) -> CapturedNormalRun:
+        del allow_resume_artifacts
         calls.append((role, global_round, output_path))
         _write_approved_test_workbook(output_path)
         if role == interrupt_role:
@@ -289,10 +311,10 @@ def _install_runner(
         normal = NormalRunEvidence(
             external_wall_seconds=Decimal('1.25'),
             peak_working_set_bytes=123456,
-            runtime=_runtime(pipeline),
-            workbook_oracle_sha256='oracle',
+            runtime=_runtime(pipeline, output_size_bytes=8),
+            workbook_oracle_sha256='8' * 64,
         )
-        return CapturedNormalRun(normal, 0, 'l' * 64)
+        return CapturedNormalRun(normal, 0, '7' * 64)
 
     monkeypatch.setattr(phase0_harness, '_invoke_pws_single_sample', fake_sample)
     return calls
@@ -306,22 +328,38 @@ def _seed_recorded_pws_sample(
 ) -> Path:
     identity = _identity()
     payload = phase0_harness._planned_output_payload(request, identity, plan.global_round, role)
-    ledger.record_planned_output('pws', plan.global_round, role, payload)
+    plan_sha = ledger.record_planned_output('pws', plan.global_round, role, payload)
+    started_sha = ledger.record_sample_started(
+        batch_id=ledger.batch_id,
+        metric='pws',
+        global_round=plan.global_round,
+        role=role,  # type: ignore[arg-type]
+        order=plan.order,
+        input_sha256=identity.input_sha256,
+        binary_sha256=identity.reference_sha256 if role == 'reference' else identity.candidate_sha256,
+        planned_output_record_sha256=plan_sha,
+    )
     output = phase0_harness._planned_paths((payload,))[0]
     normal = NormalRunEvidence(
         external_wall_seconds=Decimal('1.25'),
         peak_working_set_bytes=123456,
-        runtime=_runtime(),
-        workbook_oracle_sha256='oracle',
+        runtime=_runtime(output_size_bytes=8),
+        workbook_oracle_sha256='8' * 64,
     )
     sample = phase0_harness._metric_sample(
         role,
         plan,
         identity,
-        (normal, 'l' * 64),
+        (normal, '7' * 64),
         metric_value=Decimal(123456),
     )
-    ledger.record_sample('pws', plan.global_round, role, phase0_harness._sample_to_payload(sample))
+    ledger.record_sample(
+        'pws',
+        plan.global_round,
+        role,  # type: ignore[arg-type]
+        phase0_harness._sample_to_payload(sample, batch_id=ledger.batch_id),
+        sample_started_record_sha256=started_sha,
+    )
     return output
 
 
@@ -394,6 +432,17 @@ def test_pws_raw_log_paths_reject_reparse_components(tmp_path: Path) -> None:
         pytest.skip(f'symlink creation is unavailable: {exc}')
     with pytest.raises(HarnessFailure, match='reparse|symlink'):
         phase0_harness._pws_local_artifact_paths(local_root, 'b' * 64, 1, 'reference')
+
+
+def test_v3_cleanup_path_enumeration_is_filesystem_pure(tmp_path: Path) -> None:
+    local_root = tmp_path / 'rust' / 'target' / 'perf-local'
+    local_root.mkdir(parents=True)
+    before = tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob('*')))
+
+    artifacts = phase0_harness._pws_local_artifact_paths(local_root, 'b' * 64, 1, 'reference')
+
+    assert artifacts.result_path.parent == local_root / 'pws-results' / ('b' * 64) / '1'
+    assert tuple(sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob('*'))) == before
 
 
 @pytest.mark.parametrize('schema', (RuntimeSchema.BASE, RuntimeSchema.INSTRUMENTED))
@@ -606,35 +655,41 @@ def test_invoke_pws_rejects_driver_log_collision_without_launch(
     assert launches == []
 
 
-def test_pws_group_rejects_reference_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_pws_group_leaves_reference_failure_for_outer_terminal_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     request = _group_request(tmp_path)
     _install_runner(monkeypatch, tmp_path, fail_role='reference')
     with pytest.raises(HarnessFailure) as caught:
         run_pws_group(request)
     assert caught.value.verdict is HarnessVerdict.REFERENCE_FAILED
-    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is caught.value.verdict
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
-def test_pws_group_rejects_candidate_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_pws_group_leaves_candidate_failure_for_outer_terminal_owner(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     request = _group_request(tmp_path)
     _install_runner(monkeypatch, tmp_path, fail_role='candidate')
     with pytest.raises(HarnessFailure) as caught:
         run_pws_group(request)
     assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
-    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is caught.value.verdict
-    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
-def test_pws_normal_outputs_are_unique_and_removed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_pws_normal_outputs_are_unique_and_left_for_outer_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls = _install_runner(monkeypatch, tmp_path)
     run_pws_group(_group_request(tmp_path))
     outputs = [output for _, _, output in calls]
     assert len(outputs) == len(set(outputs)) == 10
-    assert not any(output.exists() for output in outputs)
+    assert all(output.exists() for output in outputs)
 
 
-def test_pws_resume_adopts_complete_raw_sample_before_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_pws_v3_group_rejects_complete_raw_sample_before_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     request = _group_request(tmp_path)
     ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
     missing_plan = request.plans[0]
@@ -665,15 +720,17 @@ def test_pws_resume_adopts_complete_raw_sample_before_launch(monkeypatch: pytest
     )
     monkeypatch.setattr(phase0_harness, 'workbook_oracle', lambda path: 'oracle')
 
-    group = run_pws_group(request)
+    with pytest.raises(HarnessFailure) as caught:
+        run_pws_group(request)
 
     assert executable.exists()
     assert launches == []
-    assert len(group.rounds) == 5
-    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).sample_payload(
-        'pws', missing_plan.global_round, missing_role
-    )
-    assert not output_path.exists()
+    expected = HarnessVerdict.REFERENCE_FAILED if missing_role == 'reference' else HarnessVerdict.CORRECTNESS_FAILED
+    assert caught.value.verdict is expected
+    loaded = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    assert loaded.sample_payload('pws', missing_plan.global_round, missing_role) is None
+    assert loaded.terminal_verdict is None
+    assert output_path.exists()
 
 
 def test_protocol_v3_pws_never_adopts_complete_raw_artifacts_before_fresh_start(
@@ -716,57 +773,7 @@ def test_protocol_v3_pws_never_adopts_complete_raw_artifacts_before_fresh_start(
     assert launches == []
 
 
-@pytest.mark.parametrize(
-    ('role', 'exit_code', 'timed_out', 'verdict'),
-    (
-        ('candidate', 9, False, HarnessVerdict.CANDIDATE_FAILED),
-        ('candidate', 124, True, HarnessVerdict.CANDIDATE_FAILED),
-        ('reference', 9, False, HarnessVerdict.REFERENCE_FAILED),
-        ('reference', 124, True, HarnessVerdict.REFERENCE_FAILED),
-    ),
-)
-def test_pws_raw_failure_without_workbook_maps_role_verdict(
-    role: str,
-    exit_code: int,
-    timed_out: bool,
-    verdict: HarnessVerdict,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    request = _group_request(tmp_path)
-    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
-    target_plan = request.plans[0]
-    for plan in request.plans:
-        for planned_role in plan.order:
-            if (plan.global_round, planned_role) != (target_plan.global_round, role):
-                _seed_recorded_pws_sample(ledger, request, plan, planned_role)
-    payload = phase0_harness._planned_output_payload(request, _identity(), target_plan.global_round, role)
-    ledger.record_planned_output('pws', target_plan.global_round, role, payload)
-    output_path = phase0_harness._planned_paths((payload,))[0]
-    _write_complete_raw_sample(
-        request.benchmark,
-        output_path,
-        schema=RuntimeSchema.BASE,
-        role=role,
-        global_round=target_plan.global_round,
-        exit_code=exit_code,
-        timed_out=timed_out,
-        peak_working_set_bytes=0,
-        create_workbook=False,
-    )
-    launches: list[object] = []
-    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda benchmark: _identity())
-    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args))
-
-    with pytest.raises(HarnessFailure) as caught:
-        run_pws_group(request)
-
-    assert caught.value.verdict is verdict
-    assert launches == []
-    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is verdict
-
-
-def test_recorded_pws_sample_with_residual_workbook_only_cleans_up(
+def test_recorded_pws_sample_with_residual_workbook_is_left_for_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     request = _group_request(tmp_path)
@@ -785,17 +792,20 @@ def test_recorded_pws_sample_with_residual_workbook_only_cleans_up(
     run_pws_group(request)
 
     assert commands == []
-    assert not residual.exists()
+    assert residual.exists()
 
 
 def test_pws_interruption_uses_planned_ledger_for_outer_cleanup(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls = _install_runner(monkeypatch, tmp_path, interrupt_role='candidate')
-    with pytest.raises(KeyboardInterrupt):
-        run_pws_group(_group_request(tmp_path))
+    request = _group_request(tmp_path)
+    with pytest.raises(HarnessFailure) as caught:
+        run_pws_group(request)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
     assert calls
-    assert not any(output.exists() for _, _, output in calls)
+    assert any(output.exists() for _, _, output in calls)
+    assert AppendOnlyAttemptLedger.load(request.attempt_directory, _identity()).terminal_verdict is None
 
 
 def test_pws_script_parses_with_powershell() -> None:
@@ -1187,10 +1197,15 @@ def test_pws_result_parser_accepts_positive_peak(tmp_path: Path) -> None:
     ),
 )
 def test_pws_group_rejects_missing_duplicate_or_unbalanced_rounds(plans: tuple[object, ...], tmp_path: Path) -> None:
-    request = _request(tmp_path)
-    ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, _identity(), comparison_key='a' * 64)
+    base = _group_request(tmp_path)
     with pytest.raises(ValueError, match='rounds'):
-        MetricGroupRequest(request, 'b' * 64, 'pws', plans, ledger.attempt_directory)  # type: ignore[arg-type]
+        MetricGroupRequest(
+            base.benchmark,
+            base.batch_id,
+            'pws',
+            plans,  # type: ignore[arg-type]
+            base.attempt_directory,
+        )
 
 
 @pytest.mark.parametrize('field', ('input_sha256', 'reference_sha256', 'candidate_sha256', 'git_head'))
@@ -1207,7 +1222,7 @@ def test_pws_group_rejects_sha_or_git_drift(field: str, monkeypatch: pytest.Monk
         run_pws_group(request)
 
 
-def test_pws_cleanup_failure_deletes_batch_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_pws_inner_group_does_not_handle_outer_cleanup_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     request = _group_request(tmp_path)
     _install_runner(monkeypatch, tmp_path)
     runner = phase0_harness._invoke_pws_single_sample
@@ -1218,12 +1233,10 @@ def test_pws_cleanup_failure_deletes_batch_evidence(monkeypatch: pytest.MonkeyPa
         return runner(**kwargs)
 
     monkeypatch.setattr(phase0_harness, '_invoke_pws_single_sample', create_partial_evidence)
-    monkeypatch.setattr(
-        phase0_harness,
-        '_remove_workbook',
-        lambda path: (_ for _ in ()).throw(PermissionError('locked')),
-    )
-    with pytest.raises(HarnessFailure) as caught:
-        run_pws_group(request)
-    assert caught.value.verdict is HarnessVerdict.CLEANUP_FAILED
-    assert not request.benchmark.evidence_path.exists()
+    cleanup_calls: list[Path] = []
+    monkeypatch.setattr(phase0_harness, '_remove_workbook', cleanup_calls.append)
+
+    run_pws_group(request)
+
+    assert cleanup_calls == []
+    assert request.benchmark.evidence_path.exists()

@@ -2,7 +2,7 @@
 
 金蝶 ERP 成本计算单数据处理工具。
 
-当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；日期方案、历史实施计划和 spike 仅记录当时上下文，文档边界见 [`docs/README.md`](docs/README.md)。
+当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；验证与性能口径见 [`docs/README.md`](docs/README.md)。已完成的日期方案、Superpowers 计划和 sidecar spike 已从仓库移除。
 
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
@@ -64,6 +64,14 @@ Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
 - `成本分析工单维度`
 
 `成本分析产品维度` 不属于 Rust 新系统输出契约。
+
+## 性能与内存
+
+- 正式构建统一使用 release profile；`rust/Cargo.toml` 固定 `codegen-units = 1`，以运行性能优先于完整 release 重编译速度。
+- CLI 默认启用自适应 low-memory writer。单张 Sheet 达到 `5,000,000` 个 `行数 × 列数` slots 时进入 low-memory，小 workbook 保持标准 writer。
+- low-memory 临时目录创建在最终输出目录内，名称以 `.costing-tmp-` 开头；成功或失败均显式清理，不使用系统 `%TEMP%`。
+- 大 workbook 使用受控 `rust_xlsxwriter` fork 和固定 ZIP 压缩等级，fork revision 由 `rust/Cargo.toml` 精确锁定。
+- 2026-07-12 同机 N=5 验收中，SK normal-mode wall-clock 中位数为 `19.883s`，Peak Working Set 中位数为 `1.361 GiB`；GB 中位数为 `2.475s`。这些是本机验证快照，不是跨机器 SLA。详见 [`docs/rust_rewrite_validation.md`](docs/rust_rewrite_validation.md)。
 
 ## 输出说明
 Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件。

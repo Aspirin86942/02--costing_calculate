@@ -65,13 +65,13 @@ Python legacy/oracle 代码仍保持严格分层，并由 `tests/architecture/te
 
 ```bash
 # 构建/运行当前主入口
-cargo build --manifest-path rust/Cargo.toml
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
+cargo build --release --manifest-path rust/Cargo.toml
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
 
 # Rust 预检 + benchmark
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
-cargo run --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --check-only --benchmark
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --check-only --benchmark
 
 # Rust 测试/格式
 cargo test --manifest-path rust/Cargo.toml
@@ -109,4 +109,5 @@ uv run python -m ruff format src tests --check
 
 - Rust CLI 是 GB/SK 默认主入口，直接读取原始 `.xlsx`，并只写固定 3-sheet workbook。
 - `rust/crates/costing-core` 承担 Decimal fact、质量指标和 Modified Z-score；`costing-xlsx` 负责直接读写 workbook。
+- `costing-xlsx` 按 `5,000,000` cell slots 自适应启用 low-memory writer，临时目录固定在最终输出目录；正式性能结论只使用 release profile。
 - `main.py` 与 `src/` 仅保留为 Python legacy/oracle/regression 路径；Python retirement 需要单独批准。

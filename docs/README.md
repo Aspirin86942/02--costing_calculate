@@ -1,31 +1,25 @@
 # 文档导航
 
-本页区分当前操作文档、验证依据和历史设计记录，避免把迁移前命令当成现行入口。
+本目录只保留当前操作说明、持续验证边界和少量可审计证据。业务真值仍来自当前代码与 `tests/contracts/baselines/`。
 
-## 当前操作文档
+## 当前文档
 
-- [`../README.md`](../README.md)：面向使用者的安装、运行、输出和测试命令。
-- [`../AGENTS.md`](../AGENTS.md)：面向代码代理的工程约束、当前业务规则和验证口径。
-- [`../CLAUDE.md`](../CLAUDE.md)：与当前 Rust 主入口、Cargo 和 uv/.venv 口径一致的 Claude Code 指引。
-- [`rust_rewrite_validation.md`](rust_rewrite_validation.md)：Rust 切换后的持续验证门禁和已登记证据。
-- [`evidence/2026-07-10-rust-validation.md`](evidence/2026-07-10-rust-validation.md)：2026-07-10 本机验证快照、复现命令和证据限制。
-- [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：Python oracle/legacy 退场边界；删除仍需单独审批。
-- [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error log 和 Rust/Python oracle 的契约说明。
+- [`../README.md`](../README.md)：面向使用者的安装、运行、输出与性能行为。
+- [`../AGENTS.md`](../AGENTS.md)：面向代码代理的工程约束、业务规则和完成标准。
+- [`../CLAUDE.md`](../CLAUDE.md)：Claude Code 的当前 Rust/Cargo 与 uv 使用口径。
+- [`rust_rewrite_validation.md`](rust_rewrite_validation.md)：2026-07-12 Rust 主路径最终验证结论和持续门禁。
+- [`performance/README.md`](performance/README.md)：当前性能目标、实现边界、复测方式和冻结基线说明。
+- [`evidence/2026-07-12-rust-performance-validation.md`](evidence/2026-07-12-rust-performance-validation.md)：最终 N=5 验收快照及证据限制。
+- [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：Python oracle/legacy 的保留与独立退场边界。
+- [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
 
 ## 权威顺序
 
-1. 业务与运行行为以当前代码和 `tests/contracts/baselines/` 为准。
-2. 当前命令以根 `README.md` 和 `AGENTS.md` 为准：生产主入口使用 Rust/Cargo，Python oracle/regression 使用 uv 管理的项目 `.venv`。
-3. Rust 切换证据以 `rust_rewrite_validation.md` 为准。
-4. 设计和实施计划用于解释历史决策，不覆盖当前代码或当前命令。
+1. 当前代码和 `tests/contracts/baselines/`。
+2. 根 `AGENTS.md` 与 `README.md`。
+3. `rust_rewrite_validation.md` 与 `performance/README.md` 中的当前验证口径。
+4. `docs/performance/baselines/` 和 `docs/performance/dependencies/` 中的冻结 JSON，仅用于审计历史基线与依赖 pin。
 
-## 历史材料
+## 已清理的历史材料
 
-以下目录或日期文档保留当时的设计、实施步骤和测量上下文：
-
-- `superpowers/specs/`
-- `superpowers/plans/`
-- 日期前缀的 plan/spec 文档
-- `../spikes/`
-
-其中可能仍出现已退役的 `conda run -n costing311`、`conda run -n test`、Python 默认入口或 GUI 命令。这些内容是历史记录，不是当前环境指引。原则上不机械改写已经执行过的历史步骤；确需让历史验证命令在当前环境复跑时，必须在文档开头标记后补兼容说明。
+2026-07-12 已删除完成后的 `docs/superpowers/`、日期 plan/spec、旧 sidecar spike 和过期的 2026-07-10 验证快照。Git 历史仍可追溯原文，但这些材料不再出现在当前文档导航中，也不得作为待执行清单恢复。

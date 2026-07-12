@@ -15,7 +15,7 @@
 - `data/processed/{gb,sk}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
 - 历史 `scripts/` 已移除；新增业务功能默认在 `rust/` 实现，`src/` 仅用于 Python oracle/legacy/regression 或退场前必要修复
-- 当前执行口径以本文件和根 `README.md` 为准；`docs/superpowers/`、日期方案和 `spikes/` 属于历史记录，其中旧 `conda` 命令不再是当前默认环境口径
+- 当前执行口径以本文件、根 `README.md` 和 `docs/README.md` 为准；已完成的 `docs/superpowers/`、日期方案和 sidecar `spikes/` 已移除，不再作为实现入口
 
 ### Build / Test / Dev Commands
 - `cargo build --release --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
@@ -40,6 +40,14 @@
 - `uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression`: 运行 Python oracle/regression 测试
 - `uv run python -m ruff check src tests`: Python 代码检查
 - `uv run python -m ruff format src tests --check`: Python 代码格式化检查
+
+### Rust 性能与内存约束
+
+- `rust/Cargo.toml` 的 release profile 固定 `codegen-units = 1`；正式性能比较不得使用 dev profile。
+- `costing-calculate` 默认启用 `low-memory` feature；单张 Sheet 的 `rows × columns` 达到 `5,000,000` slots 时进入 low-memory，小 workbook 继续使用标准 writer。
+- low-memory 临时目录必须位于最终输出目录，禁止回退到系统 `%TEMP%`；成功、失败和清理失败都必须保留可审计结果。
+- `rust_xlsxwriter` 必须使用 `rust/Cargo.toml` 中精确 revision 的受控 fork；升级 revision 时必须先在 fork 中通过 lib tests 和 `constant_memory` feature check。
+- 当前性能验收口径与 2026-07-12 N=5 快照见 `docs/performance/README.md` 和 `docs/rust_rewrite_validation.md`；历史 Phase 0A JSON 只作为冻结基线，不是待执行计划。
 
 如缺少测试依赖，优先安装 editable extras：
 - `uv sync --extra dev`

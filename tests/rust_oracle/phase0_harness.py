@@ -1200,6 +1200,7 @@ def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
                             else HarnessVerdict.CORRECTNESS_FAILED
                         )
                         raise HarnessFailure(verdict, f'{role} capture boundary failed') from exc
+                    capture = _with_actual_workbook_dimensions(capture, output)
                     _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
                     cleanup_paths.append(
                         request.benchmark.local_root / 'raw-logs' / f'{capture.local_unversioned_log_sha256}.json'
@@ -1666,17 +1667,17 @@ def _with_actual_workbook_dimensions(captured: CapturedNormalRun, output: Path) 
         try:
             expected_names = tuple(item.value for item in ApprovedSheet)
             if tuple(workbook.sheetnames) != expected_names:
-                raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A Sheet contract mismatch')
+                raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'workbook Sheet contract mismatch')
             actual = tuple(workbook[name].calculate_dimension() for name in expected_names)
         finally:
             workbook.close()
     except HarnessFailure:
         raise
     except Exception as exc:
-        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A workbook dimensions are unreadable') from exc
+        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'workbook dimensions are unreadable') from exc
     reported = captured.normal_run.runtime.sheet_dimensions
     if reported and reported != actual:
-        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'Phase 0A runtime dimensions mismatch workbook')
+        raise HarnessFailure(HarnessVerdict.CORRECTNESS_FAILED, 'runtime dimensions mismatch workbook')
     if reported:
         return captured
     runtime = replace(captured.normal_run.runtime, sheet_dimensions=actual)
@@ -2329,6 +2330,7 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
                             else HarnessVerdict.CORRECTNESS_FAILED
                         )
                         raise HarnessFailure(verdict, f'{role} PWS capture boundary failed') from exc
+                    capture = _with_actual_workbook_dimensions(capture, output)
                     _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
                     if capture.normal_run.peak_working_set_bytes is None:
                         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'PWS capture omitted PeakWorkingSet64')

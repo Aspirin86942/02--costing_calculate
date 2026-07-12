@@ -83,7 +83,7 @@ def _runtime(pipeline: str = 'gb') -> RuntimeEvidence:
             for name in ('ingest', 'normalize', 'split', 'fact', 'presentation', 'total', 'export')
         ),
         output_size_bytes=8,
-        sheet_dimensions=('1x1', '1x1', '1x1'),
+        sheet_dimensions=_APPROVED_TEST_DIMENSIONS,
         reader_snapshot_sha256='',
     )
 
@@ -355,8 +355,7 @@ def _install_runner(
     ) -> CapturedNormalRun:
         role = 'reference' if executable.name.startswith('reference') else 'candidate'
         commands.append((role, pipeline, str(input_path), str(output_path), *kwargs.keys()))
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b'workbook')
+        _write_approved_test_workbook(output_path)
         if role == interrupt_role:
             raise KeyboardInterrupt('simulated process interruption')
         if role == validation_fail_role:
@@ -386,6 +385,53 @@ def _group_request(tmp_path: Path) -> MetricGroupRequest:
         build_round_plan(global_round_start=1, round_count=5),
         ledger.attempt_directory,
     )
+
+
+@pytest.mark.parametrize('metric', ('wall', 'pws'))
+def test_formal_group_capture_records_actual_dimensions_when_runtime_omits_them(
+    metric: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _install_runner(monkeypatch, tmp_path)
+    request = _group_request(tmp_path)
+    request = replace(request, batch_id='b' * 64, metric=metric)
+
+    def captured(output: Path, *, peak: int | None) -> CapturedNormalRun:
+        _write_approved_test_workbook(output)
+        runtime = replace(_runtime(), sheet_dimensions=())
+        return CapturedNormalRun(
+            NormalRunEvidence(Decimal('1'), peak, runtime, '8' * 64),
+            0,
+            '7' * 64,
+        )
+
+    def wall_capture(*args: object, **_kwargs: object) -> CapturedNormalRun:
+        return captured(Path(args[3]), peak=None)
+
+    def pws_capture(**kwargs: object) -> CapturedNormalRun:
+        return captured(Path(kwargs['output_path']), peak=100)
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', wall_capture)
+    monkeypatch.setattr(phase0_harness, '_invoke_pws_single_sample', pws_capture)
+
+    group = run_normal_wall_group(request) if metric == 'wall' else phase0_harness.run_pws_group(request)
+
+    assert {paired.reference.normal_run.runtime.sheet_dimensions for paired in group.rounds} == {
+        _APPROVED_TEST_DIMENSIONS
+    }
+    assert {paired.candidate.normal_run.runtime.sheet_dimensions for paired in group.rounds} == {
+        _APPROVED_TEST_DIMENSIONS
+    }
+    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    recorded = {
+        phase0_harness._sample_from_payload(
+            ledger.sample_payload(metric, round_number, role)
+        ).normal_run.runtime.sheet_dimensions
+        for round_number in range(1, 6)
+        for role in ('reference', 'candidate')
+    }
+    assert recorded == {_APPROVED_TEST_DIMENSIONS}
 
 
 def _metric_group(metric: str, *, start: int = 1, reference: str = '1.0', candidate: str = '1.0') -> MetricGroup:
@@ -945,7 +991,8 @@ def test_phase0a_group_rejects_runtime_dimensions_that_differ_from_actual_workbo
     ) -> CapturedNormalRun:
         del executable, input_path, kwargs
         _write_approved_test_workbook(output_path)
-        return CapturedNormalRun(NormalRunEvidence(Decimal('1'), None, _runtime(pipeline), '8' * 64), 0, '7' * 64)
+        mismatched = replace(_runtime(pipeline), sheet_dimensions=('A1:A1', 'A1:A1', 'A1:A1'))
+        return CapturedNormalRun(NormalRunEvidence(Decimal('1'), None, mismatched, '8' * 64), 0, '7' * 64)
 
     monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', fake_capture)
 

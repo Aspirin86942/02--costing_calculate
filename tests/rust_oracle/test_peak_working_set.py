@@ -63,9 +63,27 @@ def _runtime(pipeline: str = 'gb', *, output_size_bytes: int | None = None) -> R
             for name in ('ingest', 'normalize', 'split', 'fact', 'presentation', 'total', 'export')
         ),
         output_size_bytes=output_size_bytes,
-        sheet_dimensions=('1x1', '1x1', '1x1'),
+        sheet_dimensions=_APPROVED_TEST_DIMENSIONS,
         reader_snapshot_sha256='',
     )
+
+
+_APPROVED_TEST_DIMENSIONS = ('A1:A1', 'A1:A1', 'A1:A1')
+
+
+def _write_approved_test_workbook(path: Path) -> None:
+    from openpyxl import Workbook
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    try:
+        for index, sheet in enumerate(phase0_harness.ApprovedSheet):
+            worksheet = workbook.active if index == 0 else workbook.create_sheet()
+            worksheet.title = sheet.value
+            worksheet['A1'] = 'value'
+        workbook.save(path)
+    finally:
+        workbook.close()
 
 
 def _write_minimal_xlsx(path: Path) -> None:
@@ -113,7 +131,7 @@ def _runtime_payload(output_path: Path, *, schema: RuntimeSchema) -> dict[str, o
             'work_order_rows': 1,
         },
         'stage_timings': {'stages': stages},
-        'sheet_dimensions': ['1x1', '1x1', '1x1'],
+        'sheet_dimensions': list(_APPROVED_TEST_DIMENSIONS),
         'request_id': 'request-id',
     }
 
@@ -143,7 +161,7 @@ def _write_complete_raw_sample(
     create_workbook: bool = True,
 ) -> tuple[Path, ...]:
     if create_workbook:
-        _write_minimal_xlsx(output_path)
+        _write_approved_test_workbook(output_path)
     result, stdout_path, stderr_path, driver_path = _raw_artifact_paths(
         request.local_root, batch_id, global_round, role
     )
@@ -263,8 +281,7 @@ def _install_runner(
         local_root: Path,
     ) -> CapturedNormalRun:
         calls.append((role, global_round, output_path))
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b'workbook')
+        _write_approved_test_workbook(output_path)
         if role == interrupt_role:
             raise KeyboardInterrupt('simulated interruption')
         if role == fail_role:

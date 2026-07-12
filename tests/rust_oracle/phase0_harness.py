@@ -444,6 +444,19 @@ class AppendOnlyAttemptLedger:
         comparison_key = metadata.get('comparison_key')
         if not _is_sha256(comparison_key):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata comparison_key is invalid')
+        if comparison_key != directory.parent.name:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'attempt metadata comparison_key does not match its directory',
+            )
+        attempt_number = metadata.get('attempt_number')
+        if type(attempt_number) is not int or attempt_number < 1:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata number is invalid')
+        if directory.name != f'attempt-{attempt_number:04d}':
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'attempt metadata number does not match its directory',
+            )
         stored_identity = metadata.get('identity')
         if (
             not isinstance(stored_identity, dict)
@@ -468,6 +481,11 @@ class AppendOnlyAttemptLedger:
         records = sorted((directory / 'records').glob('*.json'))
         checkpoints = sorted((directory / 'checkpoints').glob('*.json'))
         missing_committed_checkpoint = len(records) == len(checkpoints) + 1
+        if missing_committed_checkpoint and protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'protocol v1 audit cannot repair a missing committed checkpoint',
+            )
         if len(records) != len(checkpoints) and not missing_committed_checkpoint:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'record/checkpoint count mismatch')
         paired_records = records[:-1] if missing_committed_checkpoint else records
@@ -627,7 +645,6 @@ class AppendOnlyAttemptLedger:
                 state = AttemptState.EXPANDED_GROUP_COMPLETE
             elif first_group_sha256:
                 state = AttemptState.FIRST_GROUP_COMPLETE
-        attempt_number = int(metadata['attempt_number'])
         previous_head = metadata.get('previous_attempt_head_sha256')
         if attempt_number > 1:
             previous_directory = directory.parent / f'attempt-{attempt_number - 1:04d}'
@@ -667,6 +684,11 @@ class AppendOnlyAttemptLedger:
             )
             if latest_anchors.get(attempt_number) != prior_anchor:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
+            if protocol_version != PAIRED_PROTOCOL_VERSION:
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE,
+                    'protocol v1 audit cannot repair a comparison journal anchor',
+                )
             journal_head = _append_recovered_journal_anchor(directory.parent, journal_head, expected_anchor)
         return cls(
             attempt_directory=directory,

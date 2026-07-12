@@ -141,10 +141,10 @@ def _ledger(tmp_path: Path) -> AppendOnlyAttemptLedger:
     )
 
 
-def _rewrite_metadata_and_matching_empty_journal(attempt: Path, *, protocol_version: object) -> None:
+def _rewrite_metadata_and_matching_empty_journal(attempt: Path, **changes: object) -> None:
     metadata_path = attempt / 'metadata.json'
     metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-    metadata['protocol_version'] = protocol_version
+    metadata.update(changes)
     metadata_raw = phase0_harness._canonical_json(metadata)
     metadata_path.write_bytes(metadata_raw)
     metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
@@ -203,6 +203,113 @@ def _write_synthetic_v1_terminal(tmp_path: Path, *, comparison_key: str) -> Path
     journal_raw = phase0_harness._canonical_json({'previous_journal_sha256': None, **state})
     (comparison / 'journal' / '000001.json').write_bytes(journal_raw)
     return attempt
+
+
+def _write_synthetic_record(
+    attempt: Path,
+    *,
+    sequence: int,
+    kind: str,
+    previous_record_sha256: str,
+    previous_checkpoint_sha256: str,
+    write_checkpoint: bool = True,
+    **payload: object,
+) -> tuple[str, str]:
+    record = {'kind': kind, 'previous_record_sha256': previous_record_sha256, **payload}
+    record_raw = phase0_harness._canonical_json(record)
+    (attempt / 'records' / f'{sequence:04d}-{kind}.json').write_bytes(record_raw)
+    record_sha = hashlib.sha256(record_raw).hexdigest()
+    checkpoint = {
+        'record_count': sequence,
+        'record_sha256': record_sha,
+        'previous_checkpoint_sha256': previous_checkpoint_sha256,
+    }
+    checkpoint_raw = phase0_harness._canonical_json(checkpoint)
+    if write_checkpoint:
+        (attempt / 'checkpoints' / f'{sequence:04d}.json').write_bytes(checkpoint_raw)
+    return record_sha, hashlib.sha256(checkpoint_raw).hexdigest()
+
+
+def _write_recoverable_v1_success(
+    tmp_path: Path,
+    *,
+    comparison_key: str,
+    missing_checkpoint: bool,
+    stale_journal: bool,
+) -> Path:
+    if missing_checkpoint == stale_journal:
+        raise ValueError('select exactly one v1 recovery edge')
+    comparison = tmp_path / 'rust' / 'target' / 'perf-local' / 'batches' / comparison_key
+    attempt = comparison / 'attempt-0001'
+    (attempt / 'records').mkdir(parents=True)
+    (attempt / 'checkpoints').mkdir()
+    (comparison / 'journal').mkdir()
+    metadata = {
+        'comparison_key': comparison_key,
+        'attempt_number': 1,
+        'identity': asdict(_identity()),
+        'previous_attempt_head_sha256': None,
+        'reason': 'FORMAL_START',
+        'inherited_planned_outputs': [],
+        'cleanup_only': False,
+        'recovery_primary_verdict': None,
+    }
+    metadata_raw = phase0_harness._canonical_json(metadata)
+    (attempt / 'metadata.json').write_bytes(metadata_raw)
+    metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
+    record1, checkpoint1 = _write_synthetic_record(
+        attempt,
+        sequence=1,
+        kind='first-group',
+        previous_record_sha256=metadata_sha,
+        previous_checkpoint_sha256=metadata_sha,
+        groups={'wall': {}, 'pws': {}},
+    )
+    record2, checkpoint2 = _write_synthetic_record(
+        attempt,
+        sequence=2,
+        kind='cleanup-complete',
+        previous_record_sha256=record1,
+        previous_checkpoint_sha256=checkpoint1,
+        planned_output_count=0,
+    )
+    artifact_content = '{}'
+    artifact_sha256 = hashlib.sha256(artifact_content.encode('utf-8')).hexdigest()
+    record3, checkpoint3 = _write_synthetic_record(
+        attempt,
+        sequence=3,
+        kind='evidence-prepared',
+        previous_record_sha256=record2,
+        previous_checkpoint_sha256=checkpoint2,
+        artifact_basename='benchmark-v1-audit.json',
+        artifact_sha256=artifact_sha256,
+        artifact_content=artifact_content,
+    )
+    record4, checkpoint4 = _write_synthetic_record(
+        attempt,
+        sequence=4,
+        kind='evidence-committed',
+        previous_record_sha256=record3,
+        previous_checkpoint_sha256=checkpoint3,
+        write_checkpoint=not missing_checkpoint,
+        artifact_sha256=artifact_sha256,
+    )
+    state = phase0_harness._journal_state_payload(
+        attempt_number=1,
+        record_count=3 if stale_journal else 4,
+        record_head_sha256=record3 if stale_journal else record4,
+        checkpoint_head_sha256=checkpoint3 if stale_journal else checkpoint4,
+        terminal_present=False,
+        terminal_head_sha256=None,
+        verdict=None,
+    )
+    journal_raw = phase0_harness._canonical_json({'previous_journal_sha256': None, **state})
+    (comparison / 'journal' / '000001.json').write_bytes(journal_raw)
+    return attempt
+
+
+def _file_snapshot(root: Path) -> dict[str, bytes]:
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob('*') if path.is_file()}
 
 
 def _claim(tmp_path: Path, path: Path, sha256: str) -> UnverifiedPriorEvidenceClaim:
@@ -1313,16 +1420,11 @@ def test_ledger_rejects_unknown_or_non_integer_protocol_version(invalid: object,
 def test_v1_metadata_without_protocol_version_loads_read_only(tmp_path: Path) -> None:
     attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
     comparison = attempt.parent
-    before = {
-        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
-    }
+    before = _file_snapshot(comparison)
     loaded = AppendOnlyAttemptLedger.load(attempt, _identity(), strict_identity=False)
     assert loaded.protocol_version == 1
     assert loaded.terminal_verdict is HarnessVerdict.INCONCLUSIVE
-    after = {
-        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
-    }
-    assert after == before
+    assert _file_snapshot(comparison) == before
 
 
 def test_v2_start_does_not_mutate_synthetic_v1_terminal(tmp_path: Path) -> None:
@@ -1343,9 +1445,7 @@ def test_v2_start_does_not_mutate_synthetic_v1_terminal(tmp_path: Path) -> None:
 def test_v2_create_refuses_to_append_synthetic_v1_comparison_directory(tmp_path: Path) -> None:
     attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
     comparison = attempt.parent
-    before = {
-        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
-    }
+    before = _file_snapshot(comparison)
     with pytest.raises(HarnessFailure, match='protocol v1') as caught:
         AppendOnlyAttemptLedger.create(
             tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
@@ -1353,10 +1453,96 @@ def test_v2_create_refuses_to_append_synthetic_v1_comparison_directory(tmp_path:
             comparison_key='a' * 64,
         )
     assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
-    after = {
-        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
-    }
-    assert after == before
+    assert _file_snapshot(comparison) == before
+
+
+@pytest.mark.parametrize(
+    ('missing_checkpoint', 'stale_journal'),
+    ((True, False), (False, True)),
+)
+def test_v1_audit_recovery_edges_fail_without_writing(
+    missing_checkpoint: bool,
+    stale_journal: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    attempt = _write_recoverable_v1_success(
+        tmp_path,
+        comparison_key='a' * 64,
+        missing_checkpoint=missing_checkpoint,
+        stale_journal=stale_journal,
+    )
+    comparison = attempt.parent
+    before = _file_snapshot(comparison)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_validate_prepared_evidence',
+        lambda record: {
+            'artifact_basename': record['artifact_basename'],
+            'artifact_sha256': record['artifact_sha256'],
+            'artifact_content': record['artifact_content'],
+        },
+    )
+    with pytest.raises(HarnessFailure, match='protocol v1') as caught:
+        AppendOnlyAttemptLedger.load(attempt, _identity(), strict_identity=False)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert _file_snapshot(comparison) == before
+
+
+def test_v2_create_does_not_repair_v1_before_rejecting(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    attempt = _write_recoverable_v1_success(
+        tmp_path,
+        comparison_key='a' * 64,
+        missing_checkpoint=True,
+        stale_journal=False,
+    )
+    comparison = attempt.parent
+    before = _file_snapshot(comparison)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_validate_prepared_evidence',
+        lambda record: {
+            'artifact_basename': record['artifact_basename'],
+            'artifact_sha256': record['artifact_sha256'],
+            'artifact_content': record['artifact_content'],
+        },
+    )
+    with pytest.raises(HarnessFailure, match='protocol v1'):
+        AppendOnlyAttemptLedger.create(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _identity(),
+            comparison_key='a' * 64,
+        )
+    assert _file_snapshot(comparison) == before
+
+
+@pytest.mark.parametrize('invalid', (True, '1', 1.0, 0, -1))
+def test_attempt_metadata_rejects_non_exact_positive_integer_number(invalid: object, tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _rewrite_metadata_and_matching_empty_journal(ledger.attempt_directory, attempt_number=invalid)
+    with pytest.raises(HarnessFailure) as caught:
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+def test_attempt_metadata_number_must_match_directory_basename(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    renamed = ledger.attempt_directory.parent / 'attempt-0002'
+    ledger.attempt_directory.rename(renamed)
+    with pytest.raises(HarnessFailure) as caught:
+        AppendOnlyAttemptLedger.load(renamed, _identity())
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+def test_attempt_metadata_comparison_key_must_match_parent_directory(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _rewrite_metadata_and_matching_empty_journal(ledger.attempt_directory, comparison_key='b' * 64)
+    with pytest.raises(HarnessFailure) as caught:
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
 
 
 def test_current_runner_refuses_v1_attempt_as_resume(tmp_path: Path) -> None:

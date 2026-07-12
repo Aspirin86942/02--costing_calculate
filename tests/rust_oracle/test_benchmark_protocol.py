@@ -16,6 +16,7 @@ from tests.rust_oracle.benchmark_protocol import (
     PairedRound,
     Phase0AManifest,
     RuntimeEvidence,
+    aggregate_output_bytes,
     approved_phase0a_output_bytes,
     assert_environment_not_drifted,
     assert_output_bytes_within_phase0a_limit,
@@ -471,14 +472,17 @@ def test_phase4_profile_uses_ingest_and_pws_from_same_batch() -> None:
     assert rule.same_batch_metrics == ('ingest', 'pws')
 
 
-def test_output_bytes_uses_approved_phase0a_value() -> None:
-    manifest = _manifest(gb_output_sizes=(100, 100, 100, 100, 100), sk_output_sizes=(200, 200, 200, 200, 200))
-    assert approved_phase0a_output_bytes(manifest, 'gb') == 100
+def test_output_bytes_uses_conservative_phase0a_median_with_valid_one_byte_variation() -> None:
+    manifest = _manifest(
+        gb_output_sizes=(100, 101, 101, 101, 101),
+        sk_output_sizes=(200, 200, 200, 200, 200),
+    )
+    assert approved_phase0a_output_bytes(manifest, 'gb') == 101
     assert approved_phase0a_output_bytes(manifest, 'sk') == 200
     assert_output_bytes_within_phase0a_limit(candidate_bytes=220, manifest=manifest, pipeline='sk')
     with pytest.raises(ValueError, match='110%'):
         assert_output_bytes_within_phase0a_limit(candidate_bytes=221, manifest=manifest, pipeline='sk')
-    for sizes in [(None, None, None, None, None), (200, 200, 201, 200, 200), (0, 0, 0, 0, 0)]:
+    for sizes in [(None, None, None, None, None), (0, 0, 0, 0, 0)]:
         with pytest.raises(ValueError, match='Phase 0A'):
             approved_phase0a_output_bytes(_manifest(sk_output_sizes=sizes), 'sk')
     mislabeled = replace(manifest, sk_pws=replace(manifest.sk_pws, pipeline='gb'))
@@ -487,6 +491,16 @@ def test_output_bytes_uses_approved_phase0a_value() -> None:
     mislabeled = replace(manifest, sk_pws=replace(manifest.sk_pws, metric='wall'))
     with pytest.raises(ValueError, match='metric'):
         approved_phase0a_output_bytes(mislabeled, 'sk')
+
+
+def test_output_bytes_median_rounds_even_half_byte_upward() -> None:
+    assert aggregate_output_bytes((100, 101)) == 101
+
+
+@pytest.mark.parametrize('values', ((), (None,), (True,), (1.5,), ('1',), (0,), (-1,)))
+def test_output_bytes_median_rejects_empty_or_invalid_sizes(values: tuple[object, ...]) -> None:
+    with pytest.raises(ValueError, match='output bytes'):
+        aggregate_output_bytes(values)
 
 
 def test_environment_drift_rejects_changed_machine_fingerprint() -> None:

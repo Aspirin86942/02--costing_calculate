@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
 from statistics import median
@@ -618,26 +619,43 @@ def _phase0a_group(manifest: Phase0AManifest, pipeline: PipelineName, metric: Me
     return group
 
 
+def aggregate_output_bytes(values: Iterable[object]) -> int:
+    sizes: list[int] = []
+    for value in values:
+        if type(value) is not int:
+            raise ValueError('output bytes must be positive integers')
+        size = int(value)
+        if size <= 0:
+            raise ValueError('output bytes must be positive integers')
+        sizes.append(size)
+    if not sizes:
+        raise ValueError('output bytes must be nonempty')
+    decimal_median = median(Decimal(value) for value in sizes)
+    # 偶数样本的中位数可能落在半字节；向上取整可避免低估后续容量门禁。
+    return int(decimal_median.to_integral_value(rounding=ROUND_CEILING))
+
+
 def approved_phase0a_output_bytes(manifest: Phase0AManifest, pipeline: PipelineName) -> int:
     values: list[int | None] = []
     for metric in ('wall', 'pws'):
         group = _phase0a_group(manifest, pipeline, metric)
         validate_calibration_group(group)
         values.extend(item.reference.normal_run.runtime.output_size_bytes for item in group.rounds)
-    if not values or any(value is None or value <= 0 for value in values) or len(set(values)) != 1:
-        raise ValueError('Phase 0A output bytes must be present, positive, and identical in wall/PWS reference samples')
-    approved = values[0]
-    assert approved is not None  # 上面的 fail-closed 校验已排除空值。
-    return approved
+    try:
+        return aggregate_output_bytes(values)
+    except ValueError as exc:
+        raise ValueError('Phase 0A output bytes must be present and positive in wall/PWS reference samples') from exc
 
 
 def assert_output_bytes_within_phase0a_limit(
     *, candidate_bytes: int, manifest: Phase0AManifest, pipeline: PipelineName
 ) -> None:
-    if candidate_bytes <= 0:
-        raise ValueError('candidate output bytes must be positive')
+    try:
+        candidate = aggregate_output_bytes((candidate_bytes,))
+    except ValueError as exc:
+        raise ValueError('candidate output bytes must be a positive integer') from exc
     approved = approved_phase0a_output_bytes(manifest, pipeline)
-    if Decimal(candidate_bytes) > Decimal(approved) * OUTPUT_BYTES_RATIO_LIMIT:
+    if Decimal(candidate) > Decimal(approved) * OUTPUT_BYTES_RATIO_LIMIT:
         raise ValueError('candidate output bytes exceed 110% of approved Phase 0A bytes')
 
 

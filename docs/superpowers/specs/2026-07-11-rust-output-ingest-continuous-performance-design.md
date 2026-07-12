@@ -1089,7 +1089,7 @@ round 2/4/6/8/10 : candidate → reference
 
 本设计中的正式样本数记为 `N`：默认 `N=5`；若触发第 10.5 节临界噪声规则，则追加五轮并令 `N=10`。所有写作“5 轮 median”的目标，机械执行时均解释为“`N` 轮 median”。
 
-除确定性的 output bytes 外，所有性能比的分子和分母必须同时满足：
+output bytes 使用 wall/PWS 的 `N` 轮样本中位数与已批准 manifest 的不可变中位数比较，不适用下述同批性能比规则。除 output bytes 外，所有性能比的分子和分母必须同时满足：
 
 - 同一 pipeline 和 input SHA；
 - 同一 `N`；
@@ -1120,7 +1120,7 @@ data/processed/<pipeline>/.perf-runs/<binary-sha>/<round>/
 ### 10.5 噪声规则
 
 1. 第一组五轮是正式证据；
-2. 对任一上限型比例，先写成 `measured / limit`；满足 `abs(measured / limit - 1) <= 0.03` 时必须再采五轮，无论首组当前通过还是失败，不允许操作者选择。绝对秒数上限也用同一归一化公式。任一 time/PWS 指标触发后，该候选的时间和 PWS 两套证据都补足到 `N=10`；输出字节数是确定性元数据，不单独触发扩样；
+2. 对任一上限型比例，先写成 `measured / limit`；满足 `abs(measured / limit - 1) <= 0.03` 时必须再采五轮，无论首组当前通过还是失败，不允许操作者选择。绝对秒数上限也用同一归一化公式。任一 time/PWS 指标触发后，该候选的时间和 PWS 两套证据都补足到 `N=10`；输出字节数的闭合门禁是基于 `N` 轮样本中位数的元数据门禁，不单独触发扩样；
 3. 第二组从 global round 6 追加五个 reference/current 配对，不得替换第一组或重置顺序；
 4. 分别合并 reference 十轮和 current 十轮计算中位数；
 5. 十轮中位数通过才算通过；

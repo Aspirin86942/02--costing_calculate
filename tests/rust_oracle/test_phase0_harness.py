@@ -15,6 +15,7 @@ import pytest
 from tests.rust_oracle import phase0_harness
 from tests.rust_oracle.benchmark_protocol import (
     AttemptState,
+    BatchAttempt,
     CalibrationGroup,
     CalibrationRound,
     ClosedBinaryLabel,
@@ -265,6 +266,42 @@ def _with_candidate_stage_ratios(group: MetricGroup, ratios: tuple[dict[str, Dec
         )
         rounds.append(replace(paired, reference=reference, candidate=candidate))
     return replace(group, rounds=tuple(rounds))
+
+
+def _with_output_sizes(
+    group: MetricGroup,
+    *,
+    reference_sizes: tuple[int, ...],
+    candidate_sizes: tuple[int, ...],
+) -> MetricGroup:
+    assert len(group.rounds) == len(reference_sizes) == len(candidate_sizes)
+
+    def with_size(sample: MetricSample, size: int) -> MetricSample:
+        runtime = replace(sample.normal_run.runtime, output_size_bytes=size)
+        return replace(sample, normal_run=replace(sample.normal_run, runtime=runtime))
+
+    return replace(
+        group,
+        rounds=tuple(
+            replace(
+                paired,
+                reference=with_size(paired.reference, reference_size),
+                candidate=with_size(paired.candidate, candidate_size),
+            )
+            for paired, reference_size, candidate_size in zip(
+                group.rounds, reference_sizes, candidate_sizes, strict=True
+            )
+        ),
+    )
+
+
+def _phase0a_baseline(output_size: int = 100) -> phase0_harness._ApprovedPhase0ABaseline:
+    return phase0_harness._ApprovedPhase0ABaseline(
+        '5' * 8,
+        output_size,
+        (Decimal('1'),) * 5,
+        (Decimal('100'),) * 5,
+    )
 
 
 def _calibration_group(pipeline: str, metric: str, output_size: int) -> CalibrationGroup:
@@ -1314,6 +1351,101 @@ def test_writer_export_minimum_wins_requires_four_wins_in_each_five_round_window
         phase0_harness._evaluate_closed_profile(request, wall, pws, baseline)
 
     assert caught.value.verdict is HarnessVerdict.CANDIDATE_FAILED
+
+
+@pytest.mark.parametrize(
+    ('wall_sizes', 'pws_sizes', 'expected_verdict'),
+    (
+        ((100,) * 5, (101,) * 5, None),
+        ((110,) * 5, (110,) * 5, None),
+        ((111,) * 5, (111,) * 5, HarnessVerdict.ENVIRONMENT_DRIFT),
+    ),
+    ids=('volatile-within-limit', 'exactly-ten-percent', 'over-ten-percent'),
+)
+def test_paired_phase0a_output_drift_uses_rounded_median(
+    wall_sizes: tuple[int, ...],
+    pws_sizes: tuple[int, ...],
+    expected_verdict: HarnessVerdict | None,
+) -> None:
+    wall = _with_output_sizes(
+        _metric_group('wall'),
+        reference_sizes=wall_sizes,
+        candidate_sizes=wall_sizes,
+    )
+    pws = _with_output_sizes(
+        _metric_group('pws', reference='100', candidate='100'),
+        reference_sizes=pws_sizes,
+        candidate_sizes=pws_sizes,
+    )
+    if expected_verdict is None:
+        phase0_harness._validate_phase0a_drift(wall, pws, _phase0a_baseline(), _identity())
+        return
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._validate_phase0a_drift(wall, pws, _phase0a_baseline(), _identity())
+
+    assert caught.value.verdict is expected_verdict
+
+
+@pytest.mark.parametrize(
+    ('candidate_sizes', 'expected_verdict'),
+    (
+        ((100, 100, 100, 111, 111), None),
+        ((100, 100, 111, 111, 111), HarnessVerdict.CANDIDATE_FAILED),
+    ),
+    ids=('raw-maximum-over-limit', 'median-over-limit'),
+)
+def test_closed_profile_candidate_output_gate_uses_median(
+    candidate_sizes: tuple[int, ...],
+    expected_verdict: HarnessVerdict | None,
+    tmp_path: Path,
+) -> None:
+    wall = _with_output_sizes(
+        _metric_group('wall'),
+        reference_sizes=(100,) * 5,
+        candidate_sizes=candidate_sizes,
+    )
+    pws = _with_output_sizes(
+        _metric_group('pws', reference='100', candidate='100'),
+        reference_sizes=(100,) * 5,
+        candidate_sizes=candidate_sizes,
+    )
+    if expected_verdict is None:
+        phase0_harness._evaluate_closed_profile(_request(tmp_path), wall, pws, _phase0a_baseline())
+        return
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._evaluate_closed_profile(_request(tmp_path), wall, pws, _phase0a_baseline())
+
+    assert caught.value.verdict is expected_verdict
+
+
+def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) -> None:
+    wall = _with_output_sizes(
+        _metric_group('wall'),
+        reference_sizes=(100,) * 5,
+        candidate_sizes=(109,) * 5,
+    )
+    pws = _with_output_sizes(
+        _metric_group('pws', reference='100', candidate='100'),
+        reference_sizes=(101,) * 5,
+        candidate_sizes=(110,) * 5,
+    )
+    attempt = BatchAttempt(
+        comparison_key='comparison',
+        batch_id=wall.batch_id,
+        attempt_number=1,
+        state=AttemptState.CLEANUP_COMPLETE,
+        previous_attempt_head_sha256=None,
+        first_group_sha256='a' * 64,
+        expanded_group_sha256=None,
+        ledger_head_sha256='b' * 64,
+        attempt_directory=tmp_path,
+    )
+
+    evidence = phase0_harness._build_paired_evidence(_request(tmp_path), wall, pws, attempt, _identity())
+
+    assert {item.role: item.value for item in evidence.output_bytes} == {'reference': 101, 'candidate': 110}
 
 
 def test_loader_repairs_only_tail_committed_record_missing_checkpoint(

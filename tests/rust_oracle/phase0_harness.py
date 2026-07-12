@@ -11,7 +11,7 @@ import sys
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field, replace
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from statistics import median
 from typing import Any
@@ -42,6 +42,7 @@ from tests.rust_oracle.benchmark_protocol import (
     RoundPlan,
     RuntimeEvidence,
     RuntimeSchema,
+    aggregate_output_bytes,
     assert_same_benchmark_batch,
     build_round_plan,
     groups_have_conflicting_direction,
@@ -3099,8 +3100,9 @@ def _validate_phase0a_drift(
         expected = median(approved)
         if abs(current / expected - Decimal(1)) > ENVIRONMENT_MEDIAN_DRIFT_LIMIT:
             raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'reference median drift exceeds ten percent')
-    reference_sizes = _output_sizes(wall, pws, 'reference')
-    if reference_sizes != {baseline.output_size_bytes}:
+    reference_size = _aggregate_output_bytes(wall, pws, 'reference')
+    relative_output_drift = abs(Decimal(reference_size) / Decimal(baseline.output_size_bytes) - Decimal(1))
+    if relative_output_drift > ENVIRONMENT_MEDIAN_DRIFT_LIMIT:
         raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'reference output bytes changed from Phase 0A')
 
 
@@ -3146,9 +3148,9 @@ def _evaluate_closed_profile(
             )
             if wins < required:
                 raise HarnessFailure(HarnessVerdict.CANDIDATE_FAILED, 'writer/export minimum-wins gate failed')
-    candidate_sizes = _output_sizes(wall, pws, 'candidate')
+    candidate_size = _aggregate_output_bytes(wall, pws, 'candidate')
     output_limit = Decimal(limits['output_bytes_ratio']) * Decimal(baseline.output_size_bytes)
-    if any(Decimal(value) > output_limit for value in candidate_sizes):
+    if Decimal(candidate_size) > output_limit:
         raise HarnessFailure(HarnessVerdict.CANDIDATE_FAILED, 'candidate output bytes exceeded the closed limit')
 
 
@@ -3170,13 +3172,14 @@ def _stage_ratio(group: MetricGroup, stage: str) -> Decimal:
     return median(_paired_stage_ratio(item, stage) for item in group.rounds)
 
 
-def _output_sizes(wall: MetricGroup, pws: MetricGroup, role: BinaryRole) -> set[int]:
-    values = {
+def _aggregate_output_bytes(wall: MetricGroup, pws: MetricGroup, role: BinaryRole) -> int:
+    values = (
         getattr(item, role).normal_run.runtime.output_size_bytes for group in (wall, pws) for item in group.rounds
-    }
-    if None in values or any(type(value) is not int or value <= 0 for value in values if value is not None):
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{role} output bytes are incomplete')
-    return {int(value) for value in values if value is not None}
+    )
+    try:
+        return aggregate_output_bytes(values)
+    except ValueError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'{role} output bytes are incomplete') from exc
 
 
 def _formal_raw_evidence_paths(
@@ -3247,9 +3250,9 @@ def _build_paired_evidence(
         SheetDimensionEvidence(sheet, dimension)
         for sheet, dimension in zip(ApprovedSheet, runtime.sheet_dimensions, strict=True)
     )
-    reference_sizes = _output_sizes(wall, pws, 'reference')
-    candidate_sizes = _output_sizes(wall, pws, 'candidate')
-    if len(reference_sizes) != 1 or len(candidate_sizes) != 1 or attempt.first_group_sha256 is None:
+    reference_size = _aggregate_output_bytes(wall, pws, 'reference')
+    candidate_size = _aggregate_output_bytes(wall, pws, 'candidate')
+    if attempt.first_group_sha256 is None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'paired output or group evidence is inconsistent')
     logs = tuple(
         sample.local_unversioned_log_sha256
@@ -3287,8 +3290,8 @@ def _build_paired_evidence(
         runtime_counts=runtime_counts,
         sheet_dimensions=dimensions,
         output_bytes=(
-            OutputBytesEvidence('reference', next(iter(reference_sizes))),
-            OutputBytesEvidence('candidate', next(iter(candidate_sizes))),
+            OutputBytesEvidence('reference', reference_size),
+            OutputBytesEvidence('candidate', candidate_size),
         ),
         mismatches=(),
         local_log_sha256=logs,
@@ -3522,11 +3525,11 @@ def _phase0a_payload(manifest: Phase0AManifest, request: Phase0ARequest) -> dict
         pws = getattr(manifest, f'{pipeline}_pws')
         samples = tuple(item.reference for item in (*wall.rounds, *pws.rounds))
         output_sizes = tuple(item.normal_run.runtime.output_size_bytes for item in samples)
-        if any(type(value) is not int or value <= 0 for value in output_sizes):
-            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'Phase 0A output bytes are inconsistent')
-        decimal_median = median(Decimal(value) for value in output_sizes)
-        # 偶数样本的中位数可能落在半字节；向上取整可避免低估后续 output-bytes 容量门禁。
-        output_size = int(decimal_median.to_integral_value(rounding=ROUND_CEILING))
+        try:
+            output_size = aggregate_output_bytes(output_sizes)
+        except ValueError as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'Phase 0A output bytes are inconsistent') from exc
+
         runtime = wall.rounds[0].reference.normal_run.runtime
         pipelines[pipeline] = {
             'input_alias': f'${pipeline.upper()}_INPUT',

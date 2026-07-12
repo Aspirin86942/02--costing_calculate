@@ -45,6 +45,7 @@ from tests.rust_oracle.benchmark_protocol import (
     RuntimeSchema,
     aggregate_output_bytes,
     assert_same_benchmark_batch,
+    build_direction_diagnostic,
     build_round_plan,
     derive_comparison_key,
     groups_have_conflicting_direction,
@@ -3327,6 +3328,17 @@ def _build_paired_evidence(
     candidate_size = _aggregate_output_bytes(wall, pws, 'candidate')
     if attempt.first_group_sha256 is None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'paired output or group evidence is inconsistent')
+    diagnostics = ()
+    if len(wall.rounds) == 10:
+        limits = COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
+        diagnostics = tuple(
+            build_direction_diagnostic(
+                replace(group, rounds=group.rounds[:5], global_round_start=1),
+                replace(group, rounds=group.rounds[5:], global_round_start=6),
+                limits=limits,
+            )
+            for group in (wall, pws)
+        )
     logs = tuple(
         sample.local_unversioned_log_sha256
         for group in (wall, pws)
@@ -3334,7 +3346,8 @@ def _build_paired_evidence(
         for sample in (paired.reference, paired.candidate)
     )
     return BenchmarkManifestEvidence(
-        schema_version=1,
+        schema_version=2,
+        protocol_version=attempt.protocol_version,
         profile=request.comparison_profile,
         pipeline=request.pipeline,
         input_alias=PathAlias.GB_INPUT if request.pipeline == 'gb' else PathAlias.SK_INPUT,
@@ -3369,6 +3382,7 @@ def _build_paired_evidence(
         mismatches=(),
         local_log_sha256=logs,
         verdict=HarnessVerdict.VALIDATED,
+        direction_diagnostics=diagnostics,
     )
 
 

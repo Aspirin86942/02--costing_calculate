@@ -16,18 +16,25 @@ import tomllib
 import unicodedata
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
+from statistics import median
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 from tests.rust_oracle.benchmark_protocol import (
+    COMPARISON_LIMITS,
+    MANDATORY_EXPANSION_BOUNDARY,
+    PAIRED_PROTOCOL_VERSION,
     AttemptState,
     ClosedBinaryLabel,
     ComparisonProfile,
+    DirectionDiagnosticEvidence,
     HarnessVerdict,
+    derive_comparison_key,
+    resolve_direct_metric_gate,
 )
 from tests.rust_oracle.repo_paths import repo_root
 
@@ -81,6 +88,38 @@ _EXPECTED_KEYS = (
     'diff_sha256',
     'local_unversioned_log_sha256',
     'upstream_pr_url',
+    'verdict',
+)
+_BENCHMARK_V1_KEYS = (
+    'schema_version',
+    'profile',
+    'pipeline',
+    'input_alias',
+    'input_sha256',
+    'reference_label',
+    'reference_exe_sha256',
+    'candidate_label',
+    'candidate_exe_sha256',
+    'machine',
+    'attempt_count',
+    'prior_safe_verdicts',
+    'ledger_head_sha256',
+    'first_group_sha256',
+    'expanded_group_sha256',
+    'rounds',
+    'metrics',
+    'runtime_counts',
+    'sheet_dimensions',
+    'output_bytes',
+    'mismatches',
+    'local_log_sha256',
+    'verdict',
+)
+_BENCHMARK_V2_KEYS = (
+    'schema_version',
+    'protocol_version',
+    *_BENCHMARK_V1_KEYS[1:-1],
+    'direction_diagnostics',
     'verdict',
 )
 
@@ -338,7 +377,7 @@ class MismatchEvidence:
 
 @dataclass(frozen=True)
 class BenchmarkManifestEvidence:
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     profile: ComparisonProfile
     pipeline: Literal['gb', 'sk']
     input_alias: PathAlias
@@ -361,6 +400,8 @@ class BenchmarkManifestEvidence:
     mismatches: tuple[MismatchEvidence, ...]
     local_log_sha256: tuple[str, ...]
     verdict: HarnessVerdict
+    protocol_version: Literal[2] | None = None
+    direction_diagnostics: tuple[DirectionDiagnosticEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -524,18 +565,51 @@ class DependencyEvidence:
     verdict: Literal['VALIDATED']
 
 
+def expected_benchmark_artifact_name(*, protocol_version: int, comparison_key: str) -> str:
+    if type(protocol_version) is not int or protocol_version != PAIRED_PROTOCOL_VERSION:
+        raise ValueError('formal artifact name requires protocol version 2')
+    _require_hash(comparison_key, 64, 'comparison key')
+    return f'benchmark-v2-{comparison_key[:16]}.json'
+
+
 class EvidenceSanitizer:
     @classmethod
     def closed_policy(cls) -> EvidenceSanitizer:
         return cls()
 
     def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
+        if not isinstance(value, BenchmarkManifestEvidence) or type(value.schema_version) is not int:
+            raise ValueError('benchmark evidence must use an exact integer schema version')
+        if (
+            value.schema_version != 2
+            or type(value.protocol_version) is not int
+            or value.protocol_version != PAIRED_PROTOCOL_VERSION
+        ):
+            raise ValueError('formal benchmark publication requires schema/protocol v2')
+        return self._build_benchmark_manifest(value, allow_legacy_v1=False)
+
+    def rebuild_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
+        return self._build_benchmark_manifest(value, allow_legacy_v1=True)
+
+    def _build_benchmark_manifest(
+        self,
+        value: BenchmarkManifestEvidence,
+        *,
+        allow_legacy_v1: bool,
+    ) -> _SanitizedArtifact:
         if (
             not isinstance(value, BenchmarkManifestEvidence)
             or type(value.schema_version) is not int
-            or value.schema_version != 1
+            or value.schema_version not in (1, 2)
         ):
-            raise ValueError('benchmark evidence must use schema version 1')
+            raise ValueError('benchmark evidence must use schema version 1 or 2')
+        if value.schema_version == 1:
+            if not allow_legacy_v1:
+                raise ValueError('formal benchmark publication requires schema/protocol v2')
+            if value.protocol_version is not None or value.direction_diagnostics:
+                raise ValueError('legacy schema v1 cannot contain protocol v2 fields')
+        elif type(value.protocol_version) is not int or value.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise ValueError('schema v2 benchmark evidence requires protocol v2')
         profile = _enum_text(value.profile, ComparisonProfile, 'profile')
         pipeline = _pipeline(value.pipeline)
         input_alias = _enum_text(value.input_alias, PathAlias, 'input alias')
@@ -639,34 +713,58 @@ class EvidenceSanitizer:
         mismatches = [_mismatch_payload(item) for item in value.mismatches]
         local_log_sha = [_require_hash(item, 64, 'local log SHA') for item in value.local_log_sha256]
         verdict = _enum_text(value.verdict, HarnessVerdict, 'benchmark verdict')
-        payload: dict[str, object] = {
-            'schema_version': 1,
-            'profile': profile,
-            'pipeline': pipeline,
-            'input_alias': input_alias,
-            'input_sha256': input_sha,
-            'reference_label': reference_label,
-            'reference_exe_sha256': reference_sha,
-            'candidate_label': candidate_label,
-            'candidate_exe_sha256': candidate_sha,
-            'machine': machine,
-            'attempt_count': attempt_count,
-            'prior_safe_verdicts': list(safe_verdicts),
-            'ledger_head_sha256': ledger_head,
-            'first_group_sha256': first_group,
-            'expanded_group_sha256': expanded_group,
-            'rounds': rounds,
-            'metrics': metrics,
-            'runtime_counts': runtime_counts,
-            'sheet_dimensions': dimensions,
-            'output_bytes': output_bytes,
-            'mismatches': mismatches,
-            'local_log_sha256': local_log_sha,
-            'verdict': verdict,
-        }
+        diagnostics = _validated_direction_diagnostic_payloads(value) if value.schema_version == 2 else []
+        payload: dict[str, object] = {'schema_version': value.schema_version}
+        if value.schema_version == 2:
+            payload['protocol_version'] = PAIRED_PROTOCOL_VERSION
+        payload.update(
+            {
+                'profile': profile,
+                'pipeline': pipeline,
+                'input_alias': input_alias,
+                'input_sha256': input_sha,
+                'reference_label': reference_label,
+                'reference_exe_sha256': reference_sha,
+                'candidate_label': candidate_label,
+                'candidate_exe_sha256': candidate_sha,
+                'machine': machine,
+                'attempt_count': attempt_count,
+                'prior_safe_verdicts': list(safe_verdicts),
+                'ledger_head_sha256': ledger_head,
+                'first_group_sha256': first_group,
+                'expanded_group_sha256': expanded_group,
+                'rounds': rounds,
+                'metrics': metrics,
+                'runtime_counts': runtime_counts,
+                'sheet_dimensions': dimensions,
+                'output_bytes': output_bytes,
+                'mismatches': mismatches,
+                'local_log_sha256': local_log_sha,
+            }
+        )
+        if value.schema_version == 2:
+            payload['direction_diagnostics'] = diagnostics
+        payload['verdict'] = verdict
+        if value.schema_version == 1:
+            file_name = f'benchmark-{_sha256_text(f"{profile}|{pipeline}|{candidate_sha}")[:16]}.json'
+        else:
+            comparison_key = derive_comparison_key(
+                protocol_version=PAIRED_PROTOCOL_VERSION,
+                pipeline=value.pipeline,
+                comparison_profile=value.profile,
+                reference_label=value.reference_label,
+                candidate_label=value.candidate_label,
+                input_sha256=input_sha,
+                reference_sha256=reference_sha,
+                candidate_sha256=candidate_sha,
+            )
+            file_name = expected_benchmark_artifact_name(
+                protocol_version=PAIRED_PROTOCOL_VERSION,
+                comparison_key=comparison_key,
+            )
         return _json_artifact(
             EvidenceKind.BENCHMARK,
-            f'benchmark-{_sha256_text(f"{profile}|{pipeline}|{candidate_sha}")[:16]}.json',
+            file_name,
             payload,
             value,
         )
@@ -847,35 +945,20 @@ class EvidenceSanitizer:
 
     def read_benchmark_manifest(self, file_name: str, raw: bytes) -> BenchmarkManifestEvidence:
         payload = _strict_versioned_json_object(raw, 'benchmark manifest')
+        schema_version = payload.get('schema_version')
+        if type(schema_version) is not int or schema_version not in (1, 2):
+            raise ValueError('benchmark manifest schema version must be exact integer 1 or 2')
         _require_exact_keys(
             payload,
-            (
-                'schema_version',
-                'profile',
-                'pipeline',
-                'input_alias',
-                'input_sha256',
-                'reference_label',
-                'reference_exe_sha256',
-                'candidate_label',
-                'candidate_exe_sha256',
-                'machine',
-                'attempt_count',
-                'prior_safe_verdicts',
-                'ledger_head_sha256',
-                'first_group_sha256',
-                'expanded_group_sha256',
-                'rounds',
-                'metrics',
-                'runtime_counts',
-                'sheet_dimensions',
-                'output_bytes',
-                'mismatches',
-                'local_log_sha256',
-                'verdict',
-            ),
-            'benchmark manifest',
+            _BENCHMARK_V1_KEYS if schema_version == 1 else _BENCHMARK_V2_KEYS,
+            'benchmark manifest keys',
         )
+        protocol_version: Literal[2] | None = None
+        if schema_version == 2:
+            raw_protocol = payload['protocol_version']
+            if type(raw_protocol) is not int or raw_protocol != PAIRED_PROTOCOL_VERSION:
+                raise ValueError('benchmark manifest protocol version must be exact integer 2')
+            protocol_version = 2
         machine_raw = _required_object(payload['machine'], 'benchmark machine')
         _require_exact_keys(
             machine_raw,
@@ -919,8 +1002,9 @@ class EvidenceSanitizer:
                     candidate_value=_json_decimal(row['candidate_value'], 'candidate value'),
                 )
             )
+        reported_metric_rows = _required_list_value(payload['metrics'], 'benchmark metrics')
         metrics: list[BenchmarkMetricEvidence] = []
-        for item in _required_list_value(payload['metrics'], 'benchmark metrics'):
+        for item in reported_metric_rows:
             row = _required_object(item, 'benchmark metric')
             _require_exact_keys(row, ('metric', 'value'), 'benchmark metric')
             metrics.append(
@@ -981,8 +1065,58 @@ class EvidenceSanitizer:
                     local_log_sha256=row['local_unversioned_log_sha256'],
                 )
             )
-        return BenchmarkManifestEvidence(
-            schema_version=payload['schema_version'],
+        reported_diagnostic_rows = (
+            []
+            if schema_version == 1
+            else _required_list_value(payload['direction_diagnostics'], 'direction diagnostics')
+        )
+        reported_diagnostics: list[DirectionDiagnosticEvidence] = []
+        for item in reported_diagnostic_rows:
+            row = _required_object(item, 'direction diagnostic')
+            _require_exact_keys(
+                row,
+                (
+                    'metric',
+                    'first_group_ratio',
+                    'second_group_ratio',
+                    'combined_ratio',
+                    'directions_conflict',
+                    'direct_gate',
+                    'direct_limit',
+                    'normalized_to_limit',
+                    'near_boundary',
+                ),
+                'direction diagnostic',
+            )
+            metric = row['metric']
+            direct_gate = row['direct_gate']
+            if metric not in ('wall', 'pws') or direct_gate not in ('none', 'ratio', 'absolute'):
+                raise ValueError('direction diagnostic uses a non-closed metric or direct gate')
+            reported_diagnostics.append(
+                DirectionDiagnosticEvidence(
+                    metric=metric,
+                    first_group_ratio=_json_decimal(row['first_group_ratio'], 'first group ratio'),
+                    second_group_ratio=_json_decimal(row['second_group_ratio'], 'second group ratio'),
+                    combined_ratio=_json_decimal(row['combined_ratio'], 'combined ratio'),
+                    directions_conflict=_boolean(row['directions_conflict'], 'directions conflict'),
+                    direct_gate=direct_gate,
+                    direct_limit=(
+                        None
+                        if row['direct_limit'] is None
+                        else _json_decimal(row['direct_limit'], 'direction direct limit')
+                    ),
+                    normalized_to_limit=(
+                        None
+                        if row['normalized_to_limit'] is None
+                        else _json_decimal(row['normalized_to_limit'], 'direction normalized value')
+                    ),
+                    near_boundary=(
+                        None if row['near_boundary'] is None else _boolean(row['near_boundary'], 'near boundary')
+                    ),
+                )
+            )
+        value = BenchmarkManifestEvidence(
+            schema_version=schema_version,
             profile=_closed_enum(ComparisonProfile, payload['profile'], 'profile'),
             pipeline=payload['pipeline'],
             input_alias=_closed_enum(PathAlias, payload['input_alias'], 'input alias'),
@@ -1008,7 +1142,32 @@ class EvidenceSanitizer:
             mismatches=tuple(mismatches),
             local_log_sha256=tuple(_required_list_value(payload['local_log_sha256'], 'local log SHA tuple')),
             verdict=_closed_enum(HarnessVerdict, payload['verdict'], 'benchmark verdict'),
+            protocol_version=protocol_version,
+            direction_diagnostics=tuple(reported_diagnostics),
         )
+        if schema_version == 2:
+            expected_metrics = _expected_formal_metrics(value.rounds)
+            expected_metric_rows = [
+                {
+                    'metric': _enum_text(item.metric, BenchmarkMetric, 'benchmark metric'),
+                    'value': _finite_decimal(item.value, 'benchmark metric value'),
+                }
+                for item in expected_metrics
+            ]
+            if reported_metric_rows != expected_metric_rows:
+                raise ValueError('benchmark metric serialized values do not match benchmark rounds')
+            # JSON numbers cannot retain repeating Decimal ratios. Restore the exact
+            # typed values from the authoritative round evidence after validating bytes.
+            value = replace(value, metrics=expected_metrics)
+            expected_diagnostics = _expected_formal_direction_diagnostics(replace(value, direction_diagnostics=()))
+            expected_payloads = [_direction_diagnostic_payload(item) for item in expected_diagnostics]
+            if reported_diagnostic_rows != expected_payloads:
+                raise ValueError('direction diagnostic serialized values do not match benchmark rounds and limits')
+            value = replace(value, direction_diagnostics=expected_diagnostics)
+        rebuilt = self.rebuild_benchmark_manifest(value)
+        if file_name != rebuilt.file_name:
+            raise ValueError('benchmark manifest filename does not match its typed comparison identity')
+        return value
 
     def read_command_transcript(self, file_name: str, raw: bytes) -> CommandTranscriptEvidence:
         payload = _strict_versioned_json_object(raw, 'command transcript')
@@ -1621,6 +1780,142 @@ def _finite_decimal(value: object, name: str, *, positive: bool = False) -> floa
     return result
 
 
+def _formal_round_count(rounds: tuple[BenchmarkRoundEvidence, ...]) -> int:
+    wall = tuple(item for item in rounds if item.metric is BenchmarkMetric.WALL)
+    pws = tuple(item for item in rounds if item.metric is BenchmarkMetric.PWS)
+    if len(wall) not in (5, 10) or len(pws) != len(wall):
+        raise ValueError('formal benchmark rounds must contain matching wall/PWS N=5 or N=10 groups')
+    n = len(wall)
+    expected_metrics = (BenchmarkMetric.WALL,) * n + (BenchmarkMetric.PWS,) * n
+    if tuple(item.metric for item in rounds) != expected_metrics:
+        raise ValueError('formal benchmark rounds must contain wall then pws groups')
+    expected_rounds = tuple(range(1, n + 1))
+    if (
+        tuple(item.global_round for item in wall) != expected_rounds
+        or tuple(item.global_round for item in pws) != expected_rounds
+    ):
+        raise ValueError('formal benchmark rounds must use contiguous global rounds')
+    return n
+
+
+def _expected_formal_metrics(
+    rounds: tuple[BenchmarkRoundEvidence, ...],
+) -> tuple[BenchmarkMetricEvidence, ...]:
+    values: list[BenchmarkMetricEvidence] = []
+    medians: dict[BenchmarkMetric, tuple[Decimal, Decimal]] = {}
+    for metric in (BenchmarkMetric.WALL, BenchmarkMetric.PWS):
+        selected = tuple(item for item in rounds if item.metric is metric)
+        reference_median = median(item.reference_value for item in selected)
+        candidate_median = median(item.candidate_value for item in selected)
+        medians[metric] = (candidate_median, candidate_median / reference_median)
+    values.extend(
+        (
+            BenchmarkMetricEvidence(BenchmarkMetric.WALL_MEDIAN, medians[BenchmarkMetric.WALL][0]),
+            BenchmarkMetricEvidence(BenchmarkMetric.PWS_MEDIAN, medians[BenchmarkMetric.PWS][0]),
+            BenchmarkMetricEvidence(BenchmarkMetric.WALL_RATIO, medians[BenchmarkMetric.WALL][1]),
+            BenchmarkMetricEvidence(BenchmarkMetric.PWS_RATIO, medians[BenchmarkMetric.PWS][1]),
+        )
+    )
+    return tuple(values)
+
+
+def _expected_formal_direction_diagnostics(
+    value: BenchmarkManifestEvidence,
+) -> tuple[DirectionDiagnosticEvidence, ...]:
+    n = _formal_round_count(value.rounds)
+    if value.metrics != _expected_formal_metrics(value.rounds):
+        raise ValueError('formal benchmark metrics must exactly match wall/PWS rounds')
+    if n == 5:
+        if value.expanded_group_sha256 is not None:
+            raise ValueError('N=5 benchmark evidence cannot contain an expanded group')
+        return ()
+    if value.expanded_group_sha256 is None:
+        raise ValueError('N=10 benchmark evidence requires an expanded group SHA')
+    try:
+        limits = COMPARISON_LIMITS[value.profile][value.pipeline]
+    except (KeyError, TypeError) as exc:
+        raise ValueError('formal benchmark profile/pipeline limits are not closed') from exc
+    diagnostics: list[DirectionDiagnosticEvidence] = []
+    for metric_name, metric in (('wall', BenchmarkMetric.WALL), ('pws', BenchmarkMetric.PWS)):
+        selected = tuple(item for item in value.rounds if item.metric is metric)
+        first = selected[:5]
+        second = selected[5:]
+
+        def ratio(group: tuple[BenchmarkRoundEvidence, ...]) -> Decimal:
+            return median(item.candidate_value for item in group) / median(item.reference_value for item in group)
+
+        first_ratio = ratio(first)
+        second_ratio = ratio(second)
+        combined_ratio = ratio(selected)
+        directions_conflict = (first_ratio - Decimal(1)) * (second_ratio - Decimal(1)) < 0
+        direct_gate, direct_limit = resolve_direct_metric_gate(metric_name, limits)
+        if direct_gate == 'none':
+            normalized = None
+            near_boundary = None
+        else:
+            assert direct_limit is not None
+            combined_value = (
+                combined_ratio if direct_gate == 'ratio' else median(item.candidate_value for item in selected)
+            )
+            normalized = combined_value / direct_limit
+            near_boundary = abs(normalized - Decimal(1)) <= MANDATORY_EXPANSION_BOUNDARY
+        diagnostics.append(
+            DirectionDiagnosticEvidence(
+                metric=metric_name,
+                first_group_ratio=first_ratio,
+                second_group_ratio=second_ratio,
+                combined_ratio=combined_ratio,
+                directions_conflict=directions_conflict,
+                direct_gate=direct_gate,
+                direct_limit=direct_limit,
+                normalized_to_limit=normalized,
+                near_boundary=near_boundary,
+            )
+        )
+    return tuple(diagnostics)
+
+
+def _direction_diagnostic_payload(value: DirectionDiagnosticEvidence) -> dict[str, object]:
+    if not isinstance(value, DirectionDiagnosticEvidence):
+        raise ValueError('direction diagnostics must use DirectionDiagnosticEvidence')
+    if value.metric not in ('wall', 'pws') or value.direct_gate not in ('none', 'ratio', 'absolute'):
+        raise ValueError('direction diagnostic uses a non-closed metric or direct gate')
+    direct_limit = (
+        None
+        if value.direct_limit is None
+        else _finite_decimal(value.direct_limit, 'direction direct limit', positive=True)
+    )
+    normalized = (
+        None
+        if value.normalized_to_limit is None
+        else _finite_decimal(value.normalized_to_limit, 'direction normalized value', positive=True)
+    )
+    near_boundary = None if value.near_boundary is None else _boolean(value.near_boundary, 'near boundary')
+    return {
+        'metric': value.metric,
+        'first_group_ratio': _finite_decimal(value.first_group_ratio, 'first group ratio', positive=True),
+        'second_group_ratio': _finite_decimal(value.second_group_ratio, 'second group ratio', positive=True),
+        'combined_ratio': _finite_decimal(value.combined_ratio, 'combined ratio', positive=True),
+        'directions_conflict': _boolean(value.directions_conflict, 'directions conflict'),
+        'direct_gate': value.direct_gate,
+        'direct_limit': direct_limit,
+        'normalized_to_limit': normalized,
+        'near_boundary': near_boundary,
+    }
+
+
+def _validated_direction_diagnostic_payloads(value: BenchmarkManifestEvidence) -> list[dict[str, object]]:
+    expected = _expected_formal_direction_diagnostics(value)
+    n = len(tuple(item for item in value.rounds if item.metric is BenchmarkMetric.WALL))
+    if n == 5 and value.direction_diagnostics:
+        raise ValueError('N=5 benchmark evidence requires empty direction diagnostics')
+    if n == 10 and tuple(item.metric for item in value.direction_diagnostics) != ('wall', 'pws'):
+        raise ValueError('N=10 benchmark evidence requires wall then pws diagnostics')
+    if value.direction_diagnostics != expected:
+        raise ValueError('direction diagnostic does not match benchmark rounds and limits')
+    return [_direction_diagnostic_payload(item) for item in expected]
+
+
 def _reject_duplicate_keys(values: tuple[object, ...], name: str) -> None:
     if len(set(values)) != len(values):
         raise ValueError(f'{name} values must be unique')
@@ -1908,7 +2203,7 @@ def _read_and_rebuild_staged_artifact(
     content: bytes,
 ) -> _SanitizedArtifact:
     if kind is EvidenceKind.BENCHMARK:
-        return policy.build_benchmark_manifest(policy.read_benchmark_manifest(file_name, content))
+        return policy.rebuild_benchmark_manifest(policy.read_benchmark_manifest(file_name, content))
     if kind is EvidenceKind.COMMAND:
         return policy.build_command_transcript(policy.read_command_transcript(file_name, content))
     if kind is EvidenceKind.SMOKE:

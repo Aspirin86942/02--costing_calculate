@@ -36,6 +36,7 @@ from tests.rust_oracle.evidence import (
     EvidenceSanitizer,
     SmokeSummaryEvidence,
     _batch_commit_marker,
+    expected_benchmark_artifact_name,
 )
 from tests.rust_oracle.oracle_runner import (
     CapturedNormalRun,
@@ -1783,6 +1784,38 @@ def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) 
     assert {item.role: item.value for item in evidence.output_bytes} == {'reference': 101, 'candidate': 110}
 
 
+def test_expanded_paired_evidence_contains_exact_wall_then_pws_diagnostics(tmp_path: Path) -> None:
+    wall = phase0_harness.merge_metric_groups(
+        _metric_group('wall', reference='1', candidate='1.03'),
+        _metric_group('wall', start=6, reference='1', candidate='0.95'),
+    )
+    pws = phase0_harness.merge_metric_groups(
+        _metric_group('pws', reference='1', candidate='0.99'),
+        _metric_group('pws', start=6, reference='1', candidate='1.01'),
+    )
+    attempt = BatchAttempt(
+        protocol_version=2,
+        comparison_key='comparison',
+        batch_id=wall.batch_id,
+        attempt_number=1,
+        state=AttemptState.CLEANUP_COMPLETE,
+        previous_attempt_head_sha256=None,
+        first_group_sha256='a' * 64,
+        expanded_group_sha256='b' * 64,
+        ledger_head_sha256='c' * 64,
+        attempt_directory=tmp_path,
+    )
+
+    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+    value = phase0_harness._build_paired_evidence(_request(tmp_path), wall, pws, attempt, identity)
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
+
+    assert tuple(item.metric for item in value.direction_diagnostics) == ('wall', 'pws')
+    assert value.direction_diagnostics[0].first_group_ratio == Decimal('1.03')
+    assert value.direction_diagnostics[0].second_group_ratio == Decimal('0.95')
+    assert artifact.file_name.startswith('benchmark-v2-')
+
+
 def test_loader_repairs_only_tail_committed_record_missing_checkpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1871,12 +1904,20 @@ def _install_formal_paired(
     wall_candidate: str = '1',
 ) -> tuple[PairedBenchmarkRequest, list[dict[str, object]]]:
     request = _request(tmp_path)
-    evidence_key = hashlib.sha256(
-        f'{request.comparison_profile.value}|{request.pipeline}|{"2" * 64}'.encode()
-    ).hexdigest()[:16]
-    request = replace(request, evidence_path=request.evidence_path.parent / f'benchmark-{evidence_key}.json')
-    request.phase0a_manifest.write_text(json.dumps(_approved_phase0a_payload()), encoding='utf-8')
     identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+    comparison_key = phase0_harness.derive_comparison_key(
+        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+        pipeline=request.pipeline,
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
+    evidence_name = expected_benchmark_artifact_name(protocol_version=2, comparison_key=comparison_key)
+    request = replace(request, evidence_path=request.evidence_path.parent / evidence_name)
+    request.phase0a_manifest.write_text(json.dumps(_approved_phase0a_payload()), encoding='utf-8')
     monkeypatch.setattr(phase0_harness, '_capture_identity', lambda benchmark: identity)
     monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '')
 

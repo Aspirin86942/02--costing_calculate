@@ -9,6 +9,7 @@ import sys
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from statistics import median
 
 import pytest
 
@@ -773,7 +774,7 @@ def test_run_command_preserves_windows_rustup_proxy_name(monkeypatch: pytest.Mon
     assert captured == [(cargo_proxy, 'metadata')]
 
 
-def _benchmark_manifest_evidence(**changes: object) -> evidence.BenchmarkManifestEvidence:
+def _legacy_benchmark_manifest_evidence(**changes: object) -> evidence.BenchmarkManifestEvidence:
     value = evidence.BenchmarkManifestEvidence(
         schema_version=1,
         profile=evidence.ComparisonProfile.PHASE0B_VS_PHASE0A,
@@ -825,6 +826,271 @@ def _benchmark_manifest_evidence(**changes: object) -> evidence.BenchmarkManifes
     return replace(value, **changes)
 
 
+def _wall_diagnostic() -> evidence.DirectionDiagnosticEvidence:
+    return evidence.DirectionDiagnosticEvidence(
+        metric='wall',
+        first_group_ratio=Decimal('1.03'),
+        second_group_ratio=Decimal('0.95'),
+        combined_ratio=Decimal('0.99'),
+        directions_conflict=True,
+        direct_gate='ratio',
+        direct_limit=Decimal('1.02'),
+        normalized_to_limit=Decimal('0.99') / Decimal('1.02'),
+        near_boundary=True,
+    )
+
+
+def _pws_diagnostic() -> evidence.DirectionDiagnosticEvidence:
+    return evidence.DirectionDiagnosticEvidence(
+        metric='pws',
+        first_group_ratio=Decimal('0.99'),
+        second_group_ratio=Decimal('1.01'),
+        combined_ratio=Decimal('1'),
+        directions_conflict=True,
+        direct_gate='none',
+        direct_limit=None,
+        normalized_to_limit=None,
+        near_boundary=None,
+    )
+
+
+def _benchmark_manifest_v2_evidence(
+    *,
+    n: int = 5,
+    direction_diagnostics: tuple[evidence.DirectionDiagnosticEvidence, ...] | None = None,
+    **changes: object,
+) -> evidence.BenchmarkManifestEvidence:
+    if n not in (5, 10):
+        raise ValueError('synthetic v2 benchmark N must be 5 or 10')
+    rounds = tuple(
+        evidence.BenchmarkRoundEvidence(
+            metric=metric,
+            global_round=global_round,
+            order=('reference', 'candidate') if global_round % 2 else ('candidate', 'reference'),
+            reference_value=Decimal('1'),
+            candidate_value=(
+                Decimal('1.03')
+                if metric is evidence.BenchmarkMetric.WALL and global_round <= 5
+                else Decimal('0.95')
+                if metric is evidence.BenchmarkMetric.WALL
+                else Decimal('0.99')
+                if global_round <= 5
+                else Decimal('1.01')
+            ),
+        )
+        for metric in (evidence.BenchmarkMetric.WALL, evidence.BenchmarkMetric.PWS)
+        for global_round in range(1, n + 1)
+    )
+    metric_values: dict[evidence.BenchmarkMetric, tuple[Decimal, Decimal]] = {}
+    for metric in (evidence.BenchmarkMetric.WALL, evidence.BenchmarkMetric.PWS):
+        selected = tuple(item for item in rounds if item.metric is metric)
+        reference_median = median(item.reference_value for item in selected)
+        candidate_median = median(item.candidate_value for item in selected)
+        metric_values[metric] = (candidate_median, candidate_median / reference_median)
+    diagnostics = direction_diagnostics
+    if diagnostics is None:
+        diagnostics = () if n == 5 else (_wall_diagnostic(), _pws_diagnostic())
+    value = evidence.BenchmarkManifestEvidence(
+        schema_version=2,
+        protocol_version=2,
+        profile=evidence.ComparisonProfile.PHASE0B_VS_PHASE0A,
+        pipeline='gb',
+        input_alias=evidence.PathAlias.GB_INPUT,
+        input_sha256='1' * 64,
+        reference_label=evidence.ClosedBinaryLabel.PHASE0A,
+        reference_exe_sha256='2' * 64,
+        candidate_label=evidence.ClosedBinaryLabel.PHASE0B,
+        candidate_exe_sha256='3' * 64,
+        machine=evidence.MachineArtifactEvidence(
+            windows_build_sha256='4' * 64,
+            architecture='x86_64',
+            cpu_model_sha256='5' * 64,
+            logical_cpu_count=16,
+            physical_memory_bytes=32 * 1024**3,
+            system_drive_media_type='SSD',
+            system_drive_size_bytes=1024**4,
+            fingerprint_sha256='6' * 64,
+        ),
+        attempt_count=1,
+        prior_safe_verdicts=(evidence.HarnessVerdict.ENVIRONMENT_DRIFT,),
+        ledger_head_sha256='7' * 64,
+        first_group_sha256='8' * 64,
+        expanded_group_sha256='a' * 64 if n == 10 else None,
+        rounds=rounds,
+        metrics=(
+            evidence.BenchmarkMetricEvidence(
+                evidence.BenchmarkMetric.WALL_MEDIAN,
+                metric_values[evidence.BenchmarkMetric.WALL][0],
+            ),
+            evidence.BenchmarkMetricEvidence(
+                evidence.BenchmarkMetric.PWS_MEDIAN,
+                metric_values[evidence.BenchmarkMetric.PWS][0],
+            ),
+            evidence.BenchmarkMetricEvidence(
+                evidence.BenchmarkMetric.WALL_RATIO,
+                metric_values[evidence.BenchmarkMetric.WALL][1],
+            ),
+            evidence.BenchmarkMetricEvidence(
+                evidence.BenchmarkMetric.PWS_RATIO,
+                metric_values[evidence.BenchmarkMetric.PWS][1],
+            ),
+        ),
+        runtime_counts=(evidence.RuntimeCountEvidence(evidence.RuntimeCount.READER_ROWS, 10),),
+        sheet_dimensions=(evidence.SheetDimensionEvidence(evidence.ApprovedSheet.COST_DETAIL, 'A1:AZ10'),),
+        output_bytes=(
+            evidence.OutputBytesEvidence('reference', 1000),
+            evidence.OutputBytesEvidence('candidate', 990),
+        ),
+        mismatches=(),
+        local_log_sha256=('9' * 64,),
+        verdict=evidence.HarnessVerdict.VALIDATED,
+        direction_diagnostics=diagnostics,
+    )
+    return replace(value, **changes)
+
+
+def test_legacy_v1_manifest_can_only_be_read_and_rebuilt() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    legacy = _legacy_benchmark_manifest_evidence()
+    rebuild = getattr(policy, 'rebuild_benchmark_manifest', None)
+    assert callable(rebuild)
+    artifact = rebuild(legacy)
+    restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
+    assert restored == legacy
+    assert rebuild(restored).content == artifact.content
+    with pytest.raises(ValueError, match='protocol v2'):
+        policy.build_benchmark_manifest(legacy)
+
+
+def test_formal_writer_rejects_rebuilt_v1_artifact(tmp_path: Path) -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    rebuild = getattr(policy, 'rebuild_benchmark_manifest', None)
+    assert callable(rebuild)
+    legacy_artifact = rebuild(_legacy_benchmark_manifest_evidence())
+    with pytest.raises(ValueError, match='protocol v2'):
+        policy.write_batch(
+            destination_root=tmp_path / 'docs' / 'performance',
+            artifacts=(legacy_artifact,),
+            cleanup_state=evidence.AttemptState.CLEANUP_COMPLETE,
+        )
+
+
+def test_v1_rejects_v2_extra_keys_and_v2_requires_exact_keys() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    rebuild = getattr(policy, 'rebuild_benchmark_manifest', None)
+    assert callable(rebuild)
+    legacy = rebuild(_legacy_benchmark_manifest_evidence())
+    legacy_payload = json.loads(legacy.content)
+    legacy_payload['protocol_version'] = 2
+    with pytest.raises(ValueError, match='schema|keys'):
+        policy.read_benchmark_manifest(legacy.file_name, json.dumps(legacy_payload).encode('utf-8'))
+    v2 = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    v2_payload = json.loads(v2.content)
+    v2_payload['unknown'] = 1
+    with pytest.raises(ValueError, match='schema|keys'):
+        policy.read_benchmark_manifest(v2.file_name, json.dumps(v2_payload).encode('utf-8'))
+
+
+def test_v2_n5_requires_empty_diagnostics() -> None:
+    value = _benchmark_manifest_v2_evidence(direction_diagnostics=(_wall_diagnostic(),))
+    with pytest.raises(ValueError, match='N=5'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
+
+
+def test_v2_n10_requires_wall_pws_diagnostics_in_fixed_order() -> None:
+    value = _benchmark_manifest_v2_evidence(
+        n=10,
+        direction_diagnostics=(_pws_diagnostic(), _wall_diagnostic()),
+    )
+    with pytest.raises(ValueError, match='wall.*pws'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
+
+
+def test_v2_diagnostic_is_recomputed_from_rounds_and_limits() -> None:
+    value = _benchmark_manifest_v2_evidence(n=10)
+    bad = replace(value.direction_diagnostics[0], near_boundary=not value.direction_diagnostics[0].near_boundary)
+    with pytest.raises(ValueError, match='direction diagnostic'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest(
+            replace(value, direction_diagnostics=(bad, value.direction_diagnostics[1]))
+        )
+
+
+def test_v2_reader_restores_exact_repeating_metric_ratio_from_rounds() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    value = _benchmark_manifest_v2_evidence()
+    rounds = tuple(replace(item, reference_value=Decimal('3'), candidate_value=Decimal('1')) for item in value.rounds)
+    exact_metrics = (
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_MEDIAN, Decimal('1')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.PWS_MEDIAN, Decimal('1')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_RATIO, Decimal('1') / Decimal('3')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.PWS_RATIO, Decimal('1') / Decimal('3')),
+    )
+    exact_value = replace(value, rounds=rounds, metrics=exact_metrics)
+    artifact = policy.build_benchmark_manifest(exact_value)
+
+    restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
+
+    assert restored.metrics == exact_metrics
+
+
+def test_v2_reader_restores_exact_repeating_direction_ratios_from_rounds() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    value = _benchmark_manifest_v2_evidence(n=10)
+    rounds = tuple(
+        replace(
+            item,
+            reference_value=Decimal('3'),
+            candidate_value=Decimal('4') if item.global_round <= 5 else Decimal('2'),
+        )
+        for item in value.rounds
+    )
+    exact_metrics = (
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_MEDIAN, Decimal('3')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.PWS_MEDIAN, Decimal('3')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.WALL_RATIO, Decimal('1')),
+        evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.PWS_RATIO, Decimal('1')),
+    )
+    exact_diagnostics = (
+        evidence.DirectionDiagnosticEvidence(
+            metric='wall',
+            first_group_ratio=Decimal('4') / Decimal('3'),
+            second_group_ratio=Decimal('2') / Decimal('3'),
+            combined_ratio=Decimal('1'),
+            directions_conflict=True,
+            direct_gate='ratio',
+            direct_limit=Decimal('1.02'),
+            normalized_to_limit=Decimal('1') / Decimal('1.02'),
+            near_boundary=True,
+        ),
+        evidence.DirectionDiagnosticEvidence(
+            metric='pws',
+            first_group_ratio=Decimal('4') / Decimal('3'),
+            second_group_ratio=Decimal('2') / Decimal('3'),
+            combined_ratio=Decimal('1'),
+            directions_conflict=True,
+            direct_gate='none',
+            direct_limit=None,
+            normalized_to_limit=None,
+            near_boundary=None,
+        ),
+    )
+    exact_value = replace(value, rounds=rounds, metrics=exact_metrics, direction_diagnostics=exact_diagnostics)
+    artifact = policy.build_benchmark_manifest(exact_value)
+
+    restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
+
+    assert restored.direction_diagnostics == exact_diagnostics
+
+
+def test_v2_artifact_name_binds_input_and_reference_identity() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    base = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    changed_input = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence(input_sha256='a' * 64))
+    changed_reference = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence(reference_exe_sha256='b' * 64))
+    assert base.file_name.startswith('benchmark-v2-')
+    assert len({base.file_name, changed_input.file_name, changed_reference.file_name}) == 3
+
+
 def _command_transcript_evidence(**changes: object) -> evidence.CommandTranscriptEvidence:
     value = evidence.CommandTranscriptEvidence(
         command_id=evidence.CommandId.CARGO_BUILD_RELEASE,
@@ -845,7 +1111,7 @@ def _command_transcript_evidence(**changes: object) -> evidence.CommandTranscrip
 
 def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
     return (
-        ('benchmark_manifest', _benchmark_manifest_evidence()),
+        ('benchmark_manifest', _benchmark_manifest_v2_evidence()),
         ('command_transcript', _command_transcript_evidence()),
         (
             'smoke',
@@ -933,7 +1199,7 @@ def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
 
 
 def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers() -> None:
-    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_evidence())
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_v2_evidence())
     raw = artifact.content
 
     assert '$GB_INPUT' in raw
@@ -943,12 +1209,12 @@ def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers
 
 def test_benchmark_schema_version_rejects_boolean_integer_alias() -> None:
     with pytest.raises(ValueError, match='schema version'):
-        EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_evidence(schema_version=True))
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_v2_evidence(schema_version=True))
 
 
 def test_each_allowed_string_field_rejects_unknown_canary() -> None:
     policy = EvidenceSanitizer.closed_policy()
-    benchmark_value = _benchmark_manifest_evidence()
+    benchmark_value = _benchmark_manifest_v2_evidence()
     benchmark_machine = replace(benchmark_value.machine, architecture='unknown-canary')
     benchmark_round = replace(benchmark_value.rounds[0], metric='unknown-canary')
     benchmark_metric = replace(benchmark_value.metrics[0], metric='unknown-canary')
@@ -969,18 +1235,18 @@ def test_each_allowed_string_field_rejects_unknown_canary() -> None:
     cases = [
         (policy.build_benchmark_manifest, value)
         for value in (
-            _benchmark_manifest_evidence(input_alias='unknown-canary'),
-            _benchmark_manifest_evidence(reference_label='unknown-canary'),
-            _benchmark_manifest_evidence(candidate_label='unknown-canary'),
-            _benchmark_manifest_evidence(pipeline='unknown-canary'),
-            _benchmark_manifest_evidence(profile='unknown-canary'),
-            _benchmark_manifest_evidence(machine=benchmark_machine),
-            _benchmark_manifest_evidence(rounds=(benchmark_round,)),
-            _benchmark_manifest_evidence(metrics=(benchmark_metric,)),
-            _benchmark_manifest_evidence(runtime_counts=(runtime_count,)),
-            _benchmark_manifest_evidence(sheet_dimensions=(sheet_dimension,)),
-            _benchmark_manifest_evidence(output_bytes=(output_bytes,)),
-            _benchmark_manifest_evidence(input_sha256='unknown-canary'),
+            _benchmark_manifest_v2_evidence(input_alias='unknown-canary'),
+            _benchmark_manifest_v2_evidence(reference_label='unknown-canary'),
+            _benchmark_manifest_v2_evidence(candidate_label='unknown-canary'),
+            _benchmark_manifest_v2_evidence(pipeline='unknown-canary'),
+            _benchmark_manifest_v2_evidence(profile='unknown-canary'),
+            _benchmark_manifest_v2_evidence(machine=benchmark_machine),
+            _benchmark_manifest_v2_evidence(rounds=(benchmark_round,)),
+            _benchmark_manifest_v2_evidence(metrics=(benchmark_metric,)),
+            _benchmark_manifest_v2_evidence(runtime_counts=(runtime_count,)),
+            _benchmark_manifest_v2_evidence(sheet_dimensions=(sheet_dimension,)),
+            _benchmark_manifest_v2_evidence(output_bytes=(output_bytes,)),
+            _benchmark_manifest_v2_evidence(input_sha256='unknown-canary'),
         )
     ]
     cases.extend(
@@ -1029,7 +1295,7 @@ def test_mismatch_artifact_omits_expected_and_actual_values() -> None:
         local_log_sha256='f' * 64,
     )
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(
-        _benchmark_manifest_evidence(mismatches=(mismatch,))
+        _benchmark_manifest_v2_evidence(mismatches=(mismatch,))
     )
     raw = artifact.content
     assert 'expected_value' not in raw
@@ -1240,7 +1506,7 @@ def test_phase0a_manifest_cannot_be_overwritten(tmp_path: Path) -> None:
     destination = tmp_path / 'docs' / 'performance'
     destination.mkdir(parents=True)
     policy = EvidenceSanitizer.closed_policy()
-    artifact = policy.build_benchmark_manifest(_benchmark_manifest_evidence())
+    artifact = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
     policy.write_batch(
         destination_root=destination,
         artifacts=(artifact,),

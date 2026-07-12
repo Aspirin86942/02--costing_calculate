@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import shutil
@@ -14,6 +15,7 @@ from statistics import median
 import pytest
 
 from tests.rust_oracle import evidence
+from tests.rust_oracle.benchmark_protocol import RecoveryProvenance, RecoveryReason, UpstreamGateProvenance
 from tests.rust_oracle.evidence import DependencyEvidence, EvidenceSanitizer
 
 _UPSTREAM_BASE = '9134de25afadaee955d0f821862338e3d046a338'
@@ -947,6 +949,269 @@ def _benchmark_manifest_v2_evidence(
         direction_diagnostics=diagnostics,
     )
     return replace(value, **changes)
+
+
+def _recovery_evidence(**changes: object) -> RecoveryProvenance:
+    value = RecoveryProvenance(
+        parent_protocol_version=2,
+        parent_comparison_key='c' * 64,
+        parent_attempt=1,
+        parent_terminal_sha256='d' * 64,
+        parent_comparison_tree_sha256='e' * 64,
+        parent_journal_head_sha256='f' * 64,
+        parent_inventory_entry_count=134,
+        reason=RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    )
+    return replace(value, **changes)
+
+
+def _upstream_evidence(**changes: object) -> UpstreamGateProvenance:
+    value = UpstreamGateProvenance(
+        pipeline='gb',
+        protocol_version=3,
+        schema_version=3,
+        comparison_key='c' * 64,
+        artifact_basename=f'benchmark-v3-{"c" * 16}.json',
+        artifact_sha256='d' * 64,
+        marker_basename=f'batch-{"e" * 16}.commit.json',
+        marker_sha256='f' * 64,
+        validated_commit_sha='1' * 40,
+    )
+    return replace(value, **changes)
+
+
+def _benchmark_manifest_v3(
+    *,
+    pipeline: str = 'gb',
+    recovery: RecoveryProvenance | None = None,
+    upstream: UpstreamGateProvenance | None = None,
+    comparison_key: str = 'a' * 64,
+    batch_id: str = 'b' * 64,
+    **changes: object,
+) -> evidence.BenchmarkManifestEvidence:
+    if recovery is None and upstream is None:
+        recovery = _recovery_evidence() if pipeline == 'gb' else None
+        upstream = _upstream_evidence() if pipeline == 'sk' else None
+    value = replace(
+        _benchmark_manifest_v2_evidence(),
+        schema_version=3,
+        protocol_version=3,
+        pipeline=pipeline,
+        input_alias=evidence.PathAlias.GB_INPUT if pipeline == 'gb' else evidence.PathAlias.SK_INPUT,
+        comparison_key=comparison_key,
+        batch_id=batch_id,
+        recovery_provenance=recovery,
+        upstream_gate_provenance=upstream,
+    )
+    return replace(value, **changes)
+
+
+def _legacy_benchmark_artifact(schema_version: int) -> object:
+    policy = EvidenceSanitizer.closed_policy()
+    if schema_version == 1:
+        return policy.rebuild_benchmark_manifest(_legacy_benchmark_manifest_evidence())
+    if schema_version == 2:
+        return policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    raise AssertionError(f'unsupported legacy schema fixture: {schema_version}')
+
+
+def _canonical_json_bytes(payload: object) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
+
+
+def _mutated_v3_json_shape(value: evidence.BenchmarkManifestEvidence, shape: str) -> bytes:
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(value)
+    if shape == 'duplicate-key':
+        return artifact.content.replace(
+            '  "schema_version": 3,', '  "schema_version": 3,\n  "schema_version": 3,', 1
+        ).encode('utf-8')
+    payload = json.loads(artifact.content)
+    if shape == 'extra-key':
+        payload['extra'] = None
+    elif shape == 'missing-key':
+        del payload['batch_id']
+    else:
+        raise AssertionError(f'unsupported v3 JSON mutation: {shape}')
+    return _canonical_json_bytes(payload)
+
+
+def _v3_string_field_canaries(
+    value: evidence.BenchmarkManifestEvidence,
+) -> tuple[tuple[str, bytes], ...]:
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(value)
+    payload = json.loads(artifact.content)
+    paths: list[tuple[str | int, ...]] = []
+
+    def visit(item: object, path: tuple[str | int, ...]) -> None:
+        if isinstance(item, str):
+            paths.append(path)
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                visit(child, (*path, index))
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                visit(child, (*path, key))
+
+    visit(payload, ())
+    mutations: list[tuple[str, bytes]] = []
+    for path in paths:
+        mutated = json.loads(artifact.content)
+        target = mutated
+        for component in path[:-1]:
+            target = target[component]
+        target[path[-1]] = 'unknown-canary'
+        mutations.append(('.'.join(str(component) for component in path), _canonical_json_bytes(mutated)))
+    return tuple(mutations)
+
+
+def _build_manifest_with_mutated_provenance(field: str, value: object) -> evidence.BenchmarkManifestEvidence:
+    recovery_fields = {
+        'parent_protocol_version',
+        'parent_comparison_key',
+        'parent_attempt',
+        'parent_terminal_sha256',
+        'parent_comparison_tree_sha256',
+        'parent_journal_head_sha256',
+        'parent_inventory_entry_count',
+        'reason',
+    }
+    pipeline = 'gb' if field in recovery_fields else 'sk'
+    manifest = _benchmark_manifest_v3(pipeline=pipeline)
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(manifest)
+    payload = json.loads(artifact.content)
+    provenance_key = 'recovery_provenance' if pipeline == 'gb' else 'upstream_gate_provenance'
+    payload[provenance_key][field] = value
+    return EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        artifact.file_name,
+        _canonical_json_bytes(payload),
+    )
+
+
+def test_schema_v3_gb_requires_recovery_and_null_upstream() -> None:
+    manifest = _benchmark_manifest_v3(pipeline='gb', recovery=_recovery_evidence(), upstream=None)
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(manifest)
+    rebuilt = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        artifact.file_name,
+        artifact.content.encode('utf-8'),
+    )
+
+    assert rebuilt.schema_version == 3
+    assert rebuilt.protocol_version == 3
+    assert rebuilt.comparison_key == manifest.comparison_key
+    assert rebuilt.batch_id == manifest.batch_id
+    assert rebuilt.recovery_provenance == manifest.recovery_provenance
+    assert rebuilt.upstream_gate_provenance is None
+
+
+def test_schema_v3_sk_requires_null_recovery_and_upstream_gate() -> None:
+    manifest = _benchmark_manifest_v3(pipeline='sk', recovery=None, upstream=_upstream_evidence())
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(manifest)
+    rebuilt = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        artifact.file_name,
+        artifact.content.encode('utf-8'),
+    )
+
+    assert rebuilt.recovery_provenance is None
+    assert rebuilt.upstream_gate_provenance == manifest.upstream_gate_provenance
+
+
+@pytest.mark.parametrize(
+    ('schema_version', 'expected_name', 'expected_sha256'),
+    (
+        (1, 'benchmark-ef6b140b924b08be.json', 'e118080f672e12482aa46818e82b94e6aba71fc3db6bad2bcc05bc3653cccdba'),
+        (2, 'benchmark-v2-74315ff2ef8cbc01.json', '347764a9ba688e43e6f6daccfdb4e64694ac0abdb72b2cee1cc5f29402f3d5b0'),
+    ),
+)
+def test_legacy_schema_rebuild_stays_byte_stable(
+    schema_version: int,
+    expected_name: str,
+    expected_sha256: str,
+) -> None:
+    artifact = _legacy_benchmark_artifact(schema_version)
+    parsed = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        artifact.file_name,
+        artifact.content.encode('utf-8'),
+    )
+
+    assert artifact.file_name == expected_name
+    assert hashlib.sha256(artifact.content.encode('utf-8')).hexdigest() == expected_sha256
+    assert EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(parsed) == artifact
+    with pytest.raises(ValueError, match='current schema'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(parsed)
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('parent_comparison_tree_sha256', 'A' * 64),
+        ('parent_inventory_entry_count', True),
+        ('validated_commit_sha', 'f' * 39),
+        ('artifact_basename', '../escape.json'),
+    ),
+)
+def test_v3_provenance_rejects_non_closed_values(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        _build_manifest_with_mutated_provenance(field, value)
+
+
+@pytest.mark.parametrize(
+    ('pipeline', 'recovery', 'upstream'),
+    (
+        ('gb', None, _upstream_evidence()),
+        ('gb', _recovery_evidence(), _upstream_evidence()),
+        ('sk', _recovery_evidence(), None),
+        ('sk', _recovery_evidence(), _upstream_evidence()),
+    ),
+)
+def test_schema_v3_rejects_invalid_pipeline_provenance_combinations(
+    pipeline: str,
+    recovery: RecoveryProvenance | None,
+    upstream: UpstreamGateProvenance | None,
+) -> None:
+    with pytest.raises(ValueError, match='provenance'):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(
+            _benchmark_manifest_v3(pipeline=pipeline, recovery=recovery, upstream=upstream)
+        )
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('schema_version', True),
+        ('protocol_version', True),
+        ('schema_version', 2),
+        ('protocol_version', 2),
+        ('comparison_key', 'a' * 63),
+        ('batch_id', True),
+    ),
+)
+def test_schema_v3_rejects_wrong_version_or_identity(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(_benchmark_manifest_v3(**{field: value}))
+
+
+@pytest.mark.parametrize('shape', ('duplicate-key', 'extra-key', 'missing-key'))
+def test_schema_v3_rejects_non_exact_json_shape(shape: str) -> None:
+    raw = _mutated_v3_json_shape(_benchmark_manifest_v3(), shape)
+    with pytest.raises(ValueError):
+        EvidenceSanitizer.closed_policy().read_benchmark_manifest(f'benchmark-v3-{"a" * 16}.json', raw)
+
+
+def test_schema_v3_rejects_canary_in_every_string_field() -> None:
+    for manifest in (_benchmark_manifest_v3(), _benchmark_manifest_v3(pipeline='sk')):
+        for field_path, raw in _v3_string_field_canaries(manifest):
+            assert field_path
+            with pytest.raises(ValueError, match='sensitive'):
+                EvidenceSanitizer.closed_policy().read_benchmark_manifest(f'benchmark-v3-{"a" * 16}.json', raw)
+
+
+def test_v3_marker_and_basename_bind_exact_artifact_sha() -> None:
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest_v3(_benchmark_manifest_v3())
+    marker = EvidenceSanitizer.closed_policy().build_batch_marker(artifact)
+
+    assert artifact.file_name == f'benchmark-v3-{str(artifact.payload["comparison_key"])[:16]}.json'
+    assert marker.value.artifact_basename == artifact.file_name
+    assert marker.value.artifact_sha256 == hashlib.sha256(artifact.content.encode('utf-8')).hexdigest()
 
 
 def test_legacy_v1_manifest_can_only_be_read_and_rebuilt() -> None:

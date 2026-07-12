@@ -26,13 +26,17 @@ from typing import Literal, TypeAlias
 
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
-    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
+    LEGACY_PAIRED_PROTOCOL_VERSION,
     MANDATORY_EXPANSION_BOUNDARY,
+    PAIRED_PROTOCOL_VERSION,
     AttemptState,
     ClosedBinaryLabel,
     ComparisonProfile,
     DirectionDiagnosticEvidence,
     HarnessVerdict,
+    RecoveryProvenance,
+    RecoveryReason,
+    UpstreamGateProvenance,
     derive_comparison_key,
     resolve_direct_metric_gate,
 )
@@ -48,6 +52,7 @@ CRATE_VERSION = '0.96.0'
 DEPENDENCY_MANIFEST_RELATIVE_PATH = Path('docs/performance/dependencies/2026-07-11-rust-xlsxwriter-0.96.0.json')
 PHASE0A_BASELINE_RELATIVE_PATH = Path('docs/performance/baselines/2026-07-11-windows-x64-phase0a.json')
 LOCAL_LOG_ROOT_RELATIVE_PATH = Path('rust/target/perf/local-logs')
+CURRENT_BENCHMARK_SCHEMA_VERSION = 3
 
 MANDATORY_DIFF_FILES = (
     'src/packager.rs',
@@ -120,6 +125,37 @@ _BENCHMARK_V2_KEYS = (
     'protocol_version',
     *_BENCHMARK_V1_KEYS[1:-1],
     'direction_diagnostics',
+    'verdict',
+)
+_BENCHMARK_V3_KEYS = (
+    'schema_version',
+    'protocol_version',
+    'comparison_key',
+    'batch_id',
+    'profile',
+    'pipeline',
+    'input_alias',
+    'input_sha256',
+    'reference_label',
+    'reference_exe_sha256',
+    'candidate_label',
+    'candidate_exe_sha256',
+    'machine',
+    'attempt_count',
+    'prior_safe_verdicts',
+    'ledger_head_sha256',
+    'first_group_sha256',
+    'expanded_group_sha256',
+    'rounds',
+    'metrics',
+    'runtime_counts',
+    'sheet_dimensions',
+    'output_bytes',
+    'mismatches',
+    'local_log_sha256',
+    'direction_diagnostics',
+    'recovery_provenance',
+    'upstream_gate_provenance',
     'verdict',
 )
 
@@ -377,7 +413,7 @@ class MismatchEvidence:
 
 @dataclass(frozen=True)
 class BenchmarkManifestEvidence:
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
     profile: ComparisonProfile
     pipeline: Literal['gb', 'sk']
     input_alias: PathAlias
@@ -400,8 +436,12 @@ class BenchmarkManifestEvidence:
     mismatches: tuple[MismatchEvidence, ...]
     local_log_sha256: tuple[str, ...]
     verdict: HarnessVerdict
-    protocol_version: Literal[2] | None = None
+    protocol_version: Literal[2, 3] | None = None
     direction_diagnostics: tuple[DirectionDiagnosticEvidence, ...] = ()
+    comparison_key: str | None = None
+    batch_id: str | None = None
+    recovery_provenance: RecoveryProvenance | None = None
+    upstream_gate_provenance: UpstreamGateProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -524,6 +564,19 @@ class _SanitizedArtifact:
 
 
 @dataclass(frozen=True)
+class BatchMarkerEvidence:
+    artifact_basename: str
+    artifact_sha256: str
+
+
+@dataclass(frozen=True)
+class _SanitizedBatchMarker:
+    file_name: str
+    content: str
+    value: BatchMarkerEvidence
+
+
+@dataclass(frozen=True)
 class _StagedIndexEntry:
     path: Path
     mode: Literal['100644', '100755']
@@ -547,6 +600,60 @@ def _strict_json_loads(raw: str) -> object:
         raise ValueError('invalid JSON evidence') from exc
 
 
+def _benchmark_v3_provenance_payloads(
+    value: BenchmarkManifestEvidence,
+) -> tuple[dict[str, object] | None, dict[str, object] | None]:
+    if value.profile is not ComparisonProfile.PHASE0B_VS_PHASE0A:
+        raise ValueError('schema v3 provenance requires the phase0b-vs-phase0a profile')
+    if value.pipeline == 'gb':
+        if not isinstance(value.recovery_provenance, RecoveryProvenance) or value.upstream_gate_provenance is not None:
+            raise ValueError('gb schema v3 provenance requires recovery only')
+    elif value.pipeline == 'sk':
+        if value.recovery_provenance is not None or not isinstance(
+            value.upstream_gate_provenance,
+            UpstreamGateProvenance,
+        ):
+            raise ValueError('sk schema v3 provenance requires upstream gate only')
+    else:
+        raise ValueError('schema v3 provenance requires a closed pipeline')
+
+    recovery = value.recovery_provenance
+    recovery_payload = None
+    if recovery is not None:
+        recovery_payload = {
+            'parent_protocol_version': recovery.parent_protocol_version,
+            'parent_comparison_key': recovery.parent_comparison_key,
+            'parent_attempt': recovery.parent_attempt,
+            'parent_terminal_sha256': recovery.parent_terminal_sha256,
+            'parent_comparison_tree_sha256': recovery.parent_comparison_tree_sha256,
+            'parent_journal_head_sha256': recovery.parent_journal_head_sha256,
+            'parent_inventory_entry_count': recovery.parent_inventory_entry_count,
+            'reason': _enum_text(recovery.reason, RecoveryReason, 'recovery reason'),
+        }
+
+    upstream = value.upstream_gate_provenance
+    upstream_payload = None
+    if upstream is not None:
+        expected_upstream_name = expected_benchmark_artifact_name(
+            protocol_version=PAIRED_PROTOCOL_VERSION,
+            comparison_key=upstream.comparison_key,
+        )
+        if upstream.artifact_basename != expected_upstream_name:
+            raise ValueError('upstream gate artifact basename does not match its comparison key')
+        upstream_payload = {
+            'pipeline': upstream.pipeline,
+            'protocol_version': upstream.protocol_version,
+            'schema_version': upstream.schema_version,
+            'comparison_key': upstream.comparison_key,
+            'artifact_basename': upstream.artifact_basename,
+            'artifact_sha256': upstream.artifact_sha256,
+            'marker_basename': upstream.marker_basename,
+            'marker_sha256': upstream.marker_sha256,
+            'validated_commit_sha': upstream.validated_commit_sha,
+        }
+    return recovery_payload, upstream_payload
+
+
 @dataclass(frozen=True)
 class DependencyEvidence:
     upstream_url: Literal['https://github.com/jmcnamara/rust_xlsxwriter.git']
@@ -566,10 +673,13 @@ class DependencyEvidence:
 
 
 def expected_benchmark_artifact_name(*, protocol_version: int, comparison_key: str) -> str:
-    if type(protocol_version) is not int or protocol_version != PAIRED_PROTOCOL_VERSION:
-        raise ValueError('formal artifact name requires protocol version 2')
+    if type(protocol_version) is not int or protocol_version not in (
+        LEGACY_PAIRED_PROTOCOL_VERSION,
+        PAIRED_PROTOCOL_VERSION,
+    ):
+        raise ValueError('benchmark artifact name requires protocol version 2 or 3')
     _require_hash(comparison_key, 64, 'comparison key')
-    return f'benchmark-v2-{comparison_key[:16]}.json'
+    return f'benchmark-v{protocol_version}-{comparison_key[:16]}.json'
 
 
 class EvidenceSanitizer:
@@ -578,18 +688,62 @@ class EvidenceSanitizer:
         return cls()
 
     def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
+        # Transitional formal writer: Task 5 switches this public entry point to v3.
         if not isinstance(value, BenchmarkManifestEvidence) or type(value.schema_version) is not int:
             raise ValueError('benchmark evidence must use an exact integer schema version')
         if (
             value.schema_version != 2
             or type(value.protocol_version) is not int
-            or value.protocol_version != PAIRED_PROTOCOL_VERSION
+            or value.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION
         ):
             raise ValueError('formal benchmark publication requires schema/protocol v2')
         return self._build_benchmark_manifest(value, allow_legacy_v1=False)
 
+    def build_benchmark_manifest_v3(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
+        if (
+            not isinstance(value, BenchmarkManifestEvidence)
+            or type(value.schema_version) is not int
+            or value.schema_version != CURRENT_BENCHMARK_SCHEMA_VERSION
+            or type(value.protocol_version) is not int
+            or value.protocol_version != PAIRED_PROTOCOL_VERSION
+        ):
+            raise ValueError('formal benchmark builder requires current schema/protocol version 3')
+        return self._build_benchmark_manifest(value, allow_legacy_v1=False)
+
+    def rebuild_audit_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
+        if not isinstance(value, BenchmarkManifestEvidence) or type(value.schema_version) is not int:
+            raise ValueError('benchmark evidence must use an exact integer schema version')
+        if value.schema_version == 1:
+            return self._build_benchmark_manifest(value, allow_legacy_v1=True)
+        if value.schema_version == 2 and value.protocol_version == LEGACY_PAIRED_PROTOCOL_VERSION:
+            return self._build_benchmark_manifest(value, allow_legacy_v1=True)
+        if value.schema_version == 3 and value.protocol_version == PAIRED_PROTOCOL_VERSION:
+            return self._build_benchmark_manifest(value, allow_legacy_v1=True)
+        raise ValueError('unsupported benchmark schema/protocol pair')
+
     def rebuild_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
-        return self._build_benchmark_manifest(value, allow_legacy_v1=True)
+        # Compatibility alias for existing audit/readback call sites until their Task 5 cutover.
+        return self.rebuild_audit_benchmark_manifest(value)
+
+    def build_batch_marker(self, artifact: _SanitizedArtifact) -> _SanitizedBatchMarker:
+        if (
+            not isinstance(artifact, _SanitizedArtifact)
+            or artifact.kind is not EvidenceKind.BENCHMARK
+            or not isinstance(artifact.source, BenchmarkManifestEvidence)
+            or artifact.source.schema_version != CURRENT_BENCHMARK_SCHEMA_VERSION
+        ):
+            raise ValueError('batch marker builder requires a typed schema v3 benchmark artifact')
+        if self.build_benchmark_manifest_v3(artifact.source) != artifact:
+            raise ValueError('batch marker builder rejects tampered benchmark artifacts')
+        marker_name, marker_content = _batch_commit_marker((artifact,))
+        return _SanitizedBatchMarker(
+            file_name=marker_name,
+            content=marker_content,
+            value=BatchMarkerEvidence(
+                artifact_basename=artifact.file_name,
+                artifact_sha256=_sha256_bytes(artifact.content.encode('utf-8')),
+            ),
+        )
 
     def _build_benchmark_manifest(
         self,
@@ -600,16 +754,33 @@ class EvidenceSanitizer:
         if (
             not isinstance(value, BenchmarkManifestEvidence)
             or type(value.schema_version) is not int
-            or value.schema_version not in (1, 2)
+            or value.schema_version not in (1, 2, 3)
         ):
-            raise ValueError('benchmark evidence must use schema version 1 or 2')
+            raise ValueError('benchmark evidence must use schema version 1, 2 or 3')
         if value.schema_version == 1:
             if not allow_legacy_v1:
                 raise ValueError('formal benchmark publication requires schema/protocol v2')
-            if value.protocol_version is not None or value.direction_diagnostics:
-                raise ValueError('legacy schema v1 cannot contain protocol v2 fields')
+            if (
+                value.protocol_version is not None
+                or value.direction_diagnostics
+                or value.comparison_key is not None
+                or value.batch_id is not None
+                or value.recovery_provenance is not None
+                or value.upstream_gate_provenance is not None
+            ):
+                raise ValueError('legacy schema v1 cannot contain protocol v2/v3 fields')
+        elif value.schema_version == 2:
+            if type(value.protocol_version) is not int or value.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION:
+                raise ValueError('schema v2 benchmark evidence requires protocol v2')
+            if (
+                value.comparison_key is not None
+                or value.batch_id is not None
+                or value.recovery_provenance is not None
+                or value.upstream_gate_provenance is not None
+            ):
+                raise ValueError('schema v2 benchmark evidence cannot contain protocol v3 fields')
         elif type(value.protocol_version) is not int or value.protocol_version != PAIRED_PROTOCOL_VERSION:
-            raise ValueError('schema v2 benchmark evidence requires protocol v2')
+            raise ValueError('schema v3 benchmark evidence requires protocol v3')
         profile = _enum_text(value.profile, ComparisonProfile, 'profile')
         pipeline = _pipeline(value.pipeline)
         input_alias = _enum_text(value.input_alias, PathAlias, 'input alias')
@@ -618,6 +789,14 @@ class EvidenceSanitizer:
         input_sha = _require_hash(value.input_sha256, 64, 'input_sha256')
         reference_sha = _require_hash(value.reference_exe_sha256, 64, 'reference_exe_sha256')
         candidate_sha = _require_hash(value.candidate_exe_sha256, 64, 'candidate_exe_sha256')
+        comparison_key: str | None = None
+        batch_id: str | None = None
+        recovery_payload: dict[str, object] | None = None
+        upstream_payload: dict[str, object] | None = None
+        if value.schema_version == 3:
+            comparison_key = _require_hash(value.comparison_key, 64, 'comparison_key')
+            batch_id = _require_hash(value.batch_id, 64, 'batch_id')
+            recovery_payload, upstream_payload = _benchmark_v3_provenance_payloads(value)
         machine = _machine_payload(value.machine)
         attempt_count = _nonnegative_int(value.attempt_count, 'attempt_count', positive=True)
         safe_verdicts = tuple(
@@ -713,10 +892,18 @@ class EvidenceSanitizer:
         mismatches = [_mismatch_payload(item) for item in value.mismatches]
         local_log_sha = [_require_hash(item, 64, 'local log SHA') for item in value.local_log_sha256]
         verdict = _enum_text(value.verdict, HarnessVerdict, 'benchmark verdict')
-        diagnostics = _validated_direction_diagnostic_payloads(value) if value.schema_version == 2 else []
+        diagnostics = _validated_direction_diagnostic_payloads(value) if value.schema_version in (2, 3) else []
         payload: dict[str, object] = {'schema_version': value.schema_version}
         if value.schema_version == 2:
-            payload['protocol_version'] = PAIRED_PROTOCOL_VERSION
+            payload['protocol_version'] = LEGACY_PAIRED_PROTOCOL_VERSION
+        elif value.schema_version == 3:
+            payload.update(
+                {
+                    'protocol_version': PAIRED_PROTOCOL_VERSION,
+                    'comparison_key': comparison_key,
+                    'batch_id': batch_id,
+                }
+            )
         payload.update(
             {
                 'profile': profile,
@@ -742,14 +929,17 @@ class EvidenceSanitizer:
                 'local_log_sha256': local_log_sha,
             }
         )
-        if value.schema_version == 2:
+        if value.schema_version in (2, 3):
             payload['direction_diagnostics'] = diagnostics
+        if value.schema_version == 3:
+            payload['recovery_provenance'] = recovery_payload
+            payload['upstream_gate_provenance'] = upstream_payload
         payload['verdict'] = verdict
         if value.schema_version == 1:
             file_name = f'benchmark-{_sha256_text(f"{profile}|{pipeline}|{candidate_sha}")[:16]}.json'
-        else:
-            comparison_key = derive_comparison_key(
-                protocol_version=PAIRED_PROTOCOL_VERSION,
+        elif value.schema_version == 2:
+            legacy_comparison_key = derive_comparison_key(
+                protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
                 pipeline=value.pipeline,
                 comparison_profile=value.profile,
                 reference_label=value.reference_label,
@@ -758,6 +948,12 @@ class EvidenceSanitizer:
                 reference_sha256=reference_sha,
                 candidate_sha256=candidate_sha,
             )
+            file_name = expected_benchmark_artifact_name(
+                protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
+                comparison_key=legacy_comparison_key,
+            )
+        else:
+            assert comparison_key is not None
             file_name = expected_benchmark_artifact_name(
                 protocol_version=PAIRED_PROTOCOL_VERSION,
                 comparison_key=comparison_key,
@@ -944,21 +1140,31 @@ class EvidenceSanitizer:
         )
 
     def read_benchmark_manifest(self, file_name: str, raw: bytes) -> BenchmarkManifestEvidence:
+        _scan_versioned_bytes(raw, suffix='.json', sensitive_names=())
         payload = _strict_versioned_json_object(raw, 'benchmark manifest')
         schema_version = payload.get('schema_version')
-        if type(schema_version) is not int or schema_version not in (1, 2):
-            raise ValueError('benchmark manifest schema version must be exact integer 1 or 2')
+        if type(schema_version) is not int or schema_version not in (1, 2, 3):
+            raise ValueError('benchmark manifest schema version must be exact integer 1, 2 or 3')
         _require_exact_keys(
             payload,
-            _BENCHMARK_V1_KEYS if schema_version == 1 else _BENCHMARK_V2_KEYS,
+            _BENCHMARK_V1_KEYS
+            if schema_version == 1
+            else _BENCHMARK_V2_KEYS
+            if schema_version == 2
+            else _BENCHMARK_V3_KEYS,
             'benchmark manifest keys',
         )
-        protocol_version: Literal[2] | None = None
+        protocol_version: Literal[2, 3] | None = None
         if schema_version == 2:
             raw_protocol = payload['protocol_version']
-            if type(raw_protocol) is not int or raw_protocol != PAIRED_PROTOCOL_VERSION:
+            if type(raw_protocol) is not int or raw_protocol != LEGACY_PAIRED_PROTOCOL_VERSION:
                 raise ValueError('benchmark manifest protocol version must be exact integer 2')
             protocol_version = 2
+        elif schema_version == 3:
+            raw_protocol = payload['protocol_version']
+            if type(raw_protocol) is not int or raw_protocol != PAIRED_PROTOCOL_VERSION:
+                raise ValueError('benchmark manifest protocol version must be exact integer 3')
+            protocol_version = 3
         machine_raw = _required_object(payload['machine'], 'benchmark machine')
         _require_exact_keys(
             machine_raw,
@@ -1115,6 +1321,65 @@ class EvidenceSanitizer:
                     ),
                 )
             )
+        recovery_provenance: RecoveryProvenance | None = None
+        upstream_gate_provenance: UpstreamGateProvenance | None = None
+        if schema_version == 3:
+            recovery_raw = payload['recovery_provenance']
+            if recovery_raw is not None:
+                recovery_row = _required_object(recovery_raw, 'recovery provenance')
+                _require_exact_keys(
+                    recovery_row,
+                    (
+                        'parent_protocol_version',
+                        'parent_comparison_key',
+                        'parent_attempt',
+                        'parent_terminal_sha256',
+                        'parent_comparison_tree_sha256',
+                        'parent_journal_head_sha256',
+                        'parent_inventory_entry_count',
+                        'reason',
+                    ),
+                    'recovery provenance',
+                )
+                recovery_provenance = RecoveryProvenance(
+                    parent_protocol_version=recovery_row['parent_protocol_version'],
+                    parent_comparison_key=recovery_row['parent_comparison_key'],
+                    parent_attempt=recovery_row['parent_attempt'],
+                    parent_terminal_sha256=recovery_row['parent_terminal_sha256'],
+                    parent_comparison_tree_sha256=recovery_row['parent_comparison_tree_sha256'],
+                    parent_journal_head_sha256=recovery_row['parent_journal_head_sha256'],
+                    parent_inventory_entry_count=recovery_row['parent_inventory_entry_count'],
+                    reason=_closed_enum(RecoveryReason, recovery_row['reason'], 'recovery reason'),
+                )
+            upstream_raw = payload['upstream_gate_provenance']
+            if upstream_raw is not None:
+                upstream_row = _required_object(upstream_raw, 'upstream gate provenance')
+                _require_exact_keys(
+                    upstream_row,
+                    (
+                        'pipeline',
+                        'protocol_version',
+                        'schema_version',
+                        'comparison_key',
+                        'artifact_basename',
+                        'artifact_sha256',
+                        'marker_basename',
+                        'marker_sha256',
+                        'validated_commit_sha',
+                    ),
+                    'upstream gate provenance',
+                )
+                upstream_gate_provenance = UpstreamGateProvenance(
+                    pipeline=upstream_row['pipeline'],
+                    protocol_version=upstream_row['protocol_version'],
+                    schema_version=upstream_row['schema_version'],
+                    comparison_key=upstream_row['comparison_key'],
+                    artifact_basename=upstream_row['artifact_basename'],
+                    artifact_sha256=upstream_row['artifact_sha256'],
+                    marker_basename=upstream_row['marker_basename'],
+                    marker_sha256=upstream_row['marker_sha256'],
+                    validated_commit_sha=upstream_row['validated_commit_sha'],
+                )
         value = BenchmarkManifestEvidence(
             schema_version=schema_version,
             profile=_closed_enum(ComparisonProfile, payload['profile'], 'profile'),
@@ -1144,8 +1409,12 @@ class EvidenceSanitizer:
             verdict=_closed_enum(HarnessVerdict, payload['verdict'], 'benchmark verdict'),
             protocol_version=protocol_version,
             direction_diagnostics=tuple(reported_diagnostics),
+            comparison_key=payload['comparison_key'] if schema_version == 3 else None,
+            batch_id=payload['batch_id'] if schema_version == 3 else None,
+            recovery_provenance=recovery_provenance,
+            upstream_gate_provenance=upstream_gate_provenance,
         )
-        if schema_version == 2:
+        if schema_version in (2, 3):
             expected_metrics = _expected_formal_metrics(value.rounds)
             expected_metric_rows = [
                 {
@@ -1164,7 +1433,7 @@ class EvidenceSanitizer:
             if reported_diagnostic_rows != expected_payloads:
                 raise ValueError('direction diagnostic serialized values do not match benchmark rounds and limits')
             value = replace(value, direction_diagnostics=expected_diagnostics)
-        rebuilt = self.rebuild_benchmark_manifest(value)
+        rebuilt = self.rebuild_audit_benchmark_manifest(value)
         if file_name != rebuilt.file_name:
             raise ValueError('benchmark manifest filename does not match its typed comparison identity')
         return value

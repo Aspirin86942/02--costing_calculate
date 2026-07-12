@@ -1015,7 +1015,7 @@ def _legacy_benchmark_artifact(schema_version: int) -> object:
     if schema_version == 1:
         return policy.rebuild_benchmark_manifest(_legacy_benchmark_manifest_evidence())
     if schema_version == 2:
-        return policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+        return policy.rebuild_audit_benchmark_manifest(_benchmark_manifest_v2_evidence())
     raise AssertionError(f'unsupported legacy schema fixture: {schema_version}')
 
 
@@ -1244,6 +1244,18 @@ def test_v3_marker_and_basename_bind_exact_artifact_sha() -> None:
     assert marker.value.artifact_sha256 == hashlib.sha256(artifact.content.encode('utf-8')).hexdigest()
 
 
+def test_public_formal_builder_writes_only_current_schema_v3() -> None:
+    policy = EvidenceSanitizer.closed_policy()
+    current = _benchmark_manifest_v3()
+
+    artifact = policy.build_benchmark_manifest(current)
+
+    assert artifact == policy.build_benchmark_manifest_v3(current)
+    with pytest.raises(ValueError, match='current schema/protocol version 3'):
+        policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    assert policy.rebuild_audit_benchmark_manifest(_benchmark_manifest_v2_evidence()).source.schema_version == 2
+
+
 def test_legacy_v1_manifest_can_only_be_read_and_rebuilt() -> None:
     policy = EvidenceSanitizer.closed_policy()
     legacy = _legacy_benchmark_manifest_evidence()
@@ -1253,7 +1265,7 @@ def test_legacy_v1_manifest_can_only_be_read_and_rebuilt() -> None:
     restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
     assert restored == legacy
     assert rebuild(restored).content == artifact.content
-    with pytest.raises(ValueError, match='protocol v2'):
+    with pytest.raises(ValueError, match='schema/protocol'):
         policy.build_benchmark_manifest(legacy)
 
 
@@ -1262,7 +1274,7 @@ def test_formal_writer_rejects_rebuilt_v1_artifact(tmp_path: Path) -> None:
     rebuild = getattr(policy, 'rebuild_benchmark_manifest', None)
     assert callable(rebuild)
     legacy_artifact = rebuild(_legacy_benchmark_manifest_evidence())
-    with pytest.raises(ValueError, match='protocol v2'):
+    with pytest.raises(ValueError, match='schema/protocol|protocol v2'):
         policy.write_batch(
             destination_root=tmp_path / 'docs' / 'performance',
             artifacts=(legacy_artifact,),
@@ -1279,7 +1291,7 @@ def test_v1_rejects_v2_extra_keys_and_v2_requires_exact_keys() -> None:
     legacy_payload['protocol_version'] = 2
     with pytest.raises(ValueError, match='schema|keys'):
         policy.read_benchmark_manifest(legacy.file_name, json.dumps(legacy_payload).encode('utf-8'))
-    v2 = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    v2 = policy.rebuild_audit_benchmark_manifest(_benchmark_manifest_v2_evidence())
     v2_payload = json.loads(v2.content)
     v2_payload['unknown'] = 1
     with pytest.raises(ValueError, match='schema|keys'):
@@ -1289,7 +1301,7 @@ def test_v1_rejects_v2_extra_keys_and_v2_requires_exact_keys() -> None:
 def test_v2_n5_requires_empty_diagnostics() -> None:
     value = _benchmark_manifest_v2_evidence(direction_diagnostics=(_wall_diagnostic(),))
     with pytest.raises(ValueError, match='N=5'):
-        EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
+        EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(value)
 
 
 def test_v2_n10_requires_wall_pws_diagnostics_in_fixed_order() -> None:
@@ -1298,14 +1310,14 @@ def test_v2_n10_requires_wall_pws_diagnostics_in_fixed_order() -> None:
         direction_diagnostics=(_pws_diagnostic(), _wall_diagnostic()),
     )
     with pytest.raises(ValueError, match='wall.*pws'):
-        EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
+        EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(value)
 
 
 def test_v2_diagnostic_is_recomputed_from_rounds_and_limits() -> None:
     value = _benchmark_manifest_v2_evidence(n=10)
     bad = replace(value.direction_diagnostics[0], near_boundary=not value.direction_diagnostics[0].near_boundary)
     with pytest.raises(ValueError, match='direction diagnostic'):
-        EvidenceSanitizer.closed_policy().build_benchmark_manifest(
+        EvidenceSanitizer.closed_policy().rebuild_audit_benchmark_manifest(
             replace(value, direction_diagnostics=(bad, value.direction_diagnostics[1]))
         )
 
@@ -1321,7 +1333,7 @@ def test_v2_reader_restores_exact_repeating_metric_ratio_from_rounds() -> None:
         evidence.BenchmarkMetricEvidence(evidence.BenchmarkMetric.PWS_RATIO, Decimal('1') / Decimal('3')),
     )
     exact_value = replace(value, rounds=rounds, metrics=exact_metrics)
-    artifact = policy.build_benchmark_manifest(exact_value)
+    artifact = policy.rebuild_audit_benchmark_manifest(exact_value)
 
     restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
 
@@ -1370,7 +1382,7 @@ def test_v2_reader_restores_exact_repeating_direction_ratios_from_rounds() -> No
         ),
     )
     exact_value = replace(value, rounds=rounds, metrics=exact_metrics, direction_diagnostics=exact_diagnostics)
-    artifact = policy.build_benchmark_manifest(exact_value)
+    artifact = policy.rebuild_audit_benchmark_manifest(exact_value)
 
     restored = policy.read_benchmark_manifest(artifact.file_name, artifact.content.encode('utf-8'))
 
@@ -1379,9 +1391,11 @@ def test_v2_reader_restores_exact_repeating_direction_ratios_from_rounds() -> No
 
 def test_v2_artifact_name_binds_input_and_reference_identity() -> None:
     policy = EvidenceSanitizer.closed_policy()
-    base = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
-    changed_input = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence(input_sha256='a' * 64))
-    changed_reference = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence(reference_exe_sha256='b' * 64))
+    base = policy.rebuild_audit_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    changed_input = policy.rebuild_audit_benchmark_manifest(_benchmark_manifest_v2_evidence(input_sha256='a' * 64))
+    changed_reference = policy.rebuild_audit_benchmark_manifest(
+        _benchmark_manifest_v2_evidence(reference_exe_sha256='b' * 64)
+    )
     assert base.file_name.startswith('benchmark-v2-')
     assert len({base.file_name, changed_input.file_name, changed_reference.file_name}) == 3
 
@@ -1406,7 +1420,7 @@ def _command_transcript_evidence(**changes: object) -> evidence.CommandTranscrip
 
 def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
     return (
-        ('benchmark_manifest', _benchmark_manifest_v2_evidence()),
+        ('benchmark_manifest', _benchmark_manifest_v3()),
         ('command_transcript', _command_transcript_evidence()),
         (
             'smoke',
@@ -1494,7 +1508,7 @@ def _all_new_artifact_values() -> tuple[tuple[str, object], ...]:
 
 
 def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers() -> None:
-    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_v3())
     raw = artifact.content
 
     assert '$GB_INPUT' in raw
@@ -1503,7 +1517,7 @@ def test_success_manifest_contains_only_aliases_hashes_counts_and_finite_numbers
 
 
 def test_benchmark_schema_version_rejects_boolean_integer_alias() -> None:
-    with pytest.raises(ValueError, match='schema version'):
+    with pytest.raises(ValueError, match='schema/protocol'):
         EvidenceSanitizer.closed_policy().build_benchmark_manifest(_benchmark_manifest_v2_evidence(schema_version=True))
 
 
@@ -1590,7 +1604,7 @@ def test_mismatch_artifact_omits_expected_and_actual_values() -> None:
         local_log_sha256='f' * 64,
     )
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(
-        _benchmark_manifest_v2_evidence(mismatches=(mismatch,))
+        _benchmark_manifest_v3(mismatches=(mismatch,))
     )
     raw = artifact.content
     assert 'expected_value' not in raw
@@ -1801,7 +1815,7 @@ def test_phase0a_manifest_cannot_be_overwritten(tmp_path: Path) -> None:
     destination = tmp_path / 'docs' / 'performance'
     destination.mkdir(parents=True)
     policy = EvidenceSanitizer.closed_policy()
-    artifact = policy.build_benchmark_manifest(_benchmark_manifest_v2_evidence())
+    artifact = policy.build_benchmark_manifest(_benchmark_manifest_v3())
     policy.write_batch(
         destination_root=destination,
         artifacts=(artifact,),

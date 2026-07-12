@@ -688,16 +688,15 @@ class EvidenceSanitizer:
         return cls()
 
     def build_benchmark_manifest(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
-        # Transitional formal writer: Task 5 switches this public entry point to v3.
-        if not isinstance(value, BenchmarkManifestEvidence) or type(value.schema_version) is not int:
-            raise ValueError('benchmark evidence must use an exact integer schema version')
         if (
-            value.schema_version != 2
+            not isinstance(value, BenchmarkManifestEvidence)
+            or type(value.schema_version) is not int
+            or value.schema_version != CURRENT_BENCHMARK_SCHEMA_VERSION
             or type(value.protocol_version) is not int
-            or value.protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION
+            or value.protocol_version != PAIRED_PROTOCOL_VERSION
         ):
-            raise ValueError('formal benchmark publication requires schema/protocol v2')
-        return self._build_benchmark_manifest(value, allow_legacy_v1=False)
+            raise ValueError('formal benchmark publication requires current schema/protocol version 3')
+        return self.build_benchmark_manifest_v3(value)
 
     def build_benchmark_manifest_v3(self, value: BenchmarkManifestEvidence) -> _SanitizedArtifact:
         if (

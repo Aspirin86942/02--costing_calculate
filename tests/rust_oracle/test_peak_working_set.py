@@ -676,6 +676,46 @@ def test_pws_resume_adopts_complete_raw_sample_before_launch(monkeypatch: pytest
     assert not output_path.exists()
 
 
+def test_protocol_v3_pws_never_adopts_complete_raw_artifacts_before_fresh_start(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _group_request(tmp_path)
+    plan = request.plans[0]
+    role = plan.order[0]
+    payload = phase0_harness._planned_output_payload(request, _identity(), plan.global_round, role)
+    output_path = phase0_harness._planned_paths((payload,))[0]
+    executable = (
+        request.benchmark.reference_executable if role == 'reference' else request.benchmark.candidate_executable
+    )
+    _write_complete_raw_sample(
+        request.benchmark,
+        output_path,
+        schema=RuntimeSchema.BASE,
+        role=role,
+        batch_id=request.batch_id,
+        global_round=plan.global_round,
+    )
+    launches: list[object] = []
+    monkeypatch.setattr(phase0_harness, '_launch_pws_driver', lambda *args, **kwargs: launches.append(args))
+
+    with pytest.raises(RustNormalValidationError, match='fresh protocol v3'):
+        phase0_harness._invoke_pws_single_sample(
+            executable=executable,
+            pipeline=request.benchmark.pipeline,
+            input_path=request.benchmark.input_path,
+            output_path=output_path,
+            role=role,
+            batch_id=request.batch_id,
+            global_round=plan.global_round,
+            schema=RuntimeSchema.BASE,
+            local_root=request.benchmark.local_root,
+            allow_resume_artifacts=False,
+        )
+
+    assert launches == []
+
+
 @pytest.mark.parametrize(
     ('role', 'exit_code', 'timed_out', 'verdict'),
     (

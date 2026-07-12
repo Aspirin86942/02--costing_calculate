@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import uuid
@@ -14,14 +15,13 @@ from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from statistics import median
-from typing import Any
+from typing import Any, Literal
 
 from openpyxl import load_workbook
 
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
     ENVIRONMENT_MEDIAN_DRIFT_LIMIT,
-    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     AttemptState,
     BatchAttempt,
@@ -41,6 +41,8 @@ from tests.rust_oracle.benchmark_protocol import (
     PairedRound,
     Phase0AManifest,
     PipelineName,
+    RecoveryProvenance,
+    RecoveryReason,
     RoundPlan,
     RuntimeEvidence,
     RuntimeSchema,
@@ -49,10 +51,14 @@ from tests.rust_oracle.benchmark_protocol import (
     build_direction_diagnostic,
     build_round_plan,
     derive_comparison_key,
+    derive_v2_comparison_key,
     merge_metric_groups,
     requires_mandatory_expansion,
     validate_calibration_group,
     validate_metric_group,
+)
+from tests.rust_oracle.benchmark_protocol import (
+    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
 )
 from tests.rust_oracle.evidence import (
     ApprovedSheet,
@@ -160,6 +166,65 @@ class PairedBenchmarkRequest:
     evidence_path: Path
     attempt_ledger_root: Path
     prior_evidence_claims: tuple[UnverifiedPriorEvidenceClaim, ...] = ()
+
+
+@dataclass(frozen=True)
+class StaticComparisonInputs:
+    pipeline: PipelineName
+    comparison_profile: ComparisonProfile
+    reference_label: ClosedBinaryLabel
+    candidate_label: ClosedBinaryLabel
+    phase0a_manifest_sha256: str
+    input_sha256: str
+    reference_sha256: str
+    candidate_sha256: str
+
+
+@dataclass(frozen=True)
+class ComparisonTreeDigest:
+    sha256: str
+    journal_head_sha256: str
+    entry_count: int
+
+
+@dataclass(frozen=True)
+class ApprovedRecoveryParent:
+    pipeline: Literal['gb']
+    comparison_profile: Literal[ComparisonProfile.PHASE0B_VS_PHASE0A]
+    reference_label: Literal[ClosedBinaryLabel.PHASE0A]
+    candidate_label: Literal[ClosedBinaryLabel.PHASE0B]
+    input_sha256: str
+    reference_sha256: str
+    candidate_sha256: str
+    parent_protocol_version: Literal[2]
+    parent_comparison_key: str
+    parent_attempt: Literal[1]
+    parent_terminal_sha256: str
+    parent_comparison_tree_sha256: str
+    parent_journal_head_sha256: str
+    parent_inventory_entry_count: Literal[134]
+    reason: Literal[RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS]
+
+
+APPROVED_RECOVERY_PARENTS: tuple[ApprovedRecoveryParent, ...] = (
+    ApprovedRecoveryParent(
+        pipeline='gb',
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        input_sha256='6aa5e3e7fdc547ebaaef968eb5b95d4d630c4ec9915184f94346f60687b8e7ee',
+        reference_sha256='f75f7ee17cc222765537f6bbe02f90e76cd041c55c8990b0261788e6fa63db56',
+        candidate_sha256='d06470e4e7c9e6dc8f54efc9d26d996d3cbbbddec04cb7dffef6e6869802b629',
+        parent_protocol_version=2,
+        parent_comparison_key='09d6bb93ab04dda277e97f19dc8a270be91f2f8898a42f25d1d5bd745bdf0fd7',
+        parent_attempt=1,
+        parent_terminal_sha256='f515c305518093e9aa0ac90fa0b82520874fcd7006db16946b45921fd9b2a57b',
+        parent_comparison_tree_sha256='8e961515bcac3afad271bb75eac9e439fdb18d1e8ba07b0fef7e210838796ccb',
+        parent_journal_head_sha256='ae10e9d441ecebee9ba6cfb93a799f14a9085c75560103fedc9df6ff56b92c85',
+        parent_inventory_entry_count=134,
+        reason=RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -401,6 +466,43 @@ class AppendOnlyAttemptLedger:
         *,
         strict_identity: bool = True,
     ) -> AppendOnlyAttemptLedger:
+        return cls._load_impl(
+            directory,
+            identity,
+            strict_identity=strict_identity,
+            expected_protocol_version=None,
+            repair_current_protocol=False,
+        )
+
+    @classmethod
+    def open_current_protocol_for_resume(
+        cls,
+        directory: Path,
+        identity: BenchmarkIdentity,
+        *,
+        strict_identity: bool = True,
+    ) -> AppendOnlyAttemptLedger:
+        ledger = cls._load_impl(
+            directory,
+            identity,
+            strict_identity=strict_identity,
+            expected_protocol_version=PAIRED_PROTOCOL_VERSION,
+            repair_current_protocol=True,
+        )
+        if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal runner cannot resume legacy protocol')
+        return ledger
+
+    @classmethod
+    def _load_impl(
+        cls,
+        directory: Path,
+        identity: BenchmarkIdentity | None,
+        *,
+        strict_identity: bool,
+        expected_protocol_version: int | None,
+        repair_current_protocol: bool,
+    ) -> AppendOnlyAttemptLedger:
         normal_directory = _normal_path(directory).absolute()
         try:
             local_root = normal_directory.parents[2]
@@ -443,6 +545,10 @@ class AppendOnlyAttemptLedger:
             protocol_version = PAIRED_PROTOCOL_VERSION
         else:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
+        if expected_protocol_version is not None and protocol_version != expected_protocol_version:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt protocol version does not match snapshot reader'
+            )
         comparison_key = metadata.get('comparison_key')
         if not _is_sha256(comparison_key):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata comparison_key is invalid')
@@ -460,13 +566,16 @@ class AppendOnlyAttemptLedger:
                 'attempt metadata number does not match its directory',
             )
         stored_identity = metadata.get('identity')
-        if (
-            not isinstance(stored_identity, dict)
-            or stored_identity.get('candidate_sha256') != identity.candidate_sha256
-        ):
-            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'candidate SHA differs from attempt metadata')
-        if strict_identity and stored_identity != asdict(identity):
-            raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'attempt identity changed during resume')
+        if identity is None:
+            identity = _parse_exact_legacy_identity(stored_identity)
+        else:
+            if (
+                not isinstance(stored_identity, dict)
+                or stored_identity.get('candidate_sha256') != identity.candidate_sha256
+            ):
+                raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'candidate SHA differs from attempt metadata')
+            if strict_identity and stored_identity != asdict(identity):
+                raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'attempt identity changed during resume')
 
         metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
         record_head = metadata_sha
@@ -488,6 +597,8 @@ class AppendOnlyAttemptLedger:
                 HarnessVerdict.INCOMPLETE_EVIDENCE,
                 'protocol v1 audit cannot repair a missing committed checkpoint',
             )
+        if missing_committed_checkpoint and not repair_current_protocol:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'record/checkpoint count mismatch')
         if len(records) != len(checkpoints) and not missing_committed_checkpoint:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'record/checkpoint count mismatch')
         paired_records = records[:-1] if missing_committed_checkpoint else records
@@ -650,7 +761,13 @@ class AppendOnlyAttemptLedger:
         previous_head = metadata.get('previous_attempt_head_sha256')
         if attempt_number > 1:
             previous_directory = directory.parent / f'attempt-{attempt_number - 1:04d}'
-            previous = cls.load(previous_directory, identity, strict_identity=False)
+            previous = cls._load_impl(
+                previous_directory,
+                identity,
+                strict_identity=False,
+                expected_protocol_version=expected_protocol_version,
+                repair_current_protocol=repair_current_protocol,
+            )
             if previous.protocol_version != protocol_version:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt directory mixes protocol versions')
             if previous_head != previous.head_sha256:
@@ -691,6 +808,8 @@ class AppendOnlyAttemptLedger:
                     HarnessVerdict.INCOMPLETE_EVIDENCE,
                     'protocol v1 audit cannot repair a comparison journal anchor',
                 )
+            if not repair_current_protocol:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'comparison journal anchor mismatch')
             journal_head = _append_recovered_journal_anchor(directory.parent, journal_head, expected_anchor)
         return cls(
             attempt_directory=directory,
@@ -946,16 +1065,63 @@ class AppendOnlyAttemptLedger:
         return self.head_sha256
 
 
+def _parse_exact_legacy_identity(value: object) -> BenchmarkIdentity:
+    keys = {
+        'input_sha256',
+        'reference_sha256',
+        'candidate_sha256',
+        'git_head',
+        'repository_state_sha256',
+        'machine_fingerprint_sha256',
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy attempt identity schema is invalid')
+    if not all(_is_sha256(value[key]) for key in keys - {'git_head'}):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy attempt identity hashes are invalid')
+    if not _is_lower_hex(value['git_head'], minimum=40, maximum=40):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'legacy attempt git identity is invalid')
+    return BenchmarkIdentity(
+        input_sha256=value['input_sha256'],
+        reference_sha256=value['reference_sha256'],
+        candidate_sha256=value['candidate_sha256'],
+        git_head=value['git_head'],
+        repository_state_sha256=value['repository_state_sha256'],
+        machine_fingerprint_sha256=value['machine_fingerprint_sha256'],
+    )
+
+
+def parse_and_validate_ledger_snapshot(
+    directory: Path,
+    *,
+    expected_protocol_version: int,
+) -> AppendOnlyAttemptLedger:
+    if type(expected_protocol_version) is not int or expected_protocol_version not in (1, PAIRED_PROTOCOL_VERSION):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'snapshot protocol version is not supported')
+    try:
+        return AppendOnlyAttemptLedger._load_impl(
+            directory,
+            None,
+            strict_identity=True,
+            expected_protocol_version=expected_protocol_version,
+            repair_current_protocol=False,
+        )
+    except HarnessFailure:
+        raise
+    except (InvalidOperation, KeyError, OSError, TypeError, ValueError) as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cannot parse ledger snapshot') from exc
+
+
 def _load_current_protocol_ledger(
     directory: Path,
     identity: BenchmarkIdentity,
     *,
     strict_identity: bool = True,
 ) -> AppendOnlyAttemptLedger:
-    ledger = AppendOnlyAttemptLedger.load(directory, identity, strict_identity=strict_identity)
-    if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
-        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal runner cannot resume protocol v1')
-    return ledger
+    return AppendOnlyAttemptLedger.open_current_protocol_for_resume(
+        directory,
+        identity,
+        strict_identity=strict_identity,
+    )
 
 
 def _validate_prepared_evidence(record: dict[str, Any]) -> dict[str, str]:
@@ -1460,6 +1626,115 @@ def _sample_from_payload(payload: dict[str, Any]) -> MetricSample:
     )
 
 
+def _parse_exact_v2_sample(payload: object) -> MetricSample:
+    sample_keys = {
+        'role',
+        'global_round',
+        'metric_value',
+        'exit_code',
+        'input_sha256',
+        'binary_sha256',
+        'git_head',
+        'repository_state_sha256',
+        'machine_fingerprint_sha256',
+        'local_unversioned_log_sha256',
+        'normal_run',
+    }
+    normal_keys = {'external_wall_seconds', 'peak_working_set_bytes', 'runtime', 'workbook_oracle_sha256'}
+    runtime_keys = {
+        'pipeline',
+        'output_written',
+        'request_id_present',
+        'sheet_count',
+        'error_log_count',
+        'issue_type_counts',
+        'quality_metrics',
+        'run_counts',
+        'stage_timings',
+        'output_size_bytes',
+        'sheet_dimensions',
+        'reader_snapshot_sha256',
+    }
+    if not isinstance(payload, dict) or set(payload) != sample_keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample payload fields are not closed')
+    normal = payload['normal_run']
+    if not isinstance(normal, dict) or set(normal) != normal_keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 normal-run payload fields are not closed')
+    runtime = normal['runtime']
+    if not isinstance(runtime, dict) or set(runtime) != runtime_keys:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 runtime payload fields are not closed')
+    if payload['role'] not in ('reference', 'candidate'):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample role is invalid')
+    if type(payload['global_round']) is not int or payload['global_round'] not in range(1, 11):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample round is invalid')
+    if type(payload['exit_code']) is not int or payload['exit_code'] != 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample exit code is invalid')
+    if not all(
+        _is_sha256(payload[key])
+        for key in (
+            'input_sha256',
+            'binary_sha256',
+            'repository_state_sha256',
+            'machine_fingerprint_sha256',
+            'local_unversioned_log_sha256',
+        )
+    ) or not _is_lower_hex(payload['git_head'], minimum=40, maximum=40):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample identity hashes are invalid')
+    if not _is_sha256(normal['workbook_oracle_sha256']):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample workbook oracle is invalid')
+    if runtime['pipeline'] not in ('gb', 'sk'):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample runtime pipeline is invalid')
+    if type(runtime['output_written']) is not bool or type(runtime['request_id_present']) is not bool:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample runtime booleans are invalid')
+    if any(type(runtime[key]) is not int or runtime[key] < 0 for key in ('sheet_count', 'error_log_count')):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample runtime counts are invalid')
+    output_size = runtime['output_size_bytes']
+    if type(output_size) is not int or output_size <= 0:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample output bytes are invalid')
+    dimensions = runtime['sheet_dimensions']
+    if not isinstance(dimensions, list) or not all(isinstance(item, str) for item in dimensions):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample sheet dimensions are invalid')
+    reader_snapshot = runtime['reader_snapshot_sha256']
+    if reader_snapshot != '' and not _is_sha256(reader_snapshot):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample reader snapshot is invalid')
+    row_shapes: tuple[tuple[str, int, tuple[type, ...]], ...] = (
+        ('issue_type_counts', 2, (str, int)),
+        ('quality_metrics', 3, (str, str, str)),
+        ('run_counts', 2, (str, int)),
+        ('stage_timings', 2, (str, str)),
+    )
+    for key, width, types in row_shapes:
+        rows = runtime[key]
+        if not isinstance(rows, list) or any(
+            not isinstance(row, list)
+            or len(row) != width
+            or any(type(value) is not expected for value, expected in zip(row, types, strict=True))
+            for row in rows
+        ):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, f'v2 sample {key} rows are invalid')
+    try:
+        metric_value = Decimal(payload['metric_value'])
+        wall_seconds = Decimal(normal['external_wall_seconds'])
+        stage_values = tuple(Decimal(row[1]) for row in runtime['stage_timings'])
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample decimal values are invalid') from exc
+    if (
+        not metric_value.is_finite()
+        or metric_value <= 0
+        or not wall_seconds.is_finite()
+        or wall_seconds <= 0
+        or any(not value.is_finite() or value < 0 for value in stage_values)
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample decimal values are out of range')
+    pws = normal['peak_working_set_bytes']
+    if pws is not None and (type(pws) is not int or pws <= 0):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample peak working set is invalid')
+    try:
+        return _sample_from_payload(payload)
+    except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v2 sample payload cannot be reconstructed') from exc
+
+
 def _capture_identity(request: PairedBenchmarkRequest) -> BenchmarkIdentity:
     root = repo_root()
     git_head = _run_git(root, 'rev-parse', 'HEAD').strip()
@@ -1599,6 +1874,313 @@ def _safe_harness_path(
 
 def _trusted_local_root() -> Path:
     return (repo_root() / 'rust' / 'target' / 'perf-local').absolute()
+
+
+def _is_reparse_point(path: Path) -> bool:
+    metadata = os.lstat(path)
+    attributes = getattr(metadata, 'st_file_attributes', 0)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & 0x400)
+
+
+def _is_valid_journal_record_name(name: str) -> bool:
+    stem, suffix = os.path.splitext(name)
+    return suffix == '.json' and len(stem) == 6 and stem.isascii() and stem.isdigit() and stem != '000000'
+
+
+def comparison_tree_digest(path: Path) -> ComparisonTreeDigest:
+    root = _safe_harness_path(
+        path,
+        allowed_roots=(_trusted_local_root() / 'batches',),
+        purpose='parent tree',
+        create_parent=False,
+    )
+    entries: list[dict[str, object]] = []
+    pending = [root]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as scan:
+                children = sorted(scan, key=lambda child: child.name)
+            for child in children:
+                item = Path(child.path)
+                if child.is_symlink() or _is_reparse_point(item):
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE,
+                        'recovery parent contains reparse point',
+                    )
+                relative = item.relative_to(root).as_posix()
+                if child.is_dir(follow_symlinks=False):
+                    entries.append({'path': relative, 'kind': 'directory'})
+                    pending.append(item)
+                elif child.is_file(follow_symlinks=False):
+                    metadata = child.stat(follow_symlinks=False)
+                    entries.append(
+                        {
+                            'path': relative,
+                            'kind': 'file',
+                            'size': metadata.st_size,
+                            'sha256': _sha256(item),
+                        }
+                    )
+                else:
+                    raise HarnessFailure(
+                        HarnessVerdict.INCOMPLETE_EVIDENCE,
+                        'recovery parent has unknown entry type',
+                    )
+        entries.sort(key=lambda entry: str(entry['path']))
+        journal = sorted((root / 'journal').glob('*.json'))
+        if not journal or not all(_is_valid_journal_record_name(item.name) for item in journal):
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'recovery parent journal is empty or invalid',
+            )
+        raw = json.dumps(entries, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        return ComparisonTreeDigest(hashlib.sha256(raw).hexdigest(), _sha256(journal[-1]), len(entries))
+    except HarnessFailure:
+        raise
+    except OSError as exc:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cannot inventory recovery parent') from exc
+
+
+def _approved_parent_matches_static(approved: ApprovedRecoveryParent, static: StaticComparisonInputs) -> bool:
+    return (
+        approved.pipeline == static.pipeline
+        and approved.comparison_profile is static.comparison_profile
+        and approved.reference_label is static.reference_label
+        and approved.candidate_label is static.candidate_label
+        and approved.input_sha256 == static.input_sha256
+        and approved.reference_sha256 == static.reference_sha256
+        and approved.candidate_sha256 == static.candidate_sha256
+    )
+
+
+def _raise_incomplete(message: str) -> None:
+    raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, message)
+
+
+def _validate_recovery_parent_records(
+    ledger: AppendOnlyAttemptLedger,
+    static: StaticComparisonInputs,
+) -> tuple[MetricSample, ...]:
+    records = sorted((ledger.attempt_directory / 'records').glob('*.json'))
+    expected: list[tuple[str, str | None, int | None, str | None]] = []
+    for metric in ('wall', 'pws'):
+        for plan in build_round_plan(global_round_start=1, round_count=5):
+            for role in plan.order:
+                expected.append(('planned-output', metric, plan.global_round, role))
+                expected.append(('sample', metric, plan.global_round, role))
+    expected.extend((('first-group', None, None, None), ('cleanup-complete', None, None, None)))
+    if len(records) != 42 or ledger._record_count != 42:
+        _raise_incomplete('recovery parent record count is invalid')
+    samples: list[MetricSample] = []
+    sample_oracles: dict[tuple[str, int], dict[str, str]] = {}
+    for index, (record_path, expected_item) in enumerate(zip(records, expected, strict=True), start=1):
+        try:
+            record = json.loads(record_path.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'recovery parent record is unreadable') from exc
+        kind, metric, global_round, role = expected_item
+        if record_path.name != f'{index:04d}-{kind}.json' or not isinstance(record, dict) or record.get('kind') != kind:
+            _raise_incomplete('recovery parent record order is invalid')
+        if kind == 'planned-output':
+            if set(record) != {
+                'kind',
+                'previous_record_sha256',
+                'metric',
+                'global_round',
+                'role',
+                'payload',
+            }:
+                _raise_incomplete('recovery parent planned-output record fields are invalid')
+            planned = _validate_planned_output_payload(record['payload'])
+            if (
+                (record['metric'], record['global_round'], record['role']) != (metric, global_round, role)
+                or (planned['metric'], planned['global_round'], planned['role']) != (metric, global_round, role)
+                or planned['pipeline'] != static.pipeline
+                or planned['binary_sha256']
+                != (static.reference_sha256 if role == 'reference' else static.candidate_sha256)
+            ):
+                _raise_incomplete('recovery parent planned-output identity is invalid')
+        elif kind == 'sample':
+            if set(record) != {
+                'kind',
+                'previous_record_sha256',
+                'metric',
+                'global_round',
+                'role',
+                'payload',
+            } or (record['metric'], record['global_round'], record['role']) != (metric, global_round, role):
+                _raise_incomplete('recovery parent sample record identity is invalid')
+            sample = _parse_exact_v2_sample(record['payload'])
+            expected_binary = static.reference_sha256 if role == 'reference' else static.candidate_sha256
+            metric_value_matches_runtime = (
+                sample.metric_value == sample.normal_run.external_wall_seconds
+                if metric == 'wall'
+                else sample.normal_run.peak_working_set_bytes is not None
+                and sample.metric_value == Decimal(sample.normal_run.peak_working_set_bytes)
+            )
+            if (
+                sample.role != role
+                or sample.global_round != global_round
+                or sample.input_sha256 != static.input_sha256
+                or sample.binary_sha256 != expected_binary
+                or sample.git_head != ledger.identity.git_head
+                or sample.repository_state_sha256 != ledger.identity.repository_state_sha256
+                or sample.machine_fingerprint_sha256 != ledger.identity.machine_fingerprint_sha256
+                or sample.normal_run.runtime.pipeline != static.pipeline
+                or not sample.normal_run.runtime.output_written
+                or sample.normal_run.runtime.sheet_count != 3
+                or sample.normal_run.runtime.sheet_dimensions != ()
+                or sample.normal_run.runtime.output_size_bytes is None
+                or sample.normal_run.runtime.output_size_bytes <= 0
+                or not metric_value_matches_runtime
+            ):
+                _raise_incomplete('recovery parent sample semantics are invalid')
+            samples.append(sample)
+            sample_oracles.setdefault((metric, global_round), {})[role] = sample.normal_run.workbook_oracle_sha256
+        elif kind == 'first-group':
+            if set(record) != {'kind', 'previous_record_sha256', 'groups'}:
+                _raise_incomplete('recovery parent first-group record fields are invalid')
+            groups = record['groups']
+            if (
+                not isinstance(groups, dict)
+                or set(groups) != {'wall', 'pws'}
+                or not all(_is_sha256(value) for value in groups.values())
+            ):
+                _raise_incomplete('recovery parent first-group payload is invalid')
+        else:
+            if (
+                set(record) != {'kind', 'previous_record_sha256', 'planned_output_count'}
+                or record.get('planned_output_count') != 20
+            ):
+                _raise_incomplete('recovery parent cleanup record is invalid')
+    if (
+        len(samples) != 20
+        or len(sample_oracles) != 10
+        or any(
+            set(oracles) != {'reference', 'candidate'} or oracles['reference'] != oracles['candidate']
+            for oracles in sample_oracles.values()
+        )
+    ):
+        _raise_incomplete('recovery parent paired workbook oracles are invalid')
+    return tuple(samples)
+
+
+def _authorize_v3_recovery(
+    static: StaticComparisonInputs,
+    *,
+    approved: ApprovedRecoveryParent,
+) -> RecoveryProvenance:
+    if not _approved_parent_matches_static(approved, static):
+        _raise_incomplete('recovery parent does not match static comparison inputs')
+    expected_key = derive_v2_comparison_key(
+        pipeline=static.pipeline,
+        comparison_profile=static.comparison_profile,
+        reference_label=static.reference_label,
+        candidate_label=static.candidate_label,
+        input_sha256=static.input_sha256,
+        reference_sha256=static.reference_sha256,
+        candidate_sha256=static.candidate_sha256,
+    )
+    if (
+        approved.parent_protocol_version != PAIRED_PROTOCOL_VERSION
+        or approved.parent_comparison_key != expected_key
+        or approved.parent_attempt != 1
+        or approved.parent_inventory_entry_count != 134
+    ):
+        _raise_incomplete('recovery parent approval identity is invalid')
+    comparison = _trusted_local_root() / 'batches' / approved.parent_comparison_key
+    before = comparison_tree_digest(comparison)
+    try:
+        if before != ComparisonTreeDigest(
+            approved.parent_comparison_tree_sha256,
+            approved.parent_journal_head_sha256,
+            approved.parent_inventory_entry_count,
+        ):
+            _raise_incomplete('recovery parent inventory differs from approval')
+        try:
+            with os.scandir(comparison) as scan:
+                top_level = sorted((child.name, child.is_dir(follow_symlinks=False)) for child in scan)
+        except OSError as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cannot inspect recovery parent root') from exc
+        if top_level != [('attempt-0001', True), ('journal', True)]:
+            _raise_incomplete('recovery parent top-level inventory is invalid')
+        ledger = parse_and_validate_ledger_snapshot(
+            comparison / 'attempt-0001',
+            expected_protocol_version=approved.parent_protocol_version,
+        )
+        terminal_path = ledger.attempt_directory / 'terminal.json'
+        try:
+            terminal_raw = terminal_path.read_bytes()
+            terminal_payload = json.loads(terminal_raw)
+        except (OSError, ValueError) as exc:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'recovery parent terminal is unreadable') from exc
+        if (
+            ledger.protocol_version != approved.parent_protocol_version
+            or ledger.comparison_key != approved.parent_comparison_key
+            or ledger.attempt_number != approved.parent_attempt
+            or ledger.identity.input_sha256 != static.input_sha256
+            or ledger.identity.reference_sha256 != static.reference_sha256
+            or ledger.identity.candidate_sha256 != static.candidate_sha256
+            or ledger.terminal_verdict is not HarnessVerdict.INCOMPLETE_EVIDENCE
+            or ledger.head_sha256 != approved.parent_terminal_sha256
+            or _sha256(terminal_path) != approved.parent_terminal_sha256
+            or ledger.journal_head_sha256 != approved.parent_journal_head_sha256
+            or ledger._prepared_evidence is not None
+            or not isinstance(terminal_payload, dict)
+            or set(terminal_payload)
+            != {
+                'verdict',
+                'primary_verdict',
+                'raw_log_sha256',
+                'record_count',
+                'record_head_sha256',
+                'checkpoint_head_sha256',
+            }
+            or terminal_raw != _canonical_json(terminal_payload)
+        ):
+            _raise_incomplete('recovery parent terminal or ledger seal is invalid')
+        _validate_recovery_parent_records(ledger, static)
+        versioned = (
+            repo_root()
+            / 'docs'
+            / 'performance'
+            / expected_benchmark_artifact_name(
+                protocol_version=approved.parent_protocol_version,
+                comparison_key=approved.parent_comparison_key,
+            )
+        )
+        if versioned.exists():
+            _raise_incomplete('recovery parent already has versioned v2 evidence')
+        return RecoveryProvenance(
+            parent_protocol_version=approved.parent_protocol_version,
+            parent_comparison_key=approved.parent_comparison_key,
+            parent_attempt=approved.parent_attempt,
+            parent_terminal_sha256=approved.parent_terminal_sha256,
+            parent_comparison_tree_sha256=approved.parent_comparison_tree_sha256,
+            parent_journal_head_sha256=approved.parent_journal_head_sha256,
+            parent_inventory_entry_count=approved.parent_inventory_entry_count,
+            reason=approved.reason,
+        )
+    finally:
+        try:
+            after = comparison_tree_digest(comparison)
+        except HarnessFailure as exc:
+            raise HarnessFailure(
+                HarnessVerdict.INCOMPLETE_EVIDENCE,
+                'recovery parent changed during read-only authorization',
+            ) from exc
+        if after != before:
+            _raise_incomplete('recovery parent changed during read-only authorization')
+
+
+def authorize_v3_recovery(static: StaticComparisonInputs) -> RecoveryProvenance:
+    matches = tuple(
+        approved for approved in APPROVED_RECOVERY_PARENTS if _approved_parent_matches_static(approved, static)
+    )
+    if len(matches) != 1:
+        _raise_incomplete('static comparison inputs do not identify exactly one recovery parent')
+    return _authorize_v3_recovery(static, approved=matches[0])
 
 
 def _validate_trusted_request_paths(request: PairedBenchmarkRequest) -> None:

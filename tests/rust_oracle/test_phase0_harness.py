@@ -6,7 +6,8 @@ import importlib.util
 import json
 import socket
 import zipfile
-from dataclasses import asdict, replace
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from tests.rust_oracle.oracle_runner import (
 )
 from tests.rust_oracle.phase0_harness import (
     AppendOnlyAttemptLedger,
+    ApprovedRecoveryParent,
     BenchmarkIdentity,
     HarnessFailure,
     MetricGroupRequest,
@@ -55,8 +57,10 @@ from tests.rust_oracle.phase0_harness import (
     PairedBenchmarkResult,
     Phase0ARequest,
     Phase0HSmokeRequest,
+    StaticComparisonInputs,
     UnverifiedPriorEvidenceClaim,
     derive_batch_id,
+    parse_and_validate_ledger_snapshot,
     run_normal_wall_group,
     run_phase0h_smoke,
     validate_formal_repository_state,
@@ -329,6 +333,448 @@ def _write_recoverable_v1_success(
 
 def _file_snapshot(root: Path) -> dict[str, bytes]:
     return {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+
+
+@dataclass(frozen=True)
+class SyntheticV2Parent:
+    comparison: Path
+    approved: ApprovedRecoveryParent
+    static: StaticComparisonInputs
+
+
+def _synthetic_tree_digest(comparison: Path) -> tuple[str, str, int]:
+    entries: list[dict[str, object]] = []
+    for item in sorted(comparison.rglob('*'), key=lambda path: path.relative_to(comparison).as_posix()):
+        relative = item.relative_to(comparison).as_posix()
+        if item.is_dir():
+            entries.append({'path': relative, 'kind': 'directory'})
+        elif item.is_file():
+            entries.append(
+                {
+                    'path': relative,
+                    'kind': 'file',
+                    'size': item.stat().st_size,
+                    'sha256': hashlib.sha256(item.read_bytes()).hexdigest(),
+                }
+            )
+    raw = json.dumps(entries, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    journal = sorted((comparison / 'journal').glob('*.json'))
+    return hashlib.sha256(raw).hexdigest(), hashlib.sha256(journal[-1].read_bytes()).hexdigest(), len(entries)
+
+
+def _write_synthetic_journal_entry(
+    comparison: Path,
+    *,
+    previous_journal_sha256: str | None,
+    record_count: int,
+    record_head_sha256: str,
+    checkpoint_head_sha256: str,
+    terminal_head_sha256: str | None = None,
+    verdict: HarnessVerdict | None = None,
+) -> str:
+    state = phase0_harness._journal_state_payload(
+        attempt_number=1,
+        record_count=record_count,
+        record_head_sha256=record_head_sha256,
+        checkpoint_head_sha256=checkpoint_head_sha256,
+        terminal_present=terminal_head_sha256 is not None,
+        terminal_head_sha256=terminal_head_sha256,
+        verdict=verdict,
+    )
+    raw = phase0_harness._canonical_json({'previous_journal_sha256': previous_journal_sha256, **state})
+    sequence = len(tuple((comparison / 'journal').glob('*.json'))) + 1
+    (comparison / 'journal' / f'{sequence:06d}.json').write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _synthetic_v2_sample_payload(
+    identity: BenchmarkIdentity,
+    *,
+    metric: str,
+    global_round: int,
+    role: str,
+) -> dict[str, object]:
+    oracle = hashlib.sha256(f'{metric}:{global_round}'.encode()).hexdigest()
+    metric_value = str(global_round) if metric == 'wall' else str(1000 + global_round)
+    return {
+        'role': role,
+        'global_round': global_round,
+        'metric_value': metric_value,
+        'exit_code': 0,
+        'input_sha256': identity.input_sha256,
+        'binary_sha256': identity.reference_sha256 if role == 'reference' else identity.candidate_sha256,
+        'git_head': identity.git_head,
+        'repository_state_sha256': identity.repository_state_sha256,
+        'machine_fingerprint_sha256': identity.machine_fingerprint_sha256,
+        'local_unversioned_log_sha256': hashlib.sha256(f'{metric}:{global_round}:{role}:log'.encode()).hexdigest(),
+        'normal_run': {
+            'external_wall_seconds': str(global_round),
+            'peak_working_set_bytes': 1000 + global_round if metric == 'pws' else None,
+            'workbook_oracle_sha256': oracle,
+            'runtime': {
+                'pipeline': 'gb',
+                'output_written': True,
+                'request_id_present': True,
+                'sheet_count': 3,
+                'error_log_count': 0,
+                'issue_type_counts': [],
+                'quality_metrics': [],
+                'run_counts': [['reader_rows', 1]],
+                'stage_timings': [['total', '0.1']],
+                'output_size_bytes': 8,
+                'sheet_dimensions': [],
+                'reader_snapshot_sha256': '',
+            },
+        },
+    }
+
+
+def _write_synthetic_v2_recovery_parent(
+    root: Path,
+    *,
+    semantic_override: Mapping[str, object] | None = None,
+) -> SyntheticV2Parent:
+    local_root = phase0_harness._trusted_local_root()
+    identity = _full_identity()
+    static = StaticComparisonInputs(
+        pipeline='gb',
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256='7' * 64,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
+    comparison_key = phase0_harness.derive_v2_comparison_key(
+        pipeline=static.pipeline,
+        comparison_profile=static.comparison_profile,
+        reference_label=static.reference_label,
+        candidate_label=static.candidate_label,
+        input_sha256=static.input_sha256,
+        reference_sha256=static.reference_sha256,
+        candidate_sha256=static.candidate_sha256,
+    )
+    comparison = local_root / 'batches' / comparison_key
+    attempt = comparison / 'attempt-0001'
+    (attempt / 'records').mkdir(parents=True)
+    (attempt / 'checkpoints').mkdir()
+    (comparison / 'journal').mkdir()
+    metadata = {
+        'protocol_version': 2,
+        'comparison_key': comparison_key,
+        'attempt_number': 1,
+        'identity': asdict(identity),
+        'previous_attempt_head_sha256': None,
+        'reason': 'FORMAL_START',
+        'inherited_planned_outputs': [],
+        'cleanup_only': False,
+        'recovery_primary_verdict': None,
+    }
+    metadata_raw = phase0_harness._canonical_json(metadata)
+    (attempt / 'metadata.json').write_bytes(metadata_raw)
+    record_head = hashlib.sha256(metadata_raw).hexdigest()
+    checkpoint_head = record_head
+    journal_head = _write_synthetic_journal_entry(
+        comparison,
+        previous_journal_sha256=None,
+        record_count=0,
+        record_head_sha256=record_head,
+        checkpoint_head_sha256=checkpoint_head,
+    )
+    sequence = 0
+    groups: dict[str, str] = {}
+    override_key = ('wall', 1, 'reference')
+    for metric in ('wall', 'pws'):
+        for plan in build_round_plan(global_round_start=1, round_count=5):
+            for role in plan.order:
+                sequence += 1
+                planned_payload = {
+                    'pipeline': 'gb',
+                    'batch_id': '8' * 64,
+                    'metric': metric,
+                    'binary_sha256': identity.reference_sha256 if role == 'reference' else identity.candidate_sha256,
+                    'global_round': plan.global_round,
+                    'role': role,
+                    'relative_path': (
+                        f'gb/.perf-runs/{"8" * 64}/{metric}/'
+                        f'{identity.reference_sha256 if role == "reference" else identity.candidate_sha256}/'
+                        f'{plan.global_round}/{role}.xlsx'
+                    ),
+                }
+                record_head, checkpoint_head = _write_synthetic_record(
+                    attempt,
+                    sequence=sequence,
+                    kind='planned-output',
+                    previous_record_sha256=record_head,
+                    previous_checkpoint_sha256=checkpoint_head,
+                    metric=metric,
+                    global_round=plan.global_round,
+                    role=role,
+                    payload=planned_payload,
+                )
+                journal_head = _write_synthetic_journal_entry(
+                    comparison,
+                    previous_journal_sha256=journal_head,
+                    record_count=sequence,
+                    record_head_sha256=record_head,
+                    checkpoint_head_sha256=checkpoint_head,
+                )
+                sequence += 1
+                sample_payload = _synthetic_v2_sample_payload(
+                    identity,
+                    metric=metric,
+                    global_round=plan.global_round,
+                    role=role,
+                )
+                if semantic_override is not None and (metric, plan.global_round, role) == override_key:
+                    normal_run = sample_payload['normal_run']
+                    assert isinstance(normal_run, dict)
+                    runtime = normal_run['runtime']
+                    assert isinstance(runtime, dict)
+                    override = dict(semantic_override)
+                    if 'remove_runtime_key' in override:
+                        runtime.pop(override.pop('remove_runtime_key'))
+                    runtime_update = override.pop('runtime', {})
+                    normal_run_update = override.pop('normal_run', {})
+                    assert isinstance(runtime_update, Mapping)
+                    assert isinstance(normal_run_update, Mapping)
+                    runtime.update(runtime_update)
+                    normal_run.update(normal_run_update)
+                    sample_payload.update(override)
+                record_head, checkpoint_head = _write_synthetic_record(
+                    attempt,
+                    sequence=sequence,
+                    kind='sample',
+                    previous_record_sha256=record_head,
+                    previous_checkpoint_sha256=checkpoint_head,
+                    metric=metric,
+                    global_round=plan.global_round,
+                    role=role,
+                    payload=sample_payload,
+                )
+                journal_head = _write_synthetic_journal_entry(
+                    comparison,
+                    previous_journal_sha256=journal_head,
+                    record_count=sequence,
+                    record_head_sha256=record_head,
+                    checkpoint_head_sha256=checkpoint_head,
+                )
+        groups[metric] = record_head
+    sequence += 1
+    record_head, checkpoint_head = _write_synthetic_record(
+        attempt,
+        sequence=sequence,
+        kind='first-group',
+        previous_record_sha256=record_head,
+        previous_checkpoint_sha256=checkpoint_head,
+        groups=groups,
+    )
+    journal_head = _write_synthetic_journal_entry(
+        comparison,
+        previous_journal_sha256=journal_head,
+        record_count=sequence,
+        record_head_sha256=record_head,
+        checkpoint_head_sha256=checkpoint_head,
+    )
+    sequence += 1
+    record_head, checkpoint_head = _write_synthetic_record(
+        attempt,
+        sequence=sequence,
+        kind='cleanup-complete',
+        previous_record_sha256=record_head,
+        previous_checkpoint_sha256=checkpoint_head,
+        planned_output_count=20,
+    )
+    journal_head = _write_synthetic_journal_entry(
+        comparison,
+        previous_journal_sha256=journal_head,
+        record_count=sequence,
+        record_head_sha256=record_head,
+        checkpoint_head_sha256=checkpoint_head,
+    )
+    terminal = {
+        'verdict': HarnessVerdict.INCOMPLETE_EVIDENCE.value,
+        'primary_verdict': None,
+        'raw_log_sha256': None,
+        'record_count': sequence,
+        'record_head_sha256': record_head,
+        'checkpoint_head_sha256': checkpoint_head,
+    }
+    terminal_raw = phase0_harness._canonical_json(terminal)
+    (attempt / 'terminal.json').write_bytes(terminal_raw)
+    terminal_sha = hashlib.sha256(terminal_raw).hexdigest()
+    _write_synthetic_journal_entry(
+        comparison,
+        previous_journal_sha256=journal_head,
+        record_count=sequence,
+        record_head_sha256=record_head,
+        checkpoint_head_sha256=checkpoint_head,
+        terminal_head_sha256=terminal_sha,
+        verdict=HarnessVerdict.INCOMPLETE_EVIDENCE,
+    )
+    tree_sha, journal_sha, entry_count = _synthetic_tree_digest(comparison)
+    approved = ApprovedRecoveryParent(
+        pipeline='gb',
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+        parent_protocol_version=2,
+        parent_comparison_key=comparison_key,
+        parent_attempt=1,
+        parent_terminal_sha256=terminal_sha,
+        parent_comparison_tree_sha256=tree_sha,
+        parent_journal_head_sha256=journal_sha,
+        parent_inventory_entry_count=entry_count,
+        reason=phase0_harness.RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    )
+    return SyntheticV2Parent(comparison, approved, static)
+
+
+def _set_synthetic_journal_shape(parent: SyntheticV2Parent, journal_shape: str) -> None:
+    journal = parent.comparison / 'journal'
+    if journal_shape == 'missing':
+        for item in journal.iterdir():
+            item.unlink()
+        journal.rmdir()
+    elif journal_shape == 'empty':
+        for item in journal.iterdir():
+            item.unlink()
+    elif journal_shape == 'invalid-name':
+        latest = sorted(journal.glob('*.json'))[-1]
+        latest.rename(journal / 'invalid.json')
+    else:
+        raise ValueError(f'unknown journal shape: {journal_shape}')
+
+
+def _mutate_recovery_parent(parent: SyntheticV2Parent, mutation: str) -> None:
+    if mutation == 'journal':
+        latest = sorted((parent.comparison / 'journal').glob('*.json'))[-1]
+        latest.write_bytes(latest.read_bytes() + b' ')
+    elif mutation == 'attempt-0002':
+        (parent.comparison / 'attempt-0002').mkdir()
+    elif mutation == 'unknown-file':
+        (parent.comparison / 'unknown.bin').write_bytes(b'unknown')
+    else:
+        raise ValueError(f'unknown parent mutation: {mutation}')
+
+
+def _tree_bytes(path: Path) -> dict[str, bytes]:
+    return {
+        item.relative_to(path).as_posix(): item.read_bytes()
+        for item in sorted(path.rglob('*'), key=lambda entry: entry.relative_to(path).as_posix())
+        if item.is_file()
+    }
+
+
+def _mutate_v2_sample_semantics(root: Path, mutation: str) -> SyntheticV2Parent:
+    if mutation == 'missing-dimensions':
+        override: Mapping[str, object] = {'remove_runtime_key': 'sheet_dimensions'}
+    elif mutation == 'none-dimensions':
+        override = {'runtime': {'sheet_dimensions': None}}
+    elif mutation == 'list-dimensions':
+        override = {'runtime': {'sheet_dimensions': ['A1:A1', 'A1:A1', 'A1:A1']}}
+    elif mutation == 'partial-dimensions':
+        override = {'runtime': {'sheet_dimensions': ['A1:A1']}}
+    elif mutation == 'identity-drift':
+        override = {'input_sha256': '9' * 64}
+    elif mutation == 'oracle-mismatch':
+        override = {'normal_run': {'workbook_oracle_sha256': '9' * 64}}
+    else:
+        raise ValueError(f'unknown semantic mutation: {mutation}')
+    return _write_synthetic_v2_recovery_parent(root, semantic_override=override)
+
+
+def test_comparison_tree_digest_is_path_order_stable_and_rejects_reparse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(phase0_harness, '_trusted_local_root', lambda: tmp_path)
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    first = phase0_harness.comparison_tree_digest(parent.comparison)
+    second = phase0_harness.comparison_tree_digest(parent.comparison)
+    assert first == second
+    assert first.entry_count > 0
+    monkeypatch.setattr(phase0_harness, '_is_reparse_point', lambda path: path.name == 'metadata.json')
+    with pytest.raises(HarnessFailure, match='reparse'):
+        phase0_harness.comparison_tree_digest(parent.comparison)
+
+
+@pytest.mark.parametrize('journal_shape', ('missing', 'empty', 'invalid-name'))
+def test_comparison_tree_digest_rejects_invalid_journal(
+    journal_shape: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(phase0_harness, '_trusted_local_root', lambda: tmp_path)
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    _set_synthetic_journal_shape(parent, journal_shape)
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.comparison_tree_digest(parent.comparison)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+@pytest.mark.parametrize('mutation', ('journal', 'attempt-0002', 'unknown-file'))
+def test_recovery_parent_mutation_fails_before_v3_create(
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    _mutate_recovery_parent(parent, mutation)
+    monkeypatch.setattr(
+        AppendOnlyAttemptLedger,
+        'create_v3_once',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('v3 create must not run')),
+        raising=False,
+    )
+    before = _tree_bytes(parent.comparison)
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._authorize_v3_recovery(parent.static, approved=parent.approved)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    assert _tree_bytes(parent.comparison) == before
+
+
+def test_authorized_parent_uses_exact_v2_sample_parser_and_never_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parent = _write_synthetic_v2_recovery_parent(tmp_path)
+    monkeypatch.setattr(
+        phase0_harness,
+        '_write_create_new',
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('legacy audit attempted a write')),
+    )
+    before = phase0_harness.comparison_tree_digest(parent.comparison)
+    result = phase0_harness._authorize_v3_recovery(parent.static, approved=parent.approved)
+    assert result.parent_comparison_tree_sha256 == before.sha256
+    assert phase0_harness.comparison_tree_digest(parent.comparison) == before
+
+
+@pytest.mark.parametrize(
+    'mutation',
+    (
+        'missing-dimensions',
+        'none-dimensions',
+        'list-dimensions',
+        'partial-dimensions',
+        'identity-drift',
+        'oracle-mismatch',
+    ),
+)
+def test_resealed_parent_rejects_non_exact_v2_sample_semantics(mutation: str, tmp_path: Path) -> None:
+    parent = _mutate_v2_sample_semantics(tmp_path, mutation)
+    snapshot = parse_and_validate_ledger_snapshot(
+        parent.comparison / 'attempt-0001',
+        expected_protocol_version=2,
+    )
+    assert snapshot.terminal_verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._authorize_v3_recovery(parent.static, approved=parent.approved)
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
 
 
 def _claim(tmp_path: Path, path: Path, sha256: str) -> UnverifiedPriorEvidenceClaim:
@@ -1929,7 +2375,7 @@ def test_loader_repairs_only_tail_committed_record_missing_checkpoint(
     with pytest.raises(OSError, match='checkpoint interrupted'):
         ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
 
-    recovered = AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity)
+    recovered = AppendOnlyAttemptLedger.open_current_protocol_for_resume(ledger.attempt_directory, ledger.identity)
     assert recovered.state is AttemptState.EVIDENCE_COMMITTED
     assert len(tuple((ledger.attempt_directory / 'records').glob('*.json'))) == len(
         tuple((ledger.attempt_directory / 'checkpoints').glob('*.json'))
@@ -1954,7 +2400,7 @@ def test_loader_repairs_only_missing_journal_anchor_after_committed_checkpoint(
     with pytest.raises(OSError, match='journal interrupted'):
         ledger.mark_evidence_committed(artifact_sha256=hashlib.sha256(artifact.content.encode()).hexdigest())
 
-    recovered = AppendOnlyAttemptLedger.load(ledger.attempt_directory, ledger.identity)
+    recovered = AppendOnlyAttemptLedger.open_current_protocol_for_resume(ledger.attempt_directory, ledger.identity)
     assert recovered.state is AttemptState.EVIDENCE_COMMITTED
 
 

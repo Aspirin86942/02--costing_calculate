@@ -3839,7 +3839,7 @@ def test_cleanup_only_successor_prohibits_all_benchmark_records(tmp_path: Path) 
 
 def test_committed_state_binds_artifact_and_marker_and_is_sealed(tmp_path: Path) -> None:
     ledger = _v3_ledger(tmp_path)
-    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.commit_first_group(_v3_groups())
     ledger.mark_cleanup_complete()
     artifact_content = '{}'
     artifact_sha256 = hashlib.sha256(artifact_content.encode('utf-8')).hexdigest()
@@ -3914,7 +3914,7 @@ def _expected_v3_marker_identity(artifact_basename: str, artifact_content: str) 
 @pytest.mark.parametrize('mutation', ('artifact_basename', 'marker_basename'))
 def test_v3_prepared_evidence_binds_exact_artifact_and_marker_names(mutation: str, tmp_path: Path) -> None:
     ledger = _v3_ledger(tmp_path)
-    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.commit_first_group(_v3_groups())
     ledger.mark_cleanup_complete()
     artifact_content = '{}'
     artifact_basename = f'benchmark-v3-{ledger.comparison_key[:16]}.json'
@@ -3984,7 +3984,7 @@ def _write_resealed_v3_terminal(
 
 
 def _commit_v3_test_evidence(ledger: AppendOnlyAttemptLedger) -> None:
-    ledger.commit_first_group({'wall': {}, 'pws': {}})
+    ledger.commit_first_group(_v3_groups())
     ledger.mark_cleanup_complete()
     artifact_content = '{}'
     artifact_basename = f'benchmark-v3-{ledger.comparison_key[:16]}.json'
@@ -4161,7 +4161,7 @@ def test_v3_classifier_has_exact_closed_state_contract(case: str, expected: str,
         if case == 'started':
             _record_v3_sample_start(ledger)
         elif case in ('cleanup', 'prepared', 'committed', 'committed_terminal'):
-            ledger.commit_first_group({'wall': {}, 'pws': {}})
+            ledger.commit_first_group(_v3_groups())
             ledger.mark_cleanup_complete()
             if case in ('prepared', 'committed', 'committed_terminal'):
                 artifact_content = '{}'
@@ -4259,3 +4259,257 @@ def test_v2_committed_success_preserves_legacy_finish_behavior(monkeypatch: pyte
     ledger.finish(HarnessVerdict.INCONCLUSIVE)
 
     assert ledger.terminal_verdict is HarnessVerdict.INCONCLUSIVE
+
+
+def _v3_groups() -> dict[str, str]:
+    return {'wall': 'a' * 64, 'pws': 'b' * 64}
+
+
+def _append_unchecked_v3_record(
+    ledger: AppendOnlyAttemptLedger,
+    kind: str,
+    **payload: object,
+) -> tuple[str, str]:
+    sequence = ledger._record_count + 1
+    record_head, checkpoint_head = _write_synthetic_record(
+        ledger.attempt_directory,
+        sequence=sequence,
+        kind=kind,
+        previous_record_sha256=ledger._record_head_sha256,
+        previous_checkpoint_sha256=ledger._checkpoint_head_sha256,
+        **payload,
+    )
+    _append_v3_test_journal_anchor(
+        ledger,
+        record_count=sequence,
+        record_head_sha256=record_head,
+        checkpoint_head_sha256=checkpoint_head,
+    )
+    return record_head, checkpoint_head
+
+
+@pytest.mark.parametrize(
+    ('kind', 'field', 'value'),
+    (
+        ('planned-output', 'global_round', True),
+        ('planned-output', 'metric', 1),
+        ('planned-output', 'role', False),
+        ('sample', 'global_round', True),
+        ('sample', 'metric', 1),
+        ('sample', 'role', False),
+    ),
+)
+def test_v3_loader_rejects_non_exact_outer_sample_and_plan_keys(
+    kind: str, field: str, value: object, tmp_path: Path
+) -> None:
+    ledger = _v3_ledger(tmp_path)
+    outer: dict[str, object] = {'metric': 'wall', 'global_round': 1, 'role': 'reference'}
+    if kind == 'planned-output':
+        payload = _v3_planned_payload(batch_id=ledger.batch_id)
+    else:
+        _plan_sha, started_sha = _record_v3_sample_start(ledger)
+        payload = _v3_sample_payload(batch_id=ledger.batch_id)
+        payload['sample_started_record_sha256'] = started_sha
+    outer[field] = value
+    _append_unchecked_v3_record(ledger, kind, **outer, payload=payload)
+
+    with pytest.raises(HarnessFailure):
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, ledger.identity)
+
+
+@pytest.mark.parametrize(
+    ('kind', 'groups'),
+    (
+        ('first', ['wall', 'pws']),
+        ('first', {'wall': 'a' * 64, 'pws': False}),
+        ('expanded', ['wall', 'pws']),
+        ('expanded', {'wall': 'a' * 64, 'pws': False}),
+    ),
+)
+def test_v3_group_writer_rejects_non_exact_groups(kind: str, groups: object, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    with pytest.raises(HarnessFailure, match='group'):
+        if kind == 'first':
+            ledger.commit_first_group(groups)  # type: ignore[arg-type]
+        else:
+            first_sha = ledger.commit_first_group(_v3_groups())
+            ledger.commit_expanded_group(groups, first_group_sha256=first_sha)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ('kind', 'mutation'),
+    (
+        ('first', 'list'),
+        ('first', 'bad_hash'),
+        ('expanded', 'list'),
+        ('expanded', 'bad_hash'),
+        ('expanded', 'wrong_first_sha'),
+        ('expanded', 'non_sha_first'),
+    ),
+)
+def test_v3_loader_rejects_non_exact_group_records(kind: str, mutation: str, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    groups: object = _v3_groups()
+    if mutation == 'list':
+        groups = ['wall', 'pws']
+    elif mutation == 'bad_hash':
+        groups = {'wall': 'a' * 64, 'pws': False}
+    if kind == 'first':
+        _append_unchecked_v3_record(ledger, 'first-group', groups=groups)
+    else:
+        first_sha = ledger.commit_first_group(_v3_groups())
+        linked_sha = first_sha
+        if mutation == 'wrong_first_sha':
+            linked_sha = 'f' * 64
+        elif mutation == 'non_sha_first':
+            linked_sha = False  # type: ignore[assignment]
+        _append_unchecked_v3_record(
+            ledger,
+            'expanded-group',
+            first_group_sha256=linked_sha,
+            groups=groups,
+        )
+
+    with pytest.raises(HarnessFailure, match='group|SHA|link'):
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, ledger.identity)
+
+
+@pytest.mark.parametrize('planned_output_count', (True, 0.0, 1))
+def test_v3_loader_rejects_non_exact_cleanup_count(planned_output_count: object, tmp_path: Path) -> None:
+    ledger = _v3_ledger(tmp_path)
+    ledger.commit_first_group(_v3_groups())
+    _append_unchecked_v3_record(
+        ledger,
+        'cleanup-complete',
+        planned_output_count=planned_output_count,
+    )
+
+    with pytest.raises(HarnessFailure, match='cleanup|count'):
+        AppendOnlyAttemptLedger.load_read_only(ledger.attempt_directory, ledger.identity)
+
+
+@pytest.mark.parametrize('loader_name', ('read', 'resume'))
+@pytest.mark.parametrize('mutation', ('unknown_key', 'bool_hash', 'reference_mismatch'))
+def test_v3_identity_is_exact_even_when_strict_identity_is_false(
+    loader_name: str, mutation: str, tmp_path: Path
+) -> None:
+    ledger = _v3_ledger(tmp_path)
+    stored = asdict(ledger.identity)
+    if mutation == 'unknown_key':
+        stored['unknown'] = None
+    elif mutation == 'bool_hash':
+        stored['input_sha256'] = False
+    else:
+        stored['reference_sha256'] = 'f' * 64
+    _rewrite_metadata_and_matching_empty_journal(ledger.attempt_directory, identity=stored)
+
+    with pytest.raises(HarnessFailure, match='identity|metadata'):
+        if loader_name == 'read':
+            AppendOnlyAttemptLedger.load_read_only(
+                ledger.attempt_directory,
+                ledger.identity,
+                strict_identity=False,
+            )
+        else:
+            AppendOnlyAttemptLedger.open_v3_for_resume(
+                ledger.attempt_directory,
+                ledger.identity,
+                strict_identity=False,
+            )
+
+
+def _write_test_journal_entry(
+    comparison: Path,
+    *,
+    sequence: int,
+    previous_journal_sha256: str | None,
+    attempt_number: int,
+    record_count: int,
+    record_head_sha256: str,
+    checkpoint_head_sha256: str,
+    terminal_head_sha256: str | None = None,
+    verdict: HarnessVerdict | None = None,
+) -> str:
+    state = phase0_harness._journal_state_payload(
+        attempt_number=attempt_number,
+        record_count=record_count,
+        record_head_sha256=record_head_sha256,
+        checkpoint_head_sha256=checkpoint_head_sha256,
+        terminal_present=terminal_head_sha256 is not None,
+        terminal_head_sha256=terminal_head_sha256,
+        verdict=verdict,
+    )
+    raw = phase0_harness._canonical_json({'previous_journal_sha256': previous_journal_sha256, **state})
+    (comparison / 'journal' / f'{sequence:06d}.json').write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
+
+
+def test_v3_recursive_cleanup_successor_never_relaxes_parent_identity(tmp_path: Path) -> None:
+    parent = _v3_ledger(tmp_path)
+    parent.finish(HarnessVerdict.CLEANUP_FAILED)
+    successor = AppendOnlyAttemptLedger.create_v3_once(
+        parent.attempt_directory.parents[1],
+        parent.identity,
+        comparison_key=parent.comparison_key,
+        phase0a_manifest_sha256=parent.phase0a_manifest_sha256,
+        recovery_provenance=parent.recovery_provenance,
+        upstream_gate_provenance=parent.upstream_gate_provenance,
+    )
+    parent_metadata_path = parent.attempt_directory / 'metadata.json'
+    parent_metadata = json.loads(parent_metadata_path.read_text(encoding='utf-8'))
+    parent_metadata['identity']['reference_sha256'] = 'f' * 64
+    parent_metadata_raw = phase0_harness._canonical_json(parent_metadata)
+    parent_metadata_path.write_bytes(parent_metadata_raw)
+    parent_metadata_sha = hashlib.sha256(parent_metadata_raw).hexdigest()
+    parent_terminal_path = parent.attempt_directory / 'terminal.json'
+    parent_terminal = json.loads(parent_terminal_path.read_text(encoding='utf-8'))
+    parent_terminal['record_head_sha256'] = parent_metadata_sha
+    parent_terminal['checkpoint_head_sha256'] = parent_metadata_sha
+    parent_terminal_raw = phase0_harness._canonical_json(parent_terminal)
+    parent_terminal_path.write_bytes(parent_terminal_raw)
+    parent_terminal_sha = hashlib.sha256(parent_terminal_raw).hexdigest()
+    successor_metadata_path = successor.attempt_directory / 'metadata.json'
+    successor_metadata = json.loads(successor_metadata_path.read_text(encoding='utf-8'))
+    successor_metadata['previous_attempt_head_sha256'] = parent_terminal_sha
+    successor_metadata_raw = phase0_harness._canonical_json(successor_metadata)
+    successor_metadata_path.write_bytes(successor_metadata_raw)
+    successor_metadata_sha = hashlib.sha256(successor_metadata_raw).hexdigest()
+    journal_directory = parent.attempt_directory.parent / 'journal'
+    for path in journal_directory.glob('*.json'):
+        path.unlink()
+    first_journal = _write_test_journal_entry(
+        parent.attempt_directory.parent,
+        sequence=1,
+        previous_journal_sha256=None,
+        attempt_number=1,
+        record_count=0,
+        record_head_sha256=parent_metadata_sha,
+        checkpoint_head_sha256=parent_metadata_sha,
+    )
+    second_journal = _write_test_journal_entry(
+        parent.attempt_directory.parent,
+        sequence=2,
+        previous_journal_sha256=first_journal,
+        attempt_number=1,
+        record_count=0,
+        record_head_sha256=parent_metadata_sha,
+        checkpoint_head_sha256=parent_metadata_sha,
+        terminal_head_sha256=parent_terminal_sha,
+        verdict=HarnessVerdict.CLEANUP_FAILED,
+    )
+    _write_test_journal_entry(
+        parent.attempt_directory.parent,
+        sequence=3,
+        previous_journal_sha256=second_journal,
+        attempt_number=2,
+        record_count=0,
+        record_head_sha256=successor_metadata_sha,
+        checkpoint_head_sha256=successor_metadata_sha,
+    )
+
+    with pytest.raises(HarnessFailure, match='identity|metadata'):
+        AppendOnlyAttemptLedger.load_read_only(
+            successor.attempt_directory,
+            successor.identity,
+            strict_identity=False,
+        )

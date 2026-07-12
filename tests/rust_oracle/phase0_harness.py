@@ -1007,7 +1007,13 @@ class AppendOnlyAttemptLedger:
                 'attempt metadata number does not match its directory',
             )
         stored_identity = metadata.get('identity')
-        if identity is None:
+        if protocol_version == PAIRED_PROTOCOL_VERSION:
+            parsed_identity = _parse_exact_legacy_identity(stored_identity)
+            if identity is None:
+                identity = parsed_identity
+            elif parsed_identity != identity:
+                raise HarnessFailure(HarnessVerdict.ENVIRONMENT_DRIFT, 'v3 attempt identity changed during resume')
+        elif identity is None:
             identity = _parse_exact_legacy_identity(stored_identity)
         else:
             if (
@@ -1113,6 +1119,7 @@ class AppendOnlyAttemptLedger:
                         record,
                         {'kind', 'previous_record_sha256', 'metric', 'global_round', 'role', 'payload'},
                     )
+                    _validate_v3_sample_record_key(record['metric'], record['global_round'], record['role'])
                 key = (record['metric'], record['global_round'], record['role'])
                 if key in sample_payloads:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'sample record is duplicated')
@@ -1175,6 +1182,7 @@ class AppendOnlyAttemptLedger:
                         record,
                         {'kind', 'previous_record_sha256', 'metric', 'global_round', 'role', 'payload'},
                     )
+                    _validate_v3_sample_record_key(record['metric'], record['global_round'], record['role'])
                 key = (record['metric'], record['global_round'], record['role'])
                 if key in plan_payloads:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output record is duplicated')
@@ -1193,6 +1201,7 @@ class AppendOnlyAttemptLedger:
             elif kind == 'first-group':
                 if protocol_version == PAIRED_PROTOCOL_VERSION:
                     _validate_v3_record_envelope(record, {'kind', 'previous_record_sha256', 'groups'})
+                    _validate_v3_groups(record['groups'])
                 if first_group_sha256 is not None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first group record is duplicated')
                 first_group_sha256 = record_head
@@ -1201,12 +1210,35 @@ class AppendOnlyAttemptLedger:
                     _validate_v3_record_envelope(
                         record, {'kind', 'previous_record_sha256', 'first_group_sha256', 'groups'}
                     )
+                    _validate_v3_groups(record['groups'])
+                    if (
+                        not _is_sha256(record['first_group_sha256'])
+                        or record['first_group_sha256'] != first_group_sha256
+                    ):
+                        raise HarnessFailure(
+                            HarnessVerdict.INCOMPLETE_EVIDENCE,
+                            'v3 expanded group does not link actual first group SHA',
+                        )
                 if expanded_group_sha256 is not None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group record is duplicated')
                 expanded_group_sha256 = record_head
             elif kind == 'cleanup-complete':
                 if protocol_version == PAIRED_PROTOCOL_VERSION:
                     _validate_v3_record_envelope(record, {'kind', 'previous_record_sha256', 'planned_output_count'})
+                    inherited_raw = metadata.get('inherited_planned_outputs', [])
+                    if not isinstance(inherited_raw, list):
+                        raise HarnessFailure(
+                            HarnessVerdict.INCOMPLETE_EVIDENCE,
+                            'inherited planned-output list is invalid',
+                        )
+                    planned_paths = {
+                        payload['relative_path']
+                        for payload in (
+                            *(_validate_planned_output_payload(item) for item in inherited_raw),
+                            *plan_payloads.values(),
+                        )
+                    }
+                    _validate_v3_cleanup_count(record['planned_output_count'], len(planned_paths))
                 if cleanup_complete or evidence_committed or first_group_sha256 is None:
                     raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success record order is invalid')
                 cleanup_complete = True
@@ -1547,6 +1579,8 @@ class AppendOnlyAttemptLedger:
         if self.cleanup_only:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup-only attempt cannot record a sample')
         key = (metric, global_round, role)
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            _validate_v3_sample_record_key(metric, global_round, role)
         if key in self._sample_payloads:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'existing round record overwrite is forbidden')
         if self.protocol_version == PAIRED_PROTOCOL_VERSION:
@@ -1631,6 +1665,8 @@ class AppendOnlyAttemptLedger:
             )
         validated = _validate_planned_output_payload(payload)
         key = (metric, global_round, role)
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            _validate_v3_sample_record_key(metric, global_round, role)
         if (validated['metric'], validated['global_round'], validated['role']) != key:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'planned-output key/payload mismatch')
         if self.protocol_version == PAIRED_PROTOCOL_VERSION and (
@@ -1707,7 +1743,9 @@ class AppendOnlyAttemptLedger:
     def commit_first_group(self, groups: dict[str, Any]) -> str:
         if self.state is not AttemptState.CREATED or self.first_group_sha256 is not None:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first group record overwrite is forbidden')
-        if set(groups) != {'wall', 'pws'}:
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            groups = _validate_v3_groups(groups)
+        elif set(groups) != {'wall', 'pws'}:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'first group must commit wall and pws together')
         digest = self._append('first-group', {'groups': groups})
         self.first_group_sha256 = digest
@@ -1721,7 +1759,9 @@ class AppendOnlyAttemptLedger:
             raise HarnessFailure(
                 HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group does not link original first group SHA'
             )
-        if set(groups) != {'wall', 'pws'}:
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            groups = _validate_v3_groups(groups)
+        elif set(groups) != {'wall', 'pws'}:
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'expanded group must commit wall and pws together')
         digest = self._append('expanded-group', {'first_group_sha256': first_group_sha256, 'groups': groups})
         self.expanded_group_sha256 = digest
@@ -1731,7 +1771,10 @@ class AppendOnlyAttemptLedger:
     def mark_cleanup_complete(self) -> str:
         if self.state not in (AttemptState.FIRST_GROUP_COMPLETE, AttemptState.EXPANDED_GROUP_COMPLETE):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'cleanup success transition is invalid')
-        digest = self._append('cleanup-complete', {'planned_output_count': len(self.all_planned_output_payloads())})
+        planned_output_count = len(self.all_planned_output_payloads())
+        if self.protocol_version == PAIRED_PROTOCOL_VERSION:
+            _validate_v3_cleanup_count(planned_output_count, planned_output_count)
+        digest = self._append('cleanup-complete', {'planned_output_count': planned_output_count})
         self.state = AttemptState.CLEANUP_COMPLETE
         return digest
 
@@ -1863,6 +1906,33 @@ def classify_v3_attempt_state(ledger: AppendOnlyAttemptLedger | None) -> V3Attem
 def _validate_v3_record_envelope(record: object, keys: set[str]) -> None:
     if not isinstance(record, dict) or set(record) != keys:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 record fields are not closed')
+
+
+def _validate_v3_sample_record_key(metric: object, global_round: object, role: object) -> None:
+    if (
+        type(metric) is not str
+        or metric not in ('wall', 'pws')
+        or type(global_round) is not int
+        or not 1 <= global_round <= 10
+        or type(role) is not str
+        or role not in ('reference', 'candidate')
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 sample record key is invalid')
+
+
+def _validate_v3_groups(groups: object) -> dict[str, str]:
+    if (
+        not isinstance(groups, dict)
+        or set(groups) != {'wall', 'pws'}
+        or not all(_is_sha256(groups[key]) for key in ('wall', 'pws'))
+    ):
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 group mapping is invalid')
+    return {'wall': groups['wall'], 'pws': groups['pws']}
+
+
+def _validate_v3_cleanup_count(value: object, expected: int) -> None:
+    if type(value) is not int or value < 0 or value != expected:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'v3 cleanup planned-output count is invalid')
 
 
 def _validate_v3_checkpoint_scalars(checkpoint: object) -> None:

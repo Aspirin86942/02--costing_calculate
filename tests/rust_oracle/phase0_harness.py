@@ -30,6 +30,7 @@ from tests.rust_oracle.benchmark_protocol import (
     CalibrationRound,
     ClosedBinaryLabel,
     ComparisonProfile,
+    DirectionDiagnosticEvidence,
     HarnessVerdict,
     MachineEvidence,
     MetricGroup,
@@ -48,7 +49,6 @@ from tests.rust_oracle.benchmark_protocol import (
     build_direction_diagnostic,
     build_round_plan,
     derive_comparison_key,
-    groups_have_conflicting_direction,
     merge_metric_groups,
     requires_mandatory_expansion,
     validate_calibration_group,
@@ -69,6 +69,7 @@ from tests.rust_oracle.evidence import (
     SheetDimensionEvidence,
     SmokeSummaryEvidence,
     _batch_commit_marker,
+    expected_benchmark_artifact_name,
 )
 from tests.rust_oracle.oracle_runner import (
     CapturedNormalRun,
@@ -2442,6 +2443,15 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         reference_sha256=identity.reference_sha256,
         candidate_sha256=identity.candidate_sha256,
     )
+    expected_basename = expected_benchmark_artifact_name(
+        protocol_version=PAIRED_PROTOCOL_VERSION,
+        comparison_key=comparison_key,
+    )
+    if request.evidence_path.name != expected_basename:
+        raise HarnessFailure(
+            HarnessVerdict.INCOMPLETE_EVIDENCE,
+            'evidence path basename does not match protocol v2 comparison identity',
+        )
     ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
     if ledger.prepared_evidence() is not None:
         return _recover_prepared_evidence(request, ledger, batch_id)
@@ -2456,6 +2466,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         ledger = _load_current_protocol_ledger(ledger.attempt_directory, identity)
         first_sha = ledger.commit_first_group(_group_commit_payload(wall_first, pws_first))
         wall, pws = wall_first, pws_first
+        diagnostics: tuple[DirectionDiagnosticEvidence, ...] = ()
         if _paired_groups_require_expansion(request, wall_first, pws_first):
             expanded_plans, _ = _mandatory_paired_expansion_plans(
                 wall_requires_expansion=True,
@@ -2483,15 +2494,24 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             )
             ledger = _load_current_protocol_ledger(ledger.attempt_directory, identity)
             ledger.commit_expanded_group(_group_commit_payload(wall_second, pws_second), first_group_sha256=first_sha)
-            if groups_have_conflicting_direction(wall_first, wall_second) or groups_have_conflicting_direction(
-                pws_first, pws_second
-            ):
-                raise HarnessFailure(HarnessVerdict.INCONCLUSIVE, 'expanded group changed metric direction')
+            limits = COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
+            diagnostics = (
+                build_direction_diagnostic(wall_first, wall_second, limits=limits),
+                build_direction_diagnostic(pws_first, pws_second, limits=limits),
+            )
             wall = merge_metric_groups(wall_first, wall_second)
             pws = merge_metric_groups(pws_first, pws_second)
         assert_same_benchmark_batch(wall, pws)
         _assert_identity_unchanged(identity, _capture_identity(request))
         _evaluate_closed_profile(request, wall, pws, baseline)
+        if any(
+            item.directions_conflict and item.direct_gate != 'none' and item.near_boundary is True
+            for item in diagnostics
+        ):
+            raise HarnessFailure(
+                HarnessVerdict.INCONCLUSIVE,
+                'active direct metric remains direction-conflicted near its v2 limit',
+            )
         raw_cleanup_errors = _cleanup_all(list(_formal_raw_evidence_paths(request, wall, pws)))
         if raw_cleanup_errors:
             raise HarnessFailure(
@@ -2500,7 +2520,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             )
         ledger.mark_cleanup_complete()
         cleaned_attempt = _batch_attempt(ledger, batch_id, AttemptState.CLEANUP_COMPLETE)
-        evidence = _build_paired_evidence(request, wall, pws, cleaned_attempt, identity)
+        evidence = _build_paired_evidence(request, wall, pws, cleaned_attempt, identity, diagnostics)
         artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(evidence)
         if request.evidence_path.name != artifact.file_name:
             raise HarnessFailure(
@@ -3291,7 +3311,23 @@ def _build_paired_evidence(
     pws: MetricGroup,
     attempt: BatchAttempt,
     identity: BenchmarkIdentity,
+    direction_diagnostics: tuple[DirectionDiagnosticEvidence, ...],
 ) -> BenchmarkManifestEvidence:
+    expected_comparison_key = derive_comparison_key(
+        protocol_version=PAIRED_PROTOCOL_VERSION,
+        pipeline=request.pipeline,
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
+    if attempt.protocol_version != PAIRED_PROTOCOL_VERSION or attempt.comparison_key != expected_comparison_key:
+        raise HarnessFailure(
+            HarnessVerdict.INCOMPLETE_EVIDENCE,
+            'paired attempt protocol/comparison identity is invalid',
+        )
     machine = _capture_machine_evidence()
     rounds = tuple(
         BenchmarkRoundEvidence(
@@ -3328,17 +3364,6 @@ def _build_paired_evidence(
     candidate_size = _aggregate_output_bytes(wall, pws, 'candidate')
     if attempt.first_group_sha256 is None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'paired output or group evidence is inconsistent')
-    diagnostics = ()
-    if len(wall.rounds) == 10:
-        limits = COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
-        diagnostics = tuple(
-            build_direction_diagnostic(
-                replace(group, rounds=group.rounds[:5], global_round_start=1),
-                replace(group, rounds=group.rounds[5:], global_round_start=6),
-                limits=limits,
-            )
-            for group in (wall, pws)
-        )
     logs = tuple(
         sample.local_unversioned_log_sha256
         for group in (wall, pws)
@@ -3347,7 +3372,7 @@ def _build_paired_evidence(
     )
     return BenchmarkManifestEvidence(
         schema_version=2,
-        protocol_version=attempt.protocol_version,
+        protocol_version=PAIRED_PROTOCOL_VERSION,
         profile=request.comparison_profile,
         pipeline=request.pipeline,
         input_alias=PathAlias.GB_INPUT if request.pipeline == 'gb' else PathAlias.SK_INPUT,
@@ -3382,7 +3407,7 @@ def _build_paired_evidence(
         mismatches=(),
         local_log_sha256=logs,
         verdict=HarnessVerdict.VALIDATED,
-        direction_diagnostics=diagnostics,
+        direction_diagnostics=direction_diagnostics,
     )
 
 

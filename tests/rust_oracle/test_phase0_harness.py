@@ -52,6 +52,7 @@ from tests.rust_oracle.phase0_harness import (
     HarnessFailure,
     MetricGroupRequest,
     PairedBenchmarkRequest,
+    PairedBenchmarkResult,
     Phase0ARequest,
     Phase0HSmokeRequest,
     UnverifiedPriorEvidenceClaim,
@@ -131,6 +132,23 @@ def _request(tmp_path: Path) -> PairedBenchmarkRequest:
 
 def _identity() -> BenchmarkIdentity:
     return BenchmarkIdentity('3' * 8, '1' * 8, '2' * 8, 'head', '4' * 8, '5' * 8)
+
+
+def _full_identity() -> BenchmarkIdentity:
+    return BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+
+
+def _comparison_key(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
+    return phase0_harness.derive_comparison_key(
+        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+        pipeline=request.pipeline,
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
 
 
 def _ledger(tmp_path: Path) -> AppendOnlyAttemptLedger:
@@ -1756,6 +1774,8 @@ def test_closed_profile_candidate_output_gate_uses_median(
 
 
 def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    identity = _full_identity()
     wall = _with_output_sizes(
         _metric_group('wall'),
         reference_sizes=(100,) * 5,
@@ -1768,7 +1788,7 @@ def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) 
     )
     attempt = BatchAttempt(
         protocol_version=2,
-        comparison_key='comparison',
+        comparison_key=_comparison_key(request, identity),
         batch_id=wall.batch_id,
         attempt_number=1,
         state=AttemptState.CLEANUP_COMPLETE,
@@ -1779,23 +1799,23 @@ def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) 
         attempt_directory=tmp_path,
     )
 
-    evidence = phase0_harness._build_paired_evidence(_request(tmp_path), wall, pws, attempt, _identity())
+    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
 
     assert {item.role: item.value for item in evidence.output_bytes} == {'reference': 101, 'candidate': 110}
 
 
 def test_expanded_paired_evidence_contains_exact_wall_then_pws_diagnostics(tmp_path: Path) -> None:
-    wall = phase0_harness.merge_metric_groups(
-        _metric_group('wall', reference='1', candidate='1.03'),
-        _metric_group('wall', start=6, reference='1', candidate='0.95'),
-    )
-    pws = phase0_harness.merge_metric_groups(
-        _metric_group('pws', reference='1', candidate='0.99'),
-        _metric_group('pws', start=6, reference='1', candidate='1.01'),
-    )
+    request = _request(tmp_path)
+    identity = _full_identity()
+    wall_first = _metric_group('wall', reference='1', candidate='1.03')
+    wall_second = _metric_group('wall', start=6, reference='1', candidate='0.95')
+    pws_first = _metric_group('pws', reference='1', candidate='0.99')
+    pws_second = _metric_group('pws', start=6, reference='1', candidate='1.01')
+    wall = phase0_harness.merge_metric_groups(wall_first, wall_second)
+    pws = phase0_harness.merge_metric_groups(pws_first, pws_second)
     attempt = BatchAttempt(
         protocol_version=2,
-        comparison_key='comparison',
+        comparison_key=_comparison_key(request, identity),
         batch_id=wall.batch_id,
         attempt_number=1,
         state=AttemptState.CLEANUP_COMPLETE,
@@ -1806,14 +1826,42 @@ def test_expanded_paired_evidence_contains_exact_wall_then_pws_diagnostics(tmp_p
         attempt_directory=tmp_path,
     )
 
-    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
-    value = phase0_harness._build_paired_evidence(_request(tmp_path), wall, pws, attempt, identity)
+    limits = phase0_harness.COMPARISON_LIMITS[request.comparison_profile][request.pipeline]
+    diagnostics = (
+        phase0_harness.build_direction_diagnostic(wall_first, wall_second, limits=limits),
+        phase0_harness.build_direction_diagnostic(pws_first, pws_second, limits=limits),
+    )
+    value = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, diagnostics)
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(value)
 
     assert tuple(item.metric for item in value.direction_diagnostics) == ('wall', 'pws')
     assert value.direction_diagnostics[0].first_group_ratio == Decimal('1.03')
     assert value.direction_diagnostics[0].second_group_ratio == Decimal('0.95')
     assert artifact.file_name.startswith('benchmark-v2-')
+
+
+def test_v2_evidence_rejects_attempt_comparison_key_mismatch(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    identity = _full_identity()
+    wall = _metric_group('wall')
+    pws = _metric_group('pws')
+    attempt = BatchAttempt(
+        protocol_version=2,
+        comparison_key='f' * 64,
+        batch_id=wall.batch_id,
+        attempt_number=1,
+        state=AttemptState.CLEANUP_COMPLETE,
+        previous_attempt_head_sha256=None,
+        first_group_sha256='a' * 64,
+        expanded_group_sha256=None,
+        ledger_head_sha256='b' * 64,
+        attempt_directory=tmp_path,
+    )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
 
 
 def test_loader_repairs_only_tail_committed_record_missing_checkpoint(
@@ -1904,7 +1952,7 @@ def _install_formal_paired(
     wall_candidate: str = '1',
 ) -> tuple[PairedBenchmarkRequest, list[dict[str, object]]]:
     request = _request(tmp_path)
-    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+    identity = _full_identity()
     comparison_key = phase0_harness.derive_comparison_key(
         protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
         pipeline=request.pipeline,
@@ -1945,6 +1993,322 @@ def _install_formal_paired(
     return request, publications
 
 
+def _direction_case_group(
+    metric: str,
+    *,
+    start: int,
+    candidate: str,
+    pipeline: str,
+    stage_ratios: dict[str, Decimal] | None = None,
+) -> MetricGroup:
+    group = _metric_group(metric, start=start, reference='1', candidate=candidate)
+    if stage_ratios:
+        group = _with_candidate_stage_ratios(group, tuple(dict(stage_ratios) for _ in group.rounds))
+    rounds = tuple(
+        replace(
+            paired,
+            reference=replace(
+                paired.reference,
+                normal_run=replace(
+                    paired.reference.normal_run,
+                    runtime=replace(paired.reference.normal_run.runtime, pipeline=pipeline),
+                ),
+            ),
+            candidate=replace(
+                paired.candidate,
+                normal_run=replace(
+                    paired.candidate.normal_run,
+                    runtime=replace(paired.candidate.normal_run.runtime, pipeline=pipeline),
+                ),
+            ),
+        )
+        for paired in group.rounds
+    )
+    return replace(group, pipeline=pipeline, rounds=rounds)
+
+
+def _install_v2_direction_case(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    profile: ComparisonProfile = ComparisonProfile.PHASE0B_VS_PHASE0A,
+    pipeline: str = 'gb',
+    wall: tuple[str, str],
+    pws: tuple[str, str],
+    stage_ratios: dict[str, Decimal] | None = None,
+    force_expansion: bool = False,
+) -> tuple[PairedBenchmarkRequest, BenchmarkIdentity, list[tuple[str, int]]]:
+    labels = {
+        ComparisonProfile.PHASE0B_VS_PHASE0A: (ClosedBinaryLabel.PHASE0A, ClosedBinaryLabel.PHASE0B),
+        ComparisonProfile.PHASE1_VS_PHASE0A: (ClosedBinaryLabel.PHASE0A, ClosedBinaryLabel.PHASE1),
+        ComparisonProfile.PHASE4_VS_PHASE3: (ClosedBinaryLabel.PHASE3, ClosedBinaryLabel.PHASE4),
+    }
+    reference_label, candidate_label = labels[profile]
+    request = replace(
+        _request(tmp_path),
+        comparison_profile=profile,
+        pipeline=pipeline,
+        reference_label=reference_label,
+        candidate_label=candidate_label,
+    )
+    input_path = tmp_path / 'confidential-source.xlsx'
+    input_path.write_bytes(b'input')
+    request = replace(request, input_path=input_path)
+    identity = _full_identity()
+    comparison_key = _comparison_key(request, identity)
+    request = replace(
+        request,
+        evidence_path=request.evidence_path.parent
+        / expected_benchmark_artifact_name(protocol_version=2, comparison_key=comparison_key),
+    )
+    request.phase0a_manifest.write_text(
+        json.dumps(_approved_phase0a_payload(wall_value='1', pws_value='1')),
+        encoding='utf-8',
+    )
+    monkeypatch.setattr(phase0_harness, '_capture_identity', lambda benchmark: identity)
+    monkeypatch.setattr(phase0_harness, '_run_git', lambda root, *args: '')
+    monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', lambda self, **kwargs: None)
+    if force_expansion:
+        monkeypatch.setattr(phase0_harness, '_paired_groups_require_expansion', lambda *_args: True)
+
+    calls: list[tuple[str, int]] = []
+
+    def group(group_request: MetricGroupRequest) -> MetricGroup:
+        calls.append((group_request.metric, group_request.plans[0].global_round))
+        values = wall if group_request.metric == 'wall' else pws
+        index = 0 if group_request.plans[0].global_round == 1 else 1
+        value = _direction_case_group(
+            group_request.metric,
+            start=group_request.plans[0].global_round,
+            candidate=values[index],
+            pipeline=pipeline,
+            stage_ratios=stage_ratios if group_request.metric == 'wall' else None,
+        )
+        return replace(value, batch_id=group_request.batch_id)
+
+    monkeypatch.setattr(phase0_harness, 'run_normal_wall_group', group)
+    monkeypatch.setattr(phase0_harness, 'run_pws_group', group)
+    return request, identity, calls
+
+
+def _assert_v2_direction_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    expected: HarnessVerdict,
+    **case: object,
+) -> PairedBenchmarkResult | HarnessFailure:
+    request, identity, _calls = _install_v2_direction_case(monkeypatch, tmp_path, **case)  # type: ignore[arg-type]
+    if expected is HarnessVerdict.VALIDATED:
+        result = phase0_harness.run_paired_normal_batch(request)
+        assert result.verdict is HarnessVerdict.VALIDATED
+        return result
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+    assert caught.value.verdict is expected
+    ledger = AppendOnlyAttemptLedger.load(
+        request.attempt_ledger_root / _comparison_key(request, identity) / 'attempt-0001',
+        identity,
+    )
+    assert ledger.terminal_verdict is expected
+    assert not request.evidence_path.exists()
+    return caught.value
+
+
+def test_v2_active_wall_conflict_near_boundary_is_inconclusive_after_all_gates_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.INCONCLUSIVE,
+        wall=('1.03', '0.99'),
+        pws=('1', '1'),
+    )
+
+
+def test_v2_active_wall_conflict_decisive_pass_is_validated(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.VALIDATED,
+        wall=('1.04', '0.90'),
+        pws=('1', '1'),
+    )
+
+
+def test_v2_active_wall_conflict_decisive_fail_is_candidate_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.CANDIDATE_FAILED,
+        wall=('0.99', '1.07'),
+        pws=('1', '1'),
+    )
+
+
+def test_v2_inactive_pws_conflict_is_diagnostic_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.VALIDATED,
+        wall=('0.95', '0.95'),
+        pws=('0.99', '1.01'),
+        force_expansion=True,
+    )
+
+
+def test_v2_near_wall_conflict_cannot_hide_direct_pws_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.CANDIDATE_FAILED,
+        profile=ComparisonProfile.PHASE1_VS_PHASE0A,
+        wall=('1.12', '0.98'),
+        pws=('1.06', '1.06'),
+    )
+
+
+@pytest.mark.parametrize(
+    ('pipeline', 'wall', 'pws', 'stage_ratios'),
+    (
+        ('sk', ('1.02', '0.98'), ('0.95', '0.95'), {'ingest': Decimal('0.95')}),
+        ('gb', ('1', '1'), ('1.12', '0.98'), {'ingest': Decimal('1.06')}),
+    ),
+    ids=('composite-failure', 'stage-only-failure'),
+)
+def test_v2_near_wall_conflict_cannot_hide_composite_or_stage_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    pipeline: str,
+    wall: tuple[str, str],
+    pws: tuple[str, str],
+    stage_ratios: dict[str, Decimal],
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.CANDIDATE_FAILED,
+        profile=ComparisonProfile.PHASE4_VS_PHASE3,
+        pipeline=pipeline,
+        wall=wall,
+        pws=pws,
+        stage_ratios=stage_ratios,
+    )
+
+
+def test_v2_equal_to_one_group_direction_is_not_inconclusive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _assert_v2_direction_verdict(
+        monkeypatch,
+        tmp_path,
+        expected=HarnessVerdict.VALIDATED,
+        wall=('1', '1.02'),
+        pws=('1', '1'),
+    )
+
+
+def test_v2_expansion_stops_at_global_round_ten(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, _identity, calls = _install_v2_direction_case(
+        monkeypatch,
+        tmp_path,
+        wall=('1.03', '0.99'),
+        pws=('1', '1'),
+    )
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness.run_paired_normal_batch(request)
+
+    assert caught.value.verdict is HarnessVerdict.INCONCLUSIVE
+    assert calls == [('wall', 1), ('pws', 1), ('wall', 6), ('pws', 6)]
+
+
+def test_v2_attempt_one_does_not_inherit_v1_inconclusive_as_prior_safe_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_synthetic_v1_terminal(tmp_path, comparison_key='f' * 64)
+    request, _identity, _calls = _install_v2_direction_case(
+        monkeypatch,
+        tmp_path,
+        wall=('0.95', '0.95'),
+        pws=('1', '1'),
+    )
+
+    phase0_harness.run_paired_normal_batch(request)
+    restored = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        request.evidence_path.name,
+        request.evidence_path.read_bytes(),
+    )
+
+    assert restored.attempt_count == 1
+    assert restored.prior_safe_verdicts == ()
+
+
+def test_v2_n5_success_publishes_empty_direction_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, _identity, _calls = _install_v2_direction_case(
+        monkeypatch,
+        tmp_path,
+        wall=('0.95', '0.95'),
+        pws=('1', '1'),
+    )
+
+    result = phase0_harness.run_paired_normal_batch(request)
+    restored = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        request.evidence_path.name,
+        request.evidence_path.read_bytes(),
+    )
+
+    assert restored.schema_version == 2
+    assert restored.protocol_version == 2
+    assert restored.direction_diagnostics == ()
+    assert restored.attempt_count == 1
+    assert restored.prior_safe_verdicts == ()
+    assert result.attempt.protocol_version == 2
+
+
+def test_v2_n10_success_publishes_wall_then_pws_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request, _identity, _calls = _install_v2_direction_case(
+        monkeypatch,
+        tmp_path,
+        wall=('1.04', '0.90'),
+        pws=('1', '1'),
+    )
+
+    phase0_harness.run_paired_normal_batch(request)
+    restored = EvidenceSanitizer.closed_policy().read_benchmark_manifest(
+        request.evidence_path.name,
+        request.evidence_path.read_bytes(),
+    )
+
+    assert tuple(item.metric for item in restored.direction_diagnostics) == ('wall', 'pws')
+
+
 def _prepare_formal_evidence_recovery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1972,7 +2336,7 @@ def _prepare_formal_evidence_recovery(
     wall = replace(_metric_group('wall'), batch_id=batch_id)
     pws = replace(_metric_group('pws', reference='100', candidate='100'), batch_id=batch_id)
     attempt = phase0_harness._batch_attempt(ledger, batch_id, AttemptState.CLEANUP_COMPLETE)
-    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity)
+    evidence = phase0_harness._build_paired_evidence(request, wall, pws, attempt, identity, ())
     artifact = EvidenceSanitizer.closed_policy().build_benchmark_manifest(evidence)
     ledger.prepare_evidence(
         artifact_basename=artifact.file_name,
@@ -1980,6 +2344,31 @@ def _prepare_formal_evidence_recovery(
         artifact_content=artifact.content,
     )
     return request, ledger, artifact
+
+
+def test_prepared_evidence_recovery_rejects_v1_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _request, _ledger, artifact = _prepare_formal_evidence_recovery(monkeypatch, tmp_path)
+    assert isinstance(artifact.source, BenchmarkManifestEvidence)
+    legacy_source = replace(
+        artifact.source,
+        schema_version=1,
+        protocol_version=None,
+        direction_diagnostics=(),
+    )
+    legacy_artifact = EvidenceSanitizer.closed_policy().rebuild_benchmark_manifest(legacy_source)
+    payload = {
+        'artifact_basename': legacy_artifact.file_name,
+        'artifact_sha256': hashlib.sha256(legacy_artifact.content.encode('utf-8')).hexdigest(),
+        'artifact_content': legacy_artifact.content,
+    }
+
+    with pytest.raises(HarnessFailure) as caught:
+        phase0_harness._rebuild_prepared_artifact(payload)
+
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
 
 
 def test_prepared_evidence_without_files_is_republished_before_any_new_sample(

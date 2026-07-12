@@ -12,7 +12,7 @@ $Phase0AExe = 'rust/target/perf-builds/phase0a/reference/x86_64-pc-windows-msvc/
 uv run python -m tests.rust_oracle.phase0_harness smoke --pipeline gb --reference-executable $Phase0AExe --candidate-executable $Phase0AExe --local-root rust/target/perf-local/phase0h-smoke
 ```
 
-成功输出 `VALIDATED`。命令使用同一 reference binary 执行五轮 normal wall 和五轮 normal PWS，逐轮核对 workbook oracle 与实际 Sheet 名；fixture writer 把临时目录固定在 fixture 目录，smoke 另外设置本地 TEMP canary 并记录残留数。`finally` 删除 fixture、所有输出 workbook 和本轮 PWS raw artifacts。Phase 0H 不生成或批准正式 Phase 0A business manifest。
+成功输出 `VALIDATED`。命令使用同一 reference binary 执行五轮 normal wall 和五轮 normal PWS，逐轮核对 workbook oracle 与实际 Sheet 名；fixture writer 把临时目录固定在 fixture 目录，smoke 另外设置本地 TEMP sentinel 并记录残留数。`finally` 删除 fixture、所有输出 workbook 和本轮 PWS raw artifacts。Phase 0H 不生成或批准正式 Phase 0A business manifest。
 
 ## Phase 0A capture
 

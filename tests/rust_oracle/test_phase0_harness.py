@@ -2707,6 +2707,42 @@ def test_correctness_failure_is_terminal_with_raw_log_sha(
     assert loaded.terminal_raw_log_sha256 == 'e' * 64
 
 
+def test_wall_dimension_mismatch_is_terminal_and_cleans_captured_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    request = _group_request(tmp_path)
+    _install_runner(monkeypatch, tmp_path)
+    raw_log_sha256 = 'd' * 64
+    raw_log = request.benchmark.local_root / 'raw-logs' / f'{raw_log_sha256}.json'
+
+    def mismatched_capture(*args: object, **_kwargs: object) -> CapturedNormalRun:
+        output = Path(args[3])
+        _write_approved_test_workbook(output)
+        raw_log.parent.mkdir(parents=True, exist_ok=True)
+        raw_log.write_text('{}', encoding='utf-8')
+        runtime = replace(_runtime(), sheet_dimensions=('A1:A1', 'A1:A1', 'A1:A1'))
+        return CapturedNormalRun(
+            NormalRunEvidence(Decimal('1'), None, runtime, '8' * 64),
+            0,
+            raw_log_sha256,
+        )
+
+    monkeypatch.setattr(phase0_harness, 'run_rust_normal_captured', mismatched_capture)
+
+    with pytest.raises(HarnessFailure) as caught:
+        run_normal_wall_group(request)
+
+    assert caught.value.verdict is HarnessVerdict.CORRECTNESS_FAILED
+    assert caught.value.raw_log_sha256 == raw_log_sha256
+    loaded = AppendOnlyAttemptLedger.load(request.attempt_directory, _identity())
+    assert loaded.terminal_verdict is HarnessVerdict.CORRECTNESS_FAILED
+    assert loaded.terminal_raw_log_sha256 == raw_log_sha256
+    assert not raw_log.exists()
+    assert not list((tmp_path / 'data').rglob('*.xlsx'))
+    assert not request.benchmark.evidence_path.exists()
+
+
 def test_capture_boundary_exception_maps_to_closed_terminal_verdict(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

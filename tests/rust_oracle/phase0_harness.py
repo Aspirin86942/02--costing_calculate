@@ -1200,11 +1200,19 @@ def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
                             else HarnessVerdict.CORRECTNESS_FAILED
                         )
                         raise HarnessFailure(verdict, f'{role} capture boundary failed') from exc
-                    capture = _with_actual_workbook_dimensions(capture, output)
-                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
                     cleanup_paths.append(
                         request.benchmark.local_root / 'raw-logs' / f'{capture.local_unversioned_log_sha256}.json'
                     )
+                    try:
+                        capture = _with_actual_workbook_dimensions(capture, output)
+                    except HarnessFailure as exc:
+                        raise HarnessFailure(
+                            exc.verdict,
+                            str(exc),
+                            primary_verdict=exc.primary_verdict,
+                            raw_log_sha256=capture.local_unversioned_log_sha256,
+                        ) from exc
+                    _assert_identity_unchanged(identity, _capture_identity(request.benchmark))
                     sample = _metric_sample(
                         role,
                         plan,

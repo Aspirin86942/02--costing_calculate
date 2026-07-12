@@ -1,3 +1,5 @@
+import hashlib
+import json
 from dataclasses import replace
 from decimal import Decimal
 
@@ -6,6 +8,7 @@ import pytest
 from tests.rust_oracle import benchmark_protocol as protocol
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
+    LEGACY_PAIRED_PROTOCOL_VERSION,
     PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     CalibrationGroup,
@@ -18,7 +21,11 @@ from tests.rust_oracle.benchmark_protocol import (
     NormalRunEvidence,
     PairedRound,
     Phase0AManifest,
+    PipelineName,
+    RecoveryProvenance,
+    RecoveryReason,
     RuntimeEvidence,
+    UpstreamGateProvenance,
     aggregate_output_bytes,
     approved_phase0a_output_bytes,
     assert_environment_not_drifted,
@@ -28,6 +35,8 @@ from tests.rust_oracle.benchmark_protocol import (
     build_direction_diagnostic,
     build_round_plan,
     derive_comparison_key,
+    derive_v2_comparison_key,
+    derive_v3_comparison_key,
     groups_have_conflicting_direction,
     merge_metric_groups,
     requires_mandatory_expansion,
@@ -35,6 +44,83 @@ from tests.rust_oracle.benchmark_protocol import (
     validate_calibration_group,
     validate_metric_group,
 )
+
+
+def _recovery_provenance() -> RecoveryProvenance:
+    return RecoveryProvenance(
+        parent_protocol_version=2,
+        parent_comparison_key='09d6bb93ab04dda277e97f19dc8a270be91f2f8898a42f25d1d5bd745bdf0fd7',
+        parent_attempt=1,
+        parent_terminal_sha256='f515c305518093e9aa0ac90fa0b82520874fcd7006db16946b45921fd9b2a57b',
+        parent_comparison_tree_sha256='8e961515bcac3afad271bb75eac9e439fdb18d1e8ba07b0fef7e210838796ccb',
+        parent_journal_head_sha256='ae10e9d441ecebee9ba6cfb93a799f14a9085c75560103fedc9df6ff56b92c85',
+        parent_inventory_entry_count=134,
+        reason=RecoveryReason.MISSING_FORMAL_SHEET_DIMENSIONS,
+    )
+
+
+def _upstream_provenance() -> UpstreamGateProvenance:
+    return UpstreamGateProvenance(
+        pipeline='gb',
+        protocol_version=3,
+        schema_version=3,
+        comparison_key='a' * 64,
+        artifact_basename='benchmark-v3-aaaaaaaaaaaaaaaa.json',
+        artifact_sha256='b' * 64,
+        marker_basename='batch-' + 'c' * 16 + '.commit.json',
+        marker_sha256='d' * 64,
+        validated_commit_sha='e' * 40,
+    )
+
+
+def _v3_key(*, recovery: RecoveryProvenance) -> str:
+    return derive_v3_comparison_key(
+        pipeline='gb',
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256='1' * 64,
+        input_sha256='2' * 64,
+        reference_sha256='3' * 64,
+        candidate_sha256='4' * 64,
+        recovery_provenance=recovery,
+        upstream_gate_provenance=None,
+    )
+
+
+def _v3_sk_key(*, upstream: UpstreamGateProvenance) -> str:
+    return derive_v3_comparison_key(
+        pipeline='sk',
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256='1' * 64,
+        input_sha256='2' * 64,
+        reference_sha256='3' * 64,
+        candidate_sha256='4' * 64,
+        recovery_provenance=None,
+        upstream_gate_provenance=upstream,
+    )
+
+
+def _derive_phase0b_key(
+    *,
+    pipeline: PipelineName,
+    recovery: RecoveryProvenance | None,
+    upstream: UpstreamGateProvenance | None,
+) -> str:
+    return derive_v3_comparison_key(
+        pipeline=pipeline,
+        comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+        reference_label=ClosedBinaryLabel.PHASE0A,
+        candidate_label=ClosedBinaryLabel.PHASE0B,
+        phase0a_manifest_sha256='1' * 64,
+        input_sha256='2' * 64,
+        reference_sha256='3' * 64,
+        candidate_sha256='4' * 64,
+        recovery_provenance=recovery,
+        upstream_gate_provenance=upstream,
+    )
 
 
 def _machine(fingerprint: str = 'machine') -> MachineEvidence:
@@ -51,9 +137,10 @@ def _machine(fingerprint: str = 'machine') -> MachineEvidence:
 
 
 def test_protocol_v2_comparison_key_binds_every_comparison_identity_field() -> None:
-    assert PAIRED_PROTOCOL_VERSION == 2
+    assert LEGACY_PAIRED_PROTOCOL_VERSION == 2
+    assert PAIRED_PROTOCOL_VERSION == 3
     common = {
-        'protocol_version': PAIRED_PROTOCOL_VERSION,
+        'protocol_version': LEGACY_PAIRED_PROTOCOL_VERSION,
         'pipeline': 'gb',
         'comparison_profile': ComparisonProfile.PHASE0B_VS_PHASE0A,
         'reference_label': ClosedBinaryLabel.PHASE0A,
@@ -85,7 +172,7 @@ def test_protocol_v2_comparison_key_rejects_non_string_or_non_lowercase_sha256(
 ) -> None:
     with pytest.raises(ValueError, match='lowercase SHA-256'):
         derive_comparison_key(
-            protocol_version=PAIRED_PROTOCOL_VERSION,
+            protocol_version=LEGACY_PAIRED_PROTOCOL_VERSION,
             pipeline='gb',
             comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
             reference_label=ClosedBinaryLabel.PHASE0A,
@@ -94,6 +181,112 @@ def test_protocol_v2_comparison_key_rejects_non_string_or_non_lowercase_sha256(
             reference_sha256='2' * 64,
             candidate_sha256='3' * 64,
         )
+
+
+def test_legacy_v2_comparison_key_is_stable() -> None:
+    assert (
+        derive_v2_comparison_key(
+            pipeline='gb',
+            comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+            reference_label=ClosedBinaryLabel.PHASE0A,
+            candidate_label=ClosedBinaryLabel.PHASE0B,
+            input_sha256='6aa5e3e7fdc547ebaaef968eb5b95d4d630c4ec9915184f94346f60687b8e7ee',
+            reference_sha256='f75f7ee17cc222765537f6bbe02f90e76cd041c55c8990b0261788e6fa63db56',
+            candidate_sha256='d06470e4e7c9e6dc8f54efc9d26d996d3cbbbddec04cb7dffef6e6869802b629',
+        )
+        == '09d6bb93ab04dda277e97f19dc8a270be91f2f8898a42f25d1d5bd745bdf0fd7'
+    )
+
+
+def test_v3_comparison_key_matches_exact_canonical_payload() -> None:
+    recovery = _recovery_provenance()
+    payload = {
+        'protocol_version': 3,
+        'pipeline': 'gb',
+        'comparison_profile': 'phase0b-vs-phase0a',
+        'reference_label': 'phase0a',
+        'candidate_label': 'phase0b',
+        'phase0a_manifest_sha256': '1' * 64,
+        'input_sha256': '2' * 64,
+        'reference_sha256': '3' * 64,
+        'candidate_sha256': '4' * 64,
+        'recovery_provenance': {
+            'parent_protocol_version': 2,
+            'parent_comparison_key': recovery.parent_comparison_key,
+            'parent_attempt': 1,
+            'parent_terminal_sha256': recovery.parent_terminal_sha256,
+            'parent_comparison_tree_sha256': recovery.parent_comparison_tree_sha256,
+            'parent_journal_head_sha256': recovery.parent_journal_head_sha256,
+            'parent_inventory_entry_count': 134,
+            'reason': 'MISSING_FORMAL_SHEET_DIMENSIONS',
+        },
+        'upstream_gate_provenance': None,
+    }
+    expected = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+    assert (
+        derive_v3_comparison_key(
+            pipeline='gb',
+            comparison_profile=ComparisonProfile.PHASE0B_VS_PHASE0A,
+            reference_label=ClosedBinaryLabel.PHASE0A,
+            candidate_label=ClosedBinaryLabel.PHASE0B,
+            phase0a_manifest_sha256='1' * 64,
+            input_sha256='2' * 64,
+            reference_sha256='3' * 64,
+            candidate_sha256='4' * 64,
+            recovery_provenance=recovery,
+            upstream_gate_provenance=None,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    'field',
+    (
+        'parent_comparison_tree_sha256',
+        'parent_journal_head_sha256',
+        'parent_terminal_sha256',
+    ),
+)
+def test_parent_snapshot_mutation_changes_v3_key(field: str) -> None:
+    original = _recovery_provenance()
+    changed = replace(original, **{field: 'f' * 64})
+    assert _v3_key(recovery=original) != _v3_key(recovery=changed)
+
+
+def test_upstream_artifact_marker_or_commit_mutation_changes_sk_key() -> None:
+    original = _upstream_provenance()
+    for field, value in (
+        ('artifact_basename', 'benchmark-v3-bbbbbbbbbbbbbbbb.json'),
+        ('artifact_sha256', '1' * 64),
+        ('marker_basename', 'batch-dddddddddddddddd.commit.json'),
+        ('marker_sha256', '2' * 64),
+        ('validated_commit_sha', '3' * 40),
+    ):
+        assert _v3_sk_key(upstream=original) != _v3_sk_key(upstream=replace(original, **{field: value}))
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('parent_terminal_sha256', 'A' * 64),
+        ('parent_comparison_tree_sha256', 'f' * 63),
+        ('parent_inventory_entry_count', True),
+        ('parent_inventory_entry_count', 135),
+    ),
+)
+def test_recovery_provenance_rejects_non_closed_field(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        replace(_recovery_provenance(), **{field: value})
+
+
+def test_phase0b_gb_rejects_operator_upstream_and_sk_rejects_recovery() -> None:
+    with pytest.raises(ValueError, match='provenance'):
+        _derive_phase0b_key(pipeline='gb', recovery=_recovery_provenance(), upstream=_upstream_provenance())
+    with pytest.raises(ValueError, match='provenance'):
+        _derive_phase0b_key(pipeline='sk', recovery=_recovery_provenance(), upstream=_upstream_provenance())
 
 
 def test_one_resolved_metric_cannot_have_ratio_and_absolute_direct_gates() -> None:

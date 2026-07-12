@@ -14,7 +14,8 @@ PipelineName: TypeAlias = Literal['gb', 'sk']
 BinaryRole: TypeAlias = Literal['reference', 'candidate']
 MetricName: TypeAlias = Literal['wall', 'pws']
 DirectGateKind: TypeAlias = Literal['none', 'ratio', 'absolute']
-PAIRED_PROTOCOL_VERSION: Final = 2
+LEGACY_PAIRED_PROTOCOL_VERSION: Final = 2
+PAIRED_PROTOCOL_VERSION: Final = 3
 _DIRECT_GATE_KEYS: Final[dict[MetricName, tuple[str, str]]] = {
     'wall': ('wall_ratio', 'wall_seconds'),
     'pws': ('pws_ratio', 'pws_bytes'),
@@ -62,6 +63,84 @@ class ComparisonProfile(StrEnum):
     PHASE5_VS_PHASE0A = 'phase5-vs-phase0a'
 
 
+class RecoveryReason(StrEnum):
+    MISSING_FORMAL_SHEET_DIMENSIONS = 'MISSING_FORMAL_SHEET_DIMENSIONS'
+
+
+def _require_sha256(value: str) -> str:
+    if type(value) is not str or len(value) != 64 or any(character not in '0123456789abcdef' for character in value):
+        raise ValueError('comparison identity hashes must be lowercase SHA-256')
+    return value
+
+
+def _require_git_sha(value: str) -> str:
+    if type(value) is not str or len(value) != 40 or any(character not in '0123456789abcdef' for character in value):
+        raise ValueError('validated commit SHA must be 40 lowercase hexadecimal characters')
+    return value
+
+
+def _require_versioned_basename(value: str, *, prefix: str, suffix: str) -> str:
+    if type(value) is not str or not value.startswith(prefix) or not value.endswith(suffix):
+        raise ValueError('provenance basename does not match the closed v3 shape')
+    digest_prefix = value[len(prefix) : -len(suffix)]
+    if len(digest_prefix) != 16 or any(character not in '0123456789abcdef' for character in digest_prefix):
+        raise ValueError('provenance basename does not match the closed v3 shape')
+    return value
+
+
+@dataclass(frozen=True)
+class RecoveryProvenance:
+    parent_protocol_version: Literal[2]
+    parent_comparison_key: str
+    parent_attempt: Literal[1]
+    parent_terminal_sha256: str
+    parent_comparison_tree_sha256: str
+    parent_journal_head_sha256: str
+    parent_inventory_entry_count: Literal[134]
+    reason: RecoveryReason
+
+    def __post_init__(self) -> None:
+        if type(self.parent_protocol_version) is not int or self.parent_protocol_version != 2:
+            raise ValueError('recovery provenance parent protocol version must be 2')
+        if type(self.parent_attempt) is not int or self.parent_attempt != 1:
+            raise ValueError('recovery provenance parent attempt must be 1')
+        if type(self.parent_inventory_entry_count) is not int or self.parent_inventory_entry_count != 134:
+            raise ValueError('recovery provenance parent inventory entry count must be 134')
+        if not isinstance(self.reason, RecoveryReason):
+            raise ValueError('recovery provenance reason is not closed')
+        _require_sha256(self.parent_comparison_key)
+        _require_sha256(self.parent_terminal_sha256)
+        _require_sha256(self.parent_comparison_tree_sha256)
+        _require_sha256(self.parent_journal_head_sha256)
+
+
+@dataclass(frozen=True)
+class UpstreamGateProvenance:
+    pipeline: Literal['gb']
+    protocol_version: Literal[3]
+    schema_version: Literal[3]
+    comparison_key: str
+    artifact_basename: str
+    artifact_sha256: str
+    marker_basename: str
+    marker_sha256: str
+    validated_commit_sha: str
+
+    def __post_init__(self) -> None:
+        if self.pipeline != 'gb':
+            raise ValueError('upstream gate provenance pipeline must be gb')
+        if type(self.protocol_version) is not int or self.protocol_version != 3:
+            raise ValueError('upstream gate provenance protocol version must be 3')
+        if type(self.schema_version) is not int or self.schema_version != 3:
+            raise ValueError('upstream gate provenance schema version must be 3')
+        _require_sha256(self.comparison_key)
+        _require_versioned_basename(self.artifact_basename, prefix='benchmark-v3-', suffix='.json')
+        _require_sha256(self.artifact_sha256)
+        _require_versioned_basename(self.marker_basename, prefix='batch-', suffix='.commit.json')
+        _require_sha256(self.marker_sha256)
+        _require_git_sha(self.validated_commit_sha)
+
+
 class HarnessVerdict(StrEnum):
     VALIDATED = 'VALIDATED'
     CANDIDATE_FAILED = 'CANDIDATE_FAILED'
@@ -83,9 +162,29 @@ class AttemptState(StrEnum):
     FAILED = 'FAILED'
 
 
-def derive_comparison_key(
+def _validate_closed_comparison_identity(
     *,
-    protocol_version: int,
+    pipeline: PipelineName,
+    comparison_profile: ComparisonProfile,
+    reference_label: ClosedBinaryLabel,
+    candidate_label: ClosedBinaryLabel,
+) -> None:
+    if (
+        pipeline not in ('gb', 'sk')
+        or not isinstance(comparison_profile, ComparisonProfile)
+        or not isinstance(reference_label, ClosedBinaryLabel)
+        or not isinstance(candidate_label, ClosedBinaryLabel)
+    ):
+        raise ValueError('comparison identity uses a non-closed pipeline/profile/label')
+
+
+def _sha256_canonical_identity(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def derive_v2_comparison_key(
+    *,
     pipeline: PipelineName,
     comparison_profile: ComparisonProfile,
     reference_label: ClosedBinaryLabel,
@@ -94,33 +193,122 @@ def derive_comparison_key(
     reference_sha256: str,
     candidate_sha256: str,
 ) -> str:
-    if type(protocol_version) is not int or protocol_version != PAIRED_PROTOCOL_VERSION:
-        raise ValueError('formal comparison key requires paired protocol version 2')
-    if (
-        pipeline not in ('gb', 'sk')
-        or not isinstance(comparison_profile, ComparisonProfile)
-        or not isinstance(reference_label, ClosedBinaryLabel)
-        or not isinstance(candidate_label, ClosedBinaryLabel)
-    ):
-        raise ValueError('comparison identity uses a non-closed pipeline/profile/label')
-    hashes = (input_sha256, reference_sha256, candidate_sha256)
-    if any(
-        type(value) is not str or len(value) != 64 or any(character not in '0123456789abcdef' for character in value)
-        for value in hashes
-    ):
-        raise ValueError('comparison identity hashes must be lowercase SHA-256')
+    _validate_closed_comparison_identity(
+        pipeline=pipeline,
+        comparison_profile=comparison_profile,
+        reference_label=reference_label,
+        candidate_label=candidate_label,
+    )
+    return _sha256_canonical_identity(
+        {
+            'protocol_version': LEGACY_PAIRED_PROTOCOL_VERSION,
+            'pipeline': pipeline,
+            'profile': comparison_profile.value,
+            'reference_label': reference_label.value,
+            'candidate_label': candidate_label.value,
+            'input_sha256': _require_sha256(input_sha256),
+            'reference_sha256': _require_sha256(reference_sha256),
+            'candidate_sha256': _require_sha256(candidate_sha256),
+        }
+    )
+
+
+def derive_comparison_key(*, protocol_version: int, **identity: object) -> str:
+    # Transitional audit wrapper: existing v2 harness calls remain valid until Task 5 cutover.
+    if protocol_version != LEGACY_PAIRED_PROTOCOL_VERSION or isinstance(protocol_version, bool):
+        raise ValueError('legacy comparison key requires protocol version 2')
+    return derive_v2_comparison_key(**identity)  # type: ignore[arg-type]
+
+
+def _validate_phase0b_provenance_shape(
+    *,
+    pipeline: PipelineName,
+    profile: ComparisonProfile,
+    recovery: RecoveryProvenance | None,
+    upstream: UpstreamGateProvenance | None,
+) -> None:
+    if profile is not ComparisonProfile.PHASE0B_VS_PHASE0A:
+        raise ValueError('protocol v3 provenance requires the phase0b-vs-phase0a profile')
+    if pipeline == 'gb':
+        if not isinstance(recovery, RecoveryProvenance) or upstream is not None:
+            raise ValueError('gb protocol v3 provenance requires recovery only')
+    elif pipeline == 'sk':
+        if recovery is not None or not isinstance(upstream, UpstreamGateProvenance):
+            raise ValueError('sk protocol v3 provenance requires upstream gate only')
+    else:
+        raise ValueError('protocol v3 provenance requires a closed pipeline')
+
+
+def _recovery_payload(value: RecoveryProvenance | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        'parent_protocol_version': value.parent_protocol_version,
+        'parent_comparison_key': value.parent_comparison_key,
+        'parent_attempt': value.parent_attempt,
+        'parent_terminal_sha256': value.parent_terminal_sha256,
+        'parent_comparison_tree_sha256': value.parent_comparison_tree_sha256,
+        'parent_journal_head_sha256': value.parent_journal_head_sha256,
+        'parent_inventory_entry_count': value.parent_inventory_entry_count,
+        'reason': value.reason.value,
+    }
+
+
+def _upstream_payload(value: UpstreamGateProvenance | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        'pipeline': value.pipeline,
+        'protocol_version': value.protocol_version,
+        'schema_version': value.schema_version,
+        'comparison_key': value.comparison_key,
+        'artifact_basename': value.artifact_basename,
+        'artifact_sha256': value.artifact_sha256,
+        'marker_basename': value.marker_basename,
+        'marker_sha256': value.marker_sha256,
+        'validated_commit_sha': value.validated_commit_sha,
+    }
+
+
+def derive_v3_comparison_key(
+    *,
+    pipeline: PipelineName,
+    comparison_profile: ComparisonProfile,
+    reference_label: ClosedBinaryLabel,
+    candidate_label: ClosedBinaryLabel,
+    phase0a_manifest_sha256: str,
+    input_sha256: str,
+    reference_sha256: str,
+    candidate_sha256: str,
+    recovery_provenance: RecoveryProvenance | None,
+    upstream_gate_provenance: UpstreamGateProvenance | None,
+) -> str:
+    _validate_closed_comparison_identity(
+        pipeline=pipeline,
+        comparison_profile=comparison_profile,
+        reference_label=reference_label,
+        candidate_label=candidate_label,
+    )
+    _validate_phase0b_provenance_shape(
+        pipeline=pipeline,
+        profile=comparison_profile,
+        recovery=recovery_provenance,
+        upstream=upstream_gate_provenance,
+    )
     payload = {
-        'protocol_version': protocol_version,
+        'protocol_version': PAIRED_PROTOCOL_VERSION,
         'pipeline': pipeline,
-        'profile': comparison_profile.value,
+        'comparison_profile': comparison_profile.value,
         'reference_label': reference_label.value,
         'candidate_label': candidate_label.value,
-        'input_sha256': input_sha256,
-        'reference_sha256': reference_sha256,
-        'candidate_sha256': candidate_sha256,
+        'phase0a_manifest_sha256': _require_sha256(phase0a_manifest_sha256),
+        'input_sha256': _require_sha256(input_sha256),
+        'reference_sha256': _require_sha256(reference_sha256),
+        'candidate_sha256': _require_sha256(candidate_sha256),
+        'recovery_provenance': _recovery_payload(recovery_provenance),
+        'upstream_gate_provenance': _upstream_payload(upstream_gate_provenance),
     }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
-    return hashlib.sha256(encoded).hexdigest()
+    return _sha256_canonical_identity(payload)
 
 
 @dataclass(frozen=True)

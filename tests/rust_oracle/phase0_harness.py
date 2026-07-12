@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
     ENVIRONMENT_MEDIAN_DRIFT_LIMIT,
-    PAIRED_PROTOCOL_VERSION,
+    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     AttemptState,
     BatchAttempt,

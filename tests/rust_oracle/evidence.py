@@ -26,8 +26,8 @@ from typing import Literal, TypeAlias
 
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
+    LEGACY_PAIRED_PROTOCOL_VERSION as PAIRED_PROTOCOL_VERSION,
     MANDATORY_EXPANSION_BOUNDARY,
-    PAIRED_PROTOCOL_VERSION,
     AttemptState,
     ClosedBinaryLabel,
     ComparisonProfile,

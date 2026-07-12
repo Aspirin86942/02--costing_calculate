@@ -3,11 +3,14 @@ from decimal import Decimal
 
 import pytest
 
+from tests.rust_oracle import benchmark_protocol as protocol
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
+    PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     CalibrationGroup,
     CalibrationRound,
+    ClosedBinaryLabel,
     ComparisonProfile,
     MachineEvidence,
     MetricGroup,
@@ -22,10 +25,13 @@ from tests.rust_oracle.benchmark_protocol import (
     assert_output_bytes_within_phase0a_limit,
     assert_same_batch_ratio,
     assert_same_benchmark_batch,
+    build_direction_diagnostic,
     build_round_plan,
+    derive_comparison_key,
     groups_have_conflicting_direction,
     merge_metric_groups,
     requires_mandatory_expansion,
+    resolve_direct_metric_gate,
     validate_calibration_group,
     validate_metric_group,
 )
@@ -42,6 +48,90 @@ def _machine(fingerprint: str = 'machine') -> MachineEvidence:
         system_drive_size_bytes=1_000_000_000_000,
         fingerprint_sha256=fingerprint,
     )
+
+
+def test_protocol_v2_comparison_key_binds_every_comparison_identity_field() -> None:
+    assert PAIRED_PROTOCOL_VERSION == 2
+    common = {
+        'protocol_version': PAIRED_PROTOCOL_VERSION,
+        'pipeline': 'gb',
+        'comparison_profile': ComparisonProfile.PHASE0B_VS_PHASE0A,
+        'reference_label': ClosedBinaryLabel.PHASE0A,
+        'candidate_label': ClosedBinaryLabel.PHASE0B,
+        'input_sha256': '1' * 64,
+        'reference_sha256': '2' * 64,
+        'candidate_sha256': '3' * 64,
+    }
+    base = derive_comparison_key(**common)
+    variants = (
+        {'pipeline': 'sk'},
+        {'comparison_profile': ComparisonProfile.PHASE1_VS_PHASE0B},
+        {'reference_label': ClosedBinaryLabel.PHASE1},
+        {'candidate_label': ClosedBinaryLabel.PHASE1},
+        {'input_sha256': '4' * 64},
+        {'reference_sha256': '5' * 64},
+        {'candidate_sha256': '6' * 64},
+    )
+    assert len(base) == 64
+    assert all(derive_comparison_key(**{**common, **variant}) != base for variant in variants)
+
+
+def test_one_resolved_metric_cannot_have_ratio_and_absolute_direct_gates() -> None:
+    with pytest.raises(ValueError, match='one direct gate'):
+        resolve_direct_metric_gate('wall', {'wall_ratio': Decimal('1.05'), 'wall_seconds': Decimal('20')})
+
+
+def test_closed_profile_table_validation_rejects_ambiguous_direct_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambiguous_limits = {
+        profile: {pipeline: dict(limits) for pipeline, limits in pipelines.items()}
+        for profile, pipelines in COMPARISON_LIMITS.items()
+    }
+    ambiguous_limits[ComparisonProfile.PHASE0B_VS_PHASE0A]['gb']['wall_seconds'] = Decimal('20')
+    monkeypatch.setattr(protocol, 'COMPARISON_LIMITS', ambiguous_limits)
+    with pytest.raises(ValueError, match='one direct gate'):
+        protocol._validate_closed_profile_tables()
+
+
+def test_phase0b_pws_conflict_is_inactive_diagnostic() -> None:
+    limits = COMPARISON_LIMITS[ComparisonProfile.PHASE0B_VS_PHASE0A]['gb']
+    diagnostic = build_direction_diagnostic(
+        _group(metric='pws', start=1, candidate_value='0.99'),
+        _group(metric='pws', start=6, candidate_value='1.01'),
+        limits=limits,
+    )
+    assert diagnostic.directions_conflict is True
+    assert diagnostic.direct_gate == 'none'
+    assert diagnostic.direct_limit is None
+    assert diagnostic.normalized_to_limit is None
+    assert diagnostic.near_boundary is None
+
+
+def test_phase0b_wall_ratio_uses_combined_n10_and_direct_limit() -> None:
+    limits = COMPARISON_LIMITS[ComparisonProfile.PHASE0B_VS_PHASE0A]['gb']
+    diagnostic = build_direction_diagnostic(
+        _group(start=1, candidate_value='1.03'),
+        _group(start=6, candidate_value='0.95'),
+        limits=limits,
+    )
+    assert diagnostic.direct_gate == 'ratio'
+    assert diagnostic.direct_limit == Decimal('1.02')
+    assert diagnostic.combined_ratio == Decimal('0.99')
+    assert diagnostic.normalized_to_limit == Decimal('0.99') / Decimal('1.02')
+    assert diagnostic.near_boundary is True
+
+
+def test_absolute_pws_gate_normalizes_candidate_n10_median() -> None:
+    limits = COMPARISON_LIMITS[ComparisonProfile.PHASE3_VS_PHASE0A]['sk']
+    diagnostic = build_direction_diagnostic(
+        _group(metric='pws', start=1, candidate_value='2100000000'),
+        _group(metric='pws', start=6, candidate_value='2200000000'),
+        limits=limits,
+    )
+    assert diagnostic.direct_gate == 'absolute'
+    assert diagnostic.direct_limit == Decimal('2147483648')
+    assert diagnostic.normalized_to_limit == Decimal('2150000000') / Decimal('2147483648')
 
 
 def _runtime(*, pipeline: str = 'sk', output_size_bytes: int | None = 1000) -> RuntimeEvidence:
@@ -420,6 +510,38 @@ def test_conflicting_five_round_groups_are_inconclusive() -> None:
     first = _group(start=1, candidate_value='0.9')
     second = _group(start=6, candidate_value='1.1')
     assert groups_have_conflicting_direction(first, second)
+
+
+@pytest.mark.parametrize(
+    ('first_value', 'second_value', 'expected'),
+    (
+        ('0.9', '1.1', True),
+        ('1.1', '0.9', True),
+        ('1.0', '1.1', False),
+        ('0.9', '1.0', False),
+        ('1.0', '1.0', False),
+    ),
+)
+def test_direction_conflict_requires_strict_opposite_signs(
+    first_value: str,
+    second_value: str,
+    expected: bool,
+) -> None:
+    assert (
+        groups_have_conflicting_direction(
+            _group(start=1, candidate_value=first_value),
+            _group(start=6, candidate_value=second_value),
+        )
+        is expected
+    )
+
+
+def test_structural_merge_keeps_conflicting_groups_for_v2_decision() -> None:
+    merged = merge_metric_groups(
+        _group(start=1, candidate_value='0.9'),
+        _group(start=6, candidate_value='1.1'),
+    )
+    assert tuple(item.plan.global_round for item in merged.rounds) == tuple(range(1, 11))
 
 
 def test_direction_uses_ratio_of_group_medians_for_non_uniform_samples() -> None:

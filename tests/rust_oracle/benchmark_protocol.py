@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import hashlib
+import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
@@ -11,6 +13,12 @@ from typing import Final, Literal, TypeAlias
 PipelineName: TypeAlias = Literal['gb', 'sk']
 BinaryRole: TypeAlias = Literal['reference', 'candidate']
 MetricName: TypeAlias = Literal['wall', 'pws']
+DirectGateKind: TypeAlias = Literal['none', 'ratio', 'absolute']
+PAIRED_PROTOCOL_VERSION: Final = 2
+_DIRECT_GATE_KEYS: Final[dict[MetricName, tuple[str, str]]] = {
+    'wall': ('wall_ratio', 'wall_seconds'),
+    'pws': ('pws_ratio', 'pws_bytes'),
+}
 
 
 class RuntimeSchema(StrEnum):
@@ -73,6 +81,43 @@ class AttemptState(StrEnum):
     CLEANUP_COMPLETE = 'CLEANUP_COMPLETE'
     EVIDENCE_COMMITTED = 'EVIDENCE_COMMITTED'
     FAILED = 'FAILED'
+
+
+def derive_comparison_key(
+    *,
+    protocol_version: int,
+    pipeline: PipelineName,
+    comparison_profile: ComparisonProfile,
+    reference_label: ClosedBinaryLabel,
+    candidate_label: ClosedBinaryLabel,
+    input_sha256: str,
+    reference_sha256: str,
+    candidate_sha256: str,
+) -> str:
+    if type(protocol_version) is not int or protocol_version != PAIRED_PROTOCOL_VERSION:
+        raise ValueError('formal comparison key requires paired protocol version 2')
+    if (
+        pipeline not in ('gb', 'sk')
+        or not isinstance(comparison_profile, ComparisonProfile)
+        or not isinstance(reference_label, ClosedBinaryLabel)
+        or not isinstance(candidate_label, ClosedBinaryLabel)
+    ):
+        raise ValueError('comparison identity uses a non-closed pipeline/profile/label')
+    hashes = (input_sha256, reference_sha256, candidate_sha256)
+    if any(len(value) != 64 or any(character not in '0123456789abcdef' for character in value) for value in hashes):
+        raise ValueError('comparison identity hashes must be lowercase SHA-256')
+    payload = {
+        'protocol_version': protocol_version,
+        'pipeline': pipeline,
+        'profile': comparison_profile.value,
+        'reference_label': reference_label.value,
+        'candidate_label': candidate_label.value,
+        'input_sha256': input_sha256,
+        'reference_sha256': reference_sha256,
+        'candidate_sha256': candidate_sha256,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -146,6 +191,19 @@ class MetricGroup:
     metric: MetricName
     global_round_start: Literal[1, 6]
     rounds: tuple[PairedRound, ...]
+
+
+@dataclass(frozen=True)
+class DirectionDiagnosticEvidence:
+    metric: MetricName
+    first_group_ratio: Decimal
+    second_group_ratio: Decimal
+    combined_ratio: Decimal
+    directions_conflict: bool
+    direct_gate: DirectGateKind
+    direct_limit: Decimal | None
+    normalized_to_limit: Decimal | None
+    near_boundary: bool | None
 
 
 @dataclass(frozen=True)
@@ -373,6 +431,8 @@ def _validate_closed_profile_tables() -> Decimal:
         if set(PROFILE_RULES[profile]) != set(COMPARISON_LIMITS[profile]):
             raise RuntimeError(f'profile pipeline coverage differs for {profile.value}')
         for limits in COMPARISON_LIMITS[profile].values():
+            resolve_direct_metric_gate('wall', limits)
+            resolve_direct_metric_gate('pws', limits)
             value = limits.get('output_bytes_ratio')
             if not isinstance(value, Decimal):
                 raise RuntimeError(f'profile lacks a Decimal output-byte gate: {profile.value}')
@@ -380,9 +440,6 @@ def _validate_closed_profile_tables() -> Decimal:
     if len(output_limits) != 1:
         raise RuntimeError('all profiles must use one approved Phase 0A output-byte gate')
     return output_limits.pop()
-
-
-OUTPUT_BYTES_RATIO_LIMIT: Final = _validate_closed_profile_tables()
 
 
 def build_round_plan(*, global_round_start: Literal[1, 6], round_count: Literal[5]) -> tuple[RoundPlan, ...]:
@@ -400,6 +457,28 @@ def build_round_plan(*, global_round_start: Literal[1, 6], round_count: Literal[
 def _require_positive_finite(value: Decimal, field: str) -> None:
     if not value.is_finite() or value <= 0:
         raise ValueError(f'{field} must be finite and positive')
+
+
+def resolve_direct_metric_gate(
+    metric: MetricName,
+    limits: Mapping[str, Decimal | int],
+) -> tuple[DirectGateKind, Decimal | None]:
+    ratio_key, absolute_key = _DIRECT_GATE_KEYS[metric]
+    present = tuple(key for key in (ratio_key, absolute_key) if key in limits)
+    if len(present) > 1:
+        raise ValueError(f'{metric} resolved limits must contain one direct gate at most')
+    if not present:
+        return 'none', None
+    key = present[0]
+    raw_limit = limits[key]
+    if isinstance(raw_limit, bool) or not isinstance(raw_limit, (Decimal, int)):
+        raise ValueError(f'{metric} direct limit must be Decimal or integer bytes')
+    limit = Decimal(raw_limit)
+    _require_positive_finite(limit, f'{metric} direct limit')
+    return ('ratio' if key == ratio_key else 'absolute'), limit
+
+
+OUTPUT_BYTES_RATIO_LIMIT: Final = _validate_closed_profile_tables()
 
 
 def _validate_sample(sample: MetricSample, *, role: BinaryRole, global_round: int, pipeline: PipelineName) -> None:
@@ -590,17 +669,15 @@ def _assert_groups_join(first: MetricGroup, second: MetricGroup) -> None:
 
 def groups_have_conflicting_direction(first: MetricGroup, second: MetricGroup) -> bool:
     _assert_groups_join(first, second)
-    first_direction = _median_ratio(first).compare(Decimal(1))
-    second_direction = _median_ratio(second).compare(Decimal(1))
-    return first_direction != second_direction and first_direction != 0 and second_direction != 0
+    return _ratios_have_conflicting_direction(_median_ratio(first), _median_ratio(second))
+
+
+def _ratios_have_conflicting_direction(first_ratio: Decimal, second_ratio: Decimal) -> bool:
+    return (first_ratio - Decimal(1)) * (second_ratio - Decimal(1)) < 0
 
 
 def merge_metric_groups(first: MetricGroup, second: MetricGroup) -> MetricGroup:
     _assert_groups_join(first, second)
-    validate_metric_group(first)
-    validate_metric_group(second)
-    if groups_have_conflicting_direction(first, second):
-        raise ValueError(HarnessVerdict.INCONCLUSIVE.value)
     merged = MetricGroup(
         batch_id=first.batch_id,
         pipeline=first.pipeline,
@@ -610,6 +687,41 @@ def merge_metric_groups(first: MetricGroup, second: MetricGroup) -> MetricGroup:
     )
     validate_metric_group(merged)
     return merged
+
+
+def build_direction_diagnostic(
+    first: MetricGroup,
+    second: MetricGroup,
+    *,
+    limits: Mapping[str, Decimal | int],
+) -> DirectionDiagnosticEvidence:
+    merged = merge_metric_groups(first, second)
+    first_ratio = _median_ratio(first)
+    second_ratio = _median_ratio(second)
+    combined_ratio = _median_ratio(merged)
+    directions_conflict = _ratios_have_conflicting_direction(first_ratio, second_ratio)
+    direct_gate, direct_limit = resolve_direct_metric_gate(first.metric, limits)
+    if direct_gate == 'none':
+        normalized = None
+        near_boundary = None
+    else:
+        assert direct_limit is not None
+        combined_value = (
+            combined_ratio if direct_gate == 'ratio' else median(item.candidate.metric_value for item in merged.rounds)
+        )
+        normalized = combined_value / direct_limit
+        near_boundary = abs(normalized - Decimal(1)) <= MANDATORY_EXPANSION_BOUNDARY
+    return DirectionDiagnosticEvidence(
+        metric=first.metric,
+        first_group_ratio=first_ratio,
+        second_group_ratio=second_ratio,
+        combined_ratio=combined_ratio,
+        directions_conflict=directions_conflict,
+        direct_gate=direct_gate,
+        direct_limit=direct_limit,
+        normalized_to_limit=normalized,
+        near_boundary=near_boundary,
+    )
 
 
 def _phase0a_group(manifest: Phase0AManifest, pipeline: PipelineName, metric: MetricName) -> CalibrationGroup:

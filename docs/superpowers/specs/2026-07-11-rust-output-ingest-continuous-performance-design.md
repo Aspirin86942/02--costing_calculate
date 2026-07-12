@@ -1124,12 +1124,14 @@ data/processed/<pipeline>/.perf-runs/<binary-sha>/<round>/
 3. 第二组从 global round 6 追加五个 reference/current 配对，不得替换第一组或重置顺序；
 4. 分别合并 reference 十轮和 current 十轮计算中位数；
 5. 十轮中位数通过才算通过；
-6. 两组方向冲突则为 `INCONCLUSIVE`；
+6. protocol v2 在 `N=10` 后先评价全部 direct/composite/stage closed gates；任一明确失败优先为 `CANDIDATE_FAILED`。只有全部门禁通过后，当前 resolved profile/pipeline 中存在 direct wall/PWS gate、两组 ratio 严格跨越 1，且 combined `N=10` value 相对 direct limit 仍在 ±3% 内，才为 `INCONCLUSIVE`；inactive metric 及 composite/stage gate 只记录 direction diagnostic，不产生方向 veto；
 7. 输入 SHA、binary SHA、Git diff 或机器状态变化时整组作废；
 8. correctness 失败时停止性能判定；
 9. 未追加时 reference/current 各要求 5/5 正式运行成功；追加后各要求 10/10 成功，candidate 任一正式轮失败即拒绝候选，reference 失败则整批证据无效；
 10. 缺轮、重复 round number、AB/BA 次数不平衡或轮号不连续时返回 `INCOMPLETE_EVIDENCE`，不计算 median；
 11. 最小收益门槛先转为上限比例再使用同一公式，例如“至少下降 10%”写为 `candidate / baseline <= 0.90`。
+
+protocol v2 的完整身份、诊断和失败优先级契约见 [Phase 0H paired direction protocol v2](2026-07-12-phase0h-paired-direction-protocol-v2-design.md)。
 
 ### 10.6 Workbook oracle 契约
 
@@ -1291,7 +1293,7 @@ check-only benchmark：
 - 首组暂时通过但位于临界区，仍强制扩展到 10 轮；
 - 首组暂时失败但位于临界区，同样强制扩展到 10 轮；
 - 精确断言全局十轮调用顺序为 R/C、C/R 交替，追加从 round 6；
-- 两个五轮组方向冲突返回 `INCONCLUSIVE`；
+- `N=10` 先判全部 closed gates；仅 active direct metric 严格跨越 1 且 combined value 仍位于 direct limit ±3% 时返回 `INCONCLUSIVE`，inactive metric 只记录诊断；
 - normal wall 和 normal PWS 命令均不含 `--check-only`；
 - candidate 非零退出、reference 非零退出、缺轮、重复轮号、顺序失衡分别 fail closed；
 - input/reference/candidate/Git SHA 在任一轮变化时整批无效；

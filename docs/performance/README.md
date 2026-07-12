@@ -28,9 +28,11 @@ capture 文件的 `approval_state` 固定为 `CAPTURED_NOT_APPROVED`，并拒绝
 
 ## Paired batch CLI
 
-`paired` 只公开 pipeline、输入、两端 executable、两端闭合 label、闭合 comparison profile、Phase 0A manifest、本地根和 evidence path。batch ID、attempt、round、N 和 threshold 均由 harness 固定或派生，调用者不能覆盖。append-only ledger 固定位于 `rust/target/perf-local/batches`。
+`paired` 只公开 pipeline、输入、两端 executable、两端闭合 label、闭合 comparison profile、Phase 0A manifest、本地根和 evidence path。batch ID、attempt、round、N、threshold 和 protocol 均由 harness 固定或派生，调用者不能覆盖；CLI 始终运行 protocol 2，不提供 protocol selector。append-only ledger 固定位于 `rust/target/perf-local/batches`。
 
-`--evidence-path` 的 basename 必须与 typed sanitizer 按 profile、pipeline 和 candidate SHA 生成的 `benchmark-<16hex>.json` 完全一致；harness 不会忽略调用者文件名或把证据发布到另一个 basename。发布顺序固定为 append-only `cleanup-complete` record、marker-last typed evidence publication、`evidence-committed` record。
+protocol 2 同时进入 batch、comparison、ledger、evidence 和 artifact identity。`--evidence-path` 的 basename 必须与完整 comparison identity 派生的 `benchmark-v2-<comparison_key[:16]>.json` 完全一致；harness 不会忽略调用者文件名或把证据发布到另一个 basename。reader/rebuilder 可以精确审计历史 schema/protocol v1，但正式 builder、publisher 和 prepared-evidence recovery 只接受 v2。发布顺序固定为 append-only `cleanup-complete` record、marker-last typed evidence publication、`evidence-committed` record。
+
+正式执行顺序固定为 GB 在前、SK 在后：GB evidence 必须先通过 typed validation 并提交到当前 `HEAD`，才允许执行唯一一次 SK；GB 或 SK 失败都不得通过重新采样改写结论。
 
 退出码固定如下：
 

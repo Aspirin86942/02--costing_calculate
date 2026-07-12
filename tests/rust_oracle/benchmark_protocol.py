@@ -226,6 +226,7 @@ class CalibrationGroup:
 
 @dataclass(frozen=True)
 class BatchAttempt:
+    protocol_version: int
     comparison_key: str
     batch_id: str
     attempt_number: int

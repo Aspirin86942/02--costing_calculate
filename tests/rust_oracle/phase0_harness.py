@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from tests.rust_oracle.benchmark_protocol import (
     COMPARISON_LIMITS,
     ENVIRONMENT_MEDIAN_DRIFT_LIMIT,
+    PAIRED_PROTOCOL_VERSION,
     PROFILE_RULES,
     AttemptState,
     BatchAttempt,
@@ -45,6 +46,7 @@ from tests.rust_oracle.benchmark_protocol import (
     aggregate_output_bytes,
     assert_same_benchmark_batch,
     build_round_plan,
+    derive_comparison_key,
     groups_have_conflicting_direction,
     merge_metric_groups,
     requires_mandatory_expansion,
@@ -260,6 +262,7 @@ class AppendOnlyAttemptLedger:
     attempt_directory: Path
     local_root: Path
     identity: BenchmarkIdentity
+    protocol_version: int
     comparison_key: str
     attempt_number: int
     previous_attempt_head_sha256: str | None
@@ -321,8 +324,13 @@ class AppendOnlyAttemptLedger:
         recovery_primary: HarnessVerdict | None = None
         if attempts:
             previous = cls.load(attempts[-1], identity, strict_identity=False)
+            if previous.protocol_version != PAIRED_PROTOCOL_VERSION:
+                raise HarnessFailure(
+                    HarnessVerdict.INCOMPLETE_EVIDENCE,
+                    'protocol v2 cannot append to a protocol v1 comparison directory',
+                )
             if previous.terminal_verdict is None:
-                return cls.load(attempts[-1], identity)
+                return _load_current_protocol_ledger(attempts[-1], identity)
             if previous.terminal_verdict not in (
                 HarnessVerdict.ENVIRONMENT_DRIFT,
                 HarnessVerdict.REFERENCE_FAILED,
@@ -352,6 +360,7 @@ class AppendOnlyAttemptLedger:
             create_parent=False,
         )
         metadata = {
+            'protocol_version': PAIRED_PROTOCOL_VERSION,
             'comparison_key': comparison_key,
             'attempt_number': number,
             'identity': asdict(identity),
@@ -368,6 +377,7 @@ class AppendOnlyAttemptLedger:
             attempt_directory=attempt_directory,
             local_root=safe_local_root,
             identity=identity,
+            protocol_version=PAIRED_PROTOCOL_VERSION,
             comparison_key=comparison_key,
             attempt_number=number,
             previous_attempt_head_sha256=previous_head,
@@ -408,6 +418,29 @@ class AppendOnlyAttemptLedger:
         metadata_path = directory / 'metadata.json'
         metadata_raw = metadata_path.read_bytes()
         metadata = json.loads(metadata_raw)
+        v1_keys = {
+            'comparison_key',
+            'attempt_number',
+            'identity',
+            'previous_attempt_head_sha256',
+            'reason',
+            'inherited_planned_outputs',
+            'cleanup_only',
+            'recovery_primary_verdict',
+        }
+        v2_keys = v1_keys | {'protocol_version'}
+        if not isinstance(metadata, dict):
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
+        if set(metadata) == v1_keys:
+            protocol_version = 1
+        elif (
+            set(metadata) == v2_keys
+            and type(metadata['protocol_version']) is int
+            and metadata['protocol_version'] == PAIRED_PROTOCOL_VERSION
+        ):
+            protocol_version = PAIRED_PROTOCOL_VERSION
+        else:
+            raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata protocol/schema is invalid')
         comparison_key = metadata.get('comparison_key')
         if not _is_sha256(comparison_key):
             raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt metadata comparison_key is invalid')
@@ -599,6 +632,8 @@ class AppendOnlyAttemptLedger:
         if attempt_number > 1:
             previous_directory = directory.parent / f'attempt-{attempt_number - 1:04d}'
             previous = cls.load(previous_directory, identity, strict_identity=False)
+            if previous.protocol_version != protocol_version:
+                raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'attempt directory mixes protocol versions')
             if previous_head != previous.head_sha256:
                 raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'previous attempt head link is broken')
         elif previous_head is not None:
@@ -637,6 +672,7 @@ class AppendOnlyAttemptLedger:
             attempt_directory=directory,
             local_root=local_root.resolve(),
             identity=identity,
+            protocol_version=protocol_version,
             comparison_key=comparison_key,
             attempt_number=attempt_number,
             previous_attempt_head_sha256=previous_head,
@@ -886,6 +922,18 @@ class AppendOnlyAttemptLedger:
         return self.head_sha256
 
 
+def _load_current_protocol_ledger(
+    directory: Path,
+    identity: BenchmarkIdentity,
+    *,
+    strict_identity: bool = True,
+) -> AppendOnlyAttemptLedger:
+    ledger = AppendOnlyAttemptLedger.load(directory, identity, strict_identity=strict_identity)
+    if ledger.protocol_version != PAIRED_PROTOCOL_VERSION:
+        raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'formal runner cannot resume protocol v1')
+    return ledger
+
+
 def _validate_prepared_evidence(record: dict[str, Any]) -> dict[str, str]:
     if set(record) != {
         'kind',
@@ -1013,7 +1061,12 @@ def _load_comparison_journal(comparison_directory: Path) -> tuple[str, dict[int,
 
 
 def derive_batch_id(request: PairedBenchmarkRequest, identity: BenchmarkIdentity) -> str:
-    payload = {'profile': request.comparison_profile.value, 'pipeline': request.pipeline, **asdict(identity)}
+    payload = {
+        'protocol_version': PAIRED_PROTOCOL_VERSION,
+        'profile': request.comparison_profile.value,
+        'pipeline': request.pipeline,
+        **asdict(identity),
+    }
     return hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
@@ -1033,7 +1086,7 @@ def run_normal_wall_group(request: MetricGroupRequest) -> MetricGroup:
         raise ValueError('normal wall runner accepts wall metric only')
     _validate_trusted_request_paths(request.benchmark)
     identity = _capture_identity(request.benchmark)
-    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, identity)
+    ledger = _load_current_protocol_ledger(request.attempt_directory, identity)
     if ledger.terminal_verdict is not None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot be resumed')
     if request.first_group_sha256 is not None and request.first_group_sha256 != ledger.first_group_sha256:
@@ -2133,7 +2186,7 @@ def run_pws_group(request: MetricGroupRequest) -> MetricGroup:
         create_parent=False,
     )
     identity = _capture_identity(request.benchmark)
-    ledger = AppendOnlyAttemptLedger.load(request.attempt_directory, identity)
+    ledger = _load_current_protocol_ledger(request.attempt_directory, identity)
     if ledger.terminal_verdict is not None:
         raise HarnessFailure(HarnessVerdict.INCOMPLETE_EVIDENCE, 'terminal attempt cannot be resumed')
     if request.first_group_sha256 is not None and request.first_group_sha256 != ledger.first_group_sha256:
@@ -2356,19 +2409,16 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
     identity = _capture_identity(request)
     baseline = _load_approved_phase0a_baseline(request, identity)
     batch_id = derive_batch_id(request, identity)
-    comparison_key = hashlib.sha256(
-        _canonical_json(
-            {
-                'pipeline': request.pipeline,
-                'profile': request.comparison_profile.value,
-                'reference_label': request.reference_label.value,
-                'candidate_label': request.candidate_label.value,
-                'input_sha256': identity.input_sha256,
-                'reference_sha256': identity.reference_sha256,
-                'candidate_sha256': identity.candidate_sha256,
-            }
-        )
-    ).hexdigest()
+    comparison_key = derive_comparison_key(
+        protocol_version=PAIRED_PROTOCOL_VERSION,
+        pipeline=request.pipeline,
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
     ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
     if ledger.prepared_evidence() is not None:
         return _recover_prepared_evidence(request, ledger, batch_id)
@@ -2380,7 +2430,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
         pws_first = run_pws_group(MetricGroupRequest(request, batch_id, 'pws', plans, ledger.attempt_directory))
         assert_same_benchmark_batch(wall_first, pws_first)
         _validate_phase0a_drift(wall_first, pws_first, baseline, identity)
-        ledger = AppendOnlyAttemptLedger.load(ledger.attempt_directory, identity)
+        ledger = _load_current_protocol_ledger(ledger.attempt_directory, identity)
         first_sha = ledger.commit_first_group(_group_commit_payload(wall_first, pws_first))
         wall, pws = wall_first, pws_first
         if _paired_groups_require_expansion(request, wall_first, pws_first):
@@ -2408,7 +2458,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
                     first_group_sha256=first_sha,
                 )
             )
-            ledger = AppendOnlyAttemptLedger.load(ledger.attempt_directory, identity)
+            ledger = _load_current_protocol_ledger(ledger.attempt_directory, identity)
             ledger.commit_expanded_group(_group_commit_payload(wall_second, pws_second), first_group_sha256=first_sha)
             if groups_have_conflicting_direction(wall_first, wall_second) or groups_have_conflicting_direction(
                 pws_first, pws_second
@@ -2457,7 +2507,7 @@ def run_paired_normal_batch(request: PairedBenchmarkRequest) -> PairedBenchmarkR
             HarnessVerdict.VALIDATED,
         )
     except HarnessFailure as exc:
-        current = AppendOnlyAttemptLedger.load(ledger.attempt_directory, identity)
+        current = _load_current_protocol_ledger(ledger.attempt_directory, identity)
         if current.prepared_evidence() is not None:
             raise
         if current.terminal_verdict is None:
@@ -2906,6 +2956,7 @@ def _paired_groups_require_expansion(
 
 def _batch_attempt(ledger: AppendOnlyAttemptLedger, batch_id: str, state: AttemptState) -> BatchAttempt:
     return BatchAttempt(
+        protocol_version=ledger.protocol_version,
         comparison_key=ledger.comparison_key,
         batch_id=batch_id,
         attempt_number=ledger.attempt_number,

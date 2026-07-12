@@ -6,7 +6,7 @@ import importlib.util
 import json
 import socket
 import zipfile
-from dataclasses import replace
+from dataclasses import asdict, replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -139,6 +139,70 @@ def _ledger(tmp_path: Path) -> AppendOnlyAttemptLedger:
         _identity(),
         comparison_key='a' * 64,
     )
+
+
+def _rewrite_metadata_and_matching_empty_journal(attempt: Path, *, protocol_version: object) -> None:
+    metadata_path = attempt / 'metadata.json'
+    metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    metadata['protocol_version'] = protocol_version
+    metadata_raw = phase0_harness._canonical_json(metadata)
+    metadata_path.write_bytes(metadata_raw)
+    metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
+    state = phase0_harness._journal_state_payload(
+        attempt_number=1,
+        record_count=0,
+        record_head_sha256=metadata_sha,
+        checkpoint_head_sha256=metadata_sha,
+        terminal_present=False,
+        terminal_head_sha256=None,
+        verdict=None,
+    )
+    journal_raw = phase0_harness._canonical_json({'previous_journal_sha256': None, **state})
+    (attempt.parent / 'journal' / '000001.json').write_bytes(journal_raw)
+
+
+def _write_synthetic_v1_terminal(tmp_path: Path, *, comparison_key: str) -> Path:
+    comparison = tmp_path / 'rust' / 'target' / 'perf-local' / 'batches' / comparison_key
+    attempt = comparison / 'attempt-0001'
+    (attempt / 'records').mkdir(parents=True)
+    (attempt / 'checkpoints').mkdir()
+    (comparison / 'journal').mkdir()
+    metadata = {
+        'comparison_key': comparison_key,
+        'attempt_number': 1,
+        'identity': asdict(_identity()),
+        'previous_attempt_head_sha256': None,
+        'reason': 'FORMAL_START',
+        'inherited_planned_outputs': [],
+        'cleanup_only': False,
+        'recovery_primary_verdict': None,
+    }
+    metadata_raw = phase0_harness._canonical_json(metadata)
+    (attempt / 'metadata.json').write_bytes(metadata_raw)
+    metadata_sha = hashlib.sha256(metadata_raw).hexdigest()
+    terminal = {
+        'checkpoint_head_sha256': metadata_sha,
+        'primary_verdict': None,
+        'raw_log_sha256': None,
+        'record_count': 0,
+        'record_head_sha256': metadata_sha,
+        'verdict': HarnessVerdict.INCONCLUSIVE.value,
+    }
+    terminal_raw = phase0_harness._canonical_json(terminal)
+    (attempt / 'terminal.json').write_bytes(terminal_raw)
+    terminal_sha = hashlib.sha256(terminal_raw).hexdigest()
+    state = phase0_harness._journal_state_payload(
+        attempt_number=1,
+        record_count=0,
+        record_head_sha256=metadata_sha,
+        checkpoint_head_sha256=metadata_sha,
+        terminal_present=True,
+        terminal_head_sha256=terminal_sha,
+        verdict=HarnessVerdict.INCONCLUSIVE,
+    )
+    journal_raw = phase0_harness._canonical_json({'previous_journal_sha256': None, **state})
+    (comparison / 'journal' / '000001.json').write_bytes(journal_raw)
+    return attempt
 
 
 def _claim(tmp_path: Path, path: Path, sha256: str) -> UnverifiedPriorEvidenceClaim:
@@ -1219,6 +1283,90 @@ def test_batch_id_is_derived_and_cannot_be_supplied(tmp_path: Path) -> None:
     assert 'batch_id' not in PairedBenchmarkRequest.__dataclass_fields__
 
 
+def test_batch_id_explicitly_contains_protocol_v2_identity(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
+    current = derive_batch_id(request, identity)
+    legacy_payload = {'profile': request.comparison_profile.value, 'pipeline': request.pipeline, **asdict(identity)}
+    legacy = hashlib.sha256(phase0_harness._canonical_json(legacy_payload)).hexdigest()
+    assert current != legacy
+
+
+def test_v2_ledger_metadata_records_exact_integer_protocol_version(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    payload = json.loads((ledger.attempt_directory / 'metadata.json').read_text(encoding='utf-8'))
+    assert payload['protocol_version'] == 2
+    assert type(payload['protocol_version']) is int
+    assert ledger.protocol_version == 2
+    assert phase0_harness._batch_attempt(ledger, 'b' * 64, AttemptState.CREATED).protocol_version == 2
+
+
+@pytest.mark.parametrize('invalid', (True, '2', 0, 3))
+def test_ledger_rejects_unknown_or_non_integer_protocol_version(invalid: object, tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    _rewrite_metadata_and_matching_empty_journal(ledger.attempt_directory, protocol_version=invalid)
+    with pytest.raises(HarnessFailure) as caught:
+        AppendOnlyAttemptLedger.load(ledger.attempt_directory, _identity())
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+
+
+def test_v1_metadata_without_protocol_version_loads_read_only(tmp_path: Path) -> None:
+    attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
+    comparison = attempt.parent
+    before = {
+        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
+    }
+    loaded = AppendOnlyAttemptLedger.load(attempt, _identity(), strict_identity=False)
+    assert loaded.protocol_version == 1
+    assert loaded.terminal_verdict is HarnessVerdict.INCONCLUSIVE
+    after = {
+        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
+    }
+    assert after == before
+
+
+def test_v2_start_does_not_mutate_synthetic_v1_terminal(tmp_path: Path) -> None:
+    v1_attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
+    terminal = v1_attempt / 'terminal.json'
+    before = terminal.read_bytes()
+    before_sha = hashlib.sha256(before).hexdigest()
+    v2 = AppendOnlyAttemptLedger.create(
+        tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+        _identity(),
+        comparison_key='b' * 64,
+    )
+    assert v2.attempt_number == 1
+    assert terminal.read_bytes() == before
+    assert hashlib.sha256(terminal.read_bytes()).hexdigest() == before_sha
+
+
+def test_v2_create_refuses_to_append_synthetic_v1_comparison_directory(tmp_path: Path) -> None:
+    attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
+    comparison = attempt.parent
+    before = {
+        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
+    }
+    with pytest.raises(HarnessFailure, match='protocol v1') as caught:
+        AppendOnlyAttemptLedger.create(
+            tmp_path / 'rust' / 'target' / 'perf-local' / 'batches',
+            _identity(),
+            comparison_key='a' * 64,
+        )
+    assert caught.value.verdict is HarnessVerdict.INCOMPLETE_EVIDENCE
+    after = {
+        path.relative_to(comparison).as_posix(): path.read_bytes() for path in comparison.rglob('*') if path.is_file()
+    }
+    assert after == before
+
+
+def test_current_runner_refuses_v1_attempt_as_resume(tmp_path: Path) -> None:
+    attempt = _write_synthetic_v1_terminal(tmp_path, comparison_key='a' * 64)
+    load_current = getattr(phase0_harness, '_load_current_protocol_ledger', None)
+    assert callable(load_current)
+    with pytest.raises(HarnessFailure, match='protocol'):
+        load_current(attempt, _identity())
+
+
 def test_second_round_one_to_five_attempt_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         MetricGroupRequest(
@@ -1432,6 +1580,7 @@ def test_paired_evidence_serializes_median_rounded_output_bytes(tmp_path: Path) 
         candidate_sizes=(110,) * 5,
     )
     attempt = BatchAttempt(
+        protocol_version=2,
         comparison_key='comparison',
         batch_id=wall.batch_id,
         attempt_number=1,
@@ -1579,19 +1728,16 @@ def _prepare_formal_evidence_recovery(
     request = replace(request, input_path=sanitized_input)
     monkeypatch.setattr(EvidenceSanitizer, 'scan_staged', lambda self, **kwargs: None)
     identity = BenchmarkIdentity('3' * 64, '1' * 64, '2' * 64, '4' * 40, '5' * 64, '6' * 64)
-    comparison_key = hashlib.sha256(
-        phase0_harness._canonical_json(
-            {
-                'pipeline': request.pipeline,
-                'profile': request.comparison_profile.value,
-                'reference_label': request.reference_label.value,
-                'candidate_label': request.candidate_label.value,
-                'input_sha256': identity.input_sha256,
-                'reference_sha256': identity.reference_sha256,
-                'candidate_sha256': identity.candidate_sha256,
-            }
-        )
-    ).hexdigest()
+    comparison_key = phase0_harness.derive_comparison_key(
+        protocol_version=phase0_harness.PAIRED_PROTOCOL_VERSION,
+        pipeline=request.pipeline,
+        comparison_profile=request.comparison_profile,
+        reference_label=request.reference_label,
+        candidate_label=request.candidate_label,
+        input_sha256=identity.input_sha256,
+        reference_sha256=identity.reference_sha256,
+        candidate_sha256=identity.candidate_sha256,
+    )
     ledger = AppendOnlyAttemptLedger.create(request.attempt_ledger_root, identity, comparison_key=comparison_key)
     ledger.commit_first_group({'wall': 'wall', 'pws': 'pws'})
     ledger.mark_cleanup_complete()

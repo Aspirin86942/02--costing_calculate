@@ -27,6 +27,15 @@ def test_decimal_lexical_difference_of_one_e_minus_seven_is_rejected(tmp_path: P
     assert _mismatch(report.mismatches, 'value_mismatch', 'A2').expected_storage_type == 'n'
 
 
+def test_decimal_lexical_float_tail_of_one_e_minus_ten_is_accepted(tmp_path: Path) -> None:
+    expected, actual = _matching_workbooks(tmp_path, [['数值'], [1]])
+    _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda xml: xml.replace(b'<v>1</v>', b'<v>1.0000000001</v>'))
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert report.passed
+
+
 def test_equivalent_decimal_lexemes_and_signed_zero_are_equal(tmp_path: Path) -> None:
     expected, actual = _matching_workbooks(tmp_path, [['数值一', '数值二'], [100, 0]])
 
@@ -142,7 +151,7 @@ def test_shared_strings_relationship_target_mismatch_is_rejected(tmp_path: Path)
     assert _mismatch(report.mismatches, 'shared_strings_relationship_target_mismatch')
 
 
-def test_shared_strings_relationship_presence_mismatch_is_rejected(tmp_path: Path) -> None:
+def test_shared_strings_relationship_missing_is_rejected(tmp_path: Path) -> None:
     expected, actual = _matching_workbooks(tmp_path, [['字段'], ['合成文本']])
 
     def remove_relationship(xml: bytes) -> bytes:
@@ -156,7 +165,7 @@ def test_shared_strings_relationship_presence_mismatch_is_rejected(tmp_path: Pat
 
     report = compare_workbooks(expected, actual, pipeline='gb')
 
-    assert _mismatch(report.mismatches, 'shared_strings_relationship_presence_mismatch')
+    assert _mismatch(report.mismatches, 'shared_strings_relationship_missing')
 
 
 def test_shared_strings_content_type_missing_is_rejected(tmp_path: Path) -> None:
@@ -201,7 +210,7 @@ def test_shared_string_index_out_of_range_is_rejected(tmp_path: Path) -> None:
     assert _mismatch(report.mismatches, 'shared_string_index_out_of_range', 'A2')
 
 
-def test_inline_string_replacing_shared_string_is_rejected(tmp_path: Path) -> None:
+def test_inline_string_and_shared_string_cells_are_equivalent(tmp_path: Path) -> None:
     expected, actual = _matching_workbooks(tmp_path, [['字段'], ['合成文本']])
 
     def use_inline_string(xml: bytes) -> bytes:
@@ -218,8 +227,20 @@ def test_inline_string_replacing_shared_string_is_rejected(tmp_path: Path) -> No
 
     report = compare_workbooks(expected, actual, pipeline='gb')
 
-    mismatch = _mismatch(report.mismatches, 'storage_type_mismatch', 'A2')
-    assert (mismatch.expected_storage_type, mismatch.actual_storage_type) == ('s', 'inlineStr')
+    assert report.passed
+
+
+def test_inline_string_and_shared_string_packages_are_equivalent(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    rows = [['字段'], ['合成文本']]
+    _write_xlsx(expected, {'Sheet': rows})
+    shutil.copyfile(expected, actual)
+    _convert_shared_strings_to_inline(actual)
+
+    report = compare_workbooks(expected, actual, pipeline='gb')
+
+    assert report.passed
 
 
 def test_workbook_mismatch_never_contains_real_cell_values(tmp_path: Path) -> None:
@@ -466,6 +487,49 @@ def _write_xlsx(path: Path, sheets: dict[str, list[list[object]]]) -> None:
             for column_index, value in enumerate(row):
                 worksheet.write(row_index, column_index, value)
     workbook.close()
+
+
+def _convert_shared_strings_to_inline(path: Path) -> None:
+    with ZipFile(path) as archive:
+        shared_root = ET.fromstring(archive.read('xl/sharedStrings.xml'))  # noqa: S314 - controlled fixture.
+        shared_strings = tuple(
+            ''.join(text.text or '' for text in item.iter(f'{{{MAIN_NS}}}t')) for item in shared_root
+        )
+        worksheet_parts = tuple(name for name in archive.namelist() if name.startswith('xl/worksheets/sheet'))
+
+    def inline_cells(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        for cell in root.findall(f'.//{{{MAIN_NS}}}c[@t="s"]'):
+            value = cell.find(f'{{{MAIN_NS}}}v')
+            assert value is not None and value.text is not None
+            text_value = shared_strings[int(value.text)]
+            cell.set('t', 'inlineStr')
+            for child in list(cell):
+                cell.remove(child)
+            inline = ET.SubElement(cell, f'{{{MAIN_NS}}}is')
+            ET.SubElement(inline, f'{{{MAIN_NS}}}t').text = text_value
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    for worksheet_part in worksheet_parts:
+        _rewrite_zip_xml(path, worksheet_part, inline_cells)
+
+    def remove_relationship(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        for relationship in list(root.findall(f'{{{PACKAGE_REL_NS}}}Relationship')):
+            if relationship.attrib.get('Target') == 'sharedStrings.xml':
+                root.remove(relationship)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    def remove_content_type(xml: bytes) -> bytes:
+        root = ET.fromstring(xml)  # noqa: S314 - controlled synthetic xlsx fixture.
+        for override in list(root.findall(f'{{{CONTENT_TYPE_NS}}}Override')):
+            if override.attrib.get('PartName') == '/xl/sharedStrings.xml':
+                root.remove(override)
+        return ET.tostring(root, encoding='utf-8', xml_declaration=True)
+
+    _rewrite_zip_xml(path, 'xl/_rels/workbook.xml.rels', remove_relationship)
+    _rewrite_zip_xml(path, '[Content_Types].xml', remove_content_type)
+    _rewrite_zip_xml(path, 'xl/sharedStrings.xml', lambda _xml: None)
 
 
 def _write_styled_rows(path: Path, *, swapped: bool) -> None:

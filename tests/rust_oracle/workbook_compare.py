@@ -12,9 +12,14 @@ from zipfile import ZipFile
 from tests.rust_oracle.benchmark_protocol import PipelineName
 
 StorageType = Literal['blank', 'n', 's', 'inlineStr', 'str', 'b', 'e', 'd']
+TEXT_STORAGE_TYPES = frozenset(('s', 'inlineStr'))
 
 FORBIDDEN_SHEETS = {'成本分析产品维度'}
 MAX_MISMATCHES = 20
+# Python/XlsxWriter may preserve IEEE-754 tails that Rust serializes as the same shorter decimal.
+NUMERIC_ABSOLUTE_TOLERANCE = Decimal('1e-9')
+# Whole-column sums accumulate those harmless per-cell tails across large SK sheets.
+COLUMN_TOTAL_ABSOLUTE_TOLERANCE = Decimal('1e-8')
 MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 OFFICE_REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -287,14 +292,6 @@ def compare_workbooks(
             _append(mismatches, WorkbookMismatch('<workbook>', None, 'forbidden_sheet'))
         if expected_names != actual_names:
             _append(mismatches, WorkbookMismatch('<workbook>', None, 'sheet_order_mismatch'))
-        for attribute, kind in (
-            ('shared_strings_relationship_present', 'shared_strings_relationship_presence_mismatch'),
-            ('shared_strings_content_type_present', 'shared_strings_content_type_presence_mismatch'),
-            ('shared_strings_part_present', 'shared_strings_part_presence_mismatch'),
-        ):
-            if getattr(expected, attribute) != getattr(actual, attribute):
-                _append(mismatches, WorkbookMismatch('<workbook>', None, kind))
-
         for expected_sheet, actual_sheet in zip(expected.sheets, actual.sheets, strict=False):
             if expected_sheet.name != actual_sheet.name:
                 continue
@@ -302,8 +299,6 @@ def compare_workbooks(
             _compare_sheet_cells(expected, actual, expected_sheet, actual_sheet, mismatches)
             _compare_business_reconciliations(expected, actual, expected_sheet, actual_sheet, pipeline, mismatches)
 
-        if expected.shared_strings != actual.shared_strings:
-            _append(mismatches, WorkbookMismatch('<workbook>', None, 'shared_strings_content_mismatch'))
     finally:
         expected.close()
         actual.close()
@@ -370,7 +365,7 @@ def _compare_cell(
     actual: XmlCell,
     mismatches: list[WorkbookMismatch],
 ) -> None:
-    if expected.storage_type != actual.storage_type:
+    if not _storage_types_equivalent(expected.storage_type, actual.storage_type):
         _append(
             mismatches,
             WorkbookMismatch(
@@ -399,10 +394,18 @@ def _cell_values_equal(expected: XmlCell, actual: XmlCell) -> bool:
     if expected.storage_type == 'n':
         expected_decimal = _parse_decimal(expected.lexical_value)
         actual_decimal = _parse_decimal(actual.lexical_value)
-        return expected_decimal is not None and actual_decimal is not None and expected_decimal == actual_decimal
-    if expected.storage_type in ('s', 'inlineStr'):
+        return (
+            expected_decimal is not None
+            and actual_decimal is not None
+            and _decimal_values_equal(expected_decimal, actual_decimal)
+        )
+    if expected.storage_type in TEXT_STORAGE_TYPES:
         return expected.resolved_text == actual.resolved_text
     return expected.lexical_value == actual.lexical_value
+
+
+def _storage_types_equivalent(expected: StorageType, actual: StorageType) -> bool:
+    return expected == actual or (expected in TEXT_STORAGE_TYPES and actual in TEXT_STORAGE_TYPES)
 
 
 def _iter_xml_cells(
@@ -511,7 +514,11 @@ def _compare_business_reconciliations(
         mismatches,
     )
     for header in policy:
-        if expected_totals[header] != actual_totals[header]:
+        if not _decimal_values_equal(
+            expected_totals[header],
+            actual_totals[header],
+            tolerance=COLUMN_TOTAL_ABSOLUTE_TOLERANCE,
+        ):
             _append(
                 mismatches,
                 WorkbookMismatch(
@@ -521,8 +528,35 @@ def _compare_business_reconciliations(
                 ),
             )
 
-    if keys and expected_groups != actual_groups:
+    if keys and not _group_totals_equal(expected_groups, actual_groups):
         _append(mismatches, WorkbookMismatch(expected_sheet.name, None, 'group_total_mismatch'))
+
+
+def _decimal_values_equal(
+    expected: Decimal,
+    actual: Decimal,
+    *,
+    tolerance: Decimal = NUMERIC_ABSOLUTE_TOLERANCE,
+) -> bool:
+    return abs(expected - actual) <= tolerance
+
+
+def _group_totals_equal(
+    expected: dict[tuple[str, ...], tuple[Decimal, ...]],
+    actual: dict[tuple[str, ...], tuple[Decimal, ...]],
+) -> bool:
+    if expected.keys() != actual.keys():
+        return False
+    for key, expected_values in expected.items():
+        actual_values = actual[key]
+        if len(expected_values) != len(actual_values):
+            return False
+        if any(
+            not _decimal_values_equal(expected_value, actual_value)
+            for expected_value, actual_value in zip(expected_values, actual_values, strict=True)
+        ):
+            return False
+    return True
 
 
 def _read_header_map(

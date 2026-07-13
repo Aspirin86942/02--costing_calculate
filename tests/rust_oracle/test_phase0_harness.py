@@ -67,6 +67,8 @@ from tests.rust_oracle.phase0_harness import (
     validate_formal_repository_state,
 )
 
+pytestmark = pytest.mark.meta
+
 
 @pytest.fixture(autouse=True)
 def _trusted_repo_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

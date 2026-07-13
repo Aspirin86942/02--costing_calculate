@@ -15,6 +15,7 @@ import pytest
 
 from src.services.costing_service import CostingRunRequest, CostingRunResult, ServiceStatus
 from tests.rust_oracle import oracle_runner
+from tests.rust_oracle._winpath import win_long_paths_enabled
 from tests.rust_oracle.benchmark_protocol import RuntimeSchema
 from tests.rust_oracle.oracle_runner import (
     OracleRunSummary,
@@ -22,6 +23,8 @@ from tests.rust_oracle.oracle_runner import (
     parse_runtime_payload,
     parse_rust_run_summary,
 )
+
+pytestmark = pytest.mark.meta
 
 MISSING_STAGE = object()
 
@@ -624,7 +627,12 @@ def test_run_rust_normal_captured_returns_typed_result_without_versioned_evidenc
     assert [path.name for path in local_log_root.glob('*.json')] == [f'{result.local_unversioned_log_sha256}.json']
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+# 系统启用 Win32 长路径后,MAX_PATH=260 限制解除,无 `\\?\` 前缀的逻辑路径也能访问长路径文件,
+# 本回归测试的前提("逻辑路径不可见")不再成立,故跳过而非修复断言。
+@pytest.mark.skipif(
+    os.name != 'nt' or win_long_paths_enabled(),
+    reason='长路径回归仅在未启用 Win32 长路径的 Windows 上有效',
+)
 def test_run_rust_normal_captured_accepts_long_logical_output_path(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -681,7 +689,12 @@ def test_run_rust_normal_captured_accepts_long_logical_output_path(
         _remove_long_output_tree(tmp_path)
 
 
-@pytest.mark.skipif(os.name != 'nt', reason='extended-length path regression is Windows-specific')
+# 系统启用 Win32 长路径后,MAX_PATH=260 限制解除,无 `\\?\` 前缀的逻辑路径也能访问长路径文件,
+# 本回归测试的前提("逻辑路径不可见")不再成立,故跳过而非修复断言。
+@pytest.mark.skipif(
+    os.name != 'nt' or win_long_paths_enabled(),
+    reason='长路径回归仅在未启用 Win32 长路径的 Windows 上有效',
+)
 def test_run_rust_normal_captured_rejects_preexisting_long_output_before_subprocess(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -27,6 +27,12 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["_archive"]
+markers = [
+    "slow: 真实 Excel 端到端正确性测试,依赖真实数据样本",
+    "benchmark: 正式性能基准验收(N=5 check-only)",
+    "meta: 测试框架自身的元测试(oracle/harness/evidence/protocol)",
+]
+addopts = "-m 'not slow and not benchmark'"
 
 [tool.ruff]
 target-version = "py311"

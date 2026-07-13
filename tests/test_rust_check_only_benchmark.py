@@ -21,6 +21,7 @@ def rust_release_executable() -> Path:
     return build_rust_cli_release()
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize('pipeline', ('gb', 'sk'))
 def test_rust_check_only_is_not_slower_than_python(
     pipeline: str,

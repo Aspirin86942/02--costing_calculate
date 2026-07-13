@@ -12,6 +12,8 @@ import xlsxwriter
 
 from tests.rust_oracle.workbook_compare import NUMERIC_COLUMNS, WorkbookMismatch, compare_workbooks
 
+pytestmark = pytest.mark.meta
+
 MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 CONTENT_TYPE_NS = 'http://schemas.openxmlformats.org/package/2006/content-types'

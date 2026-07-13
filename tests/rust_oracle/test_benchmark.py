@@ -15,6 +15,8 @@ from tests.rust_oracle.oracle_runner import (
 )
 from tests.rust_oracle.repo_paths import repo_root
 
+pytestmark = pytest.mark.meta
+
 _INPUT_SHA = 'a' * 64
 _BINARY_SHA = 'b' * 64
 _CHANGED_SHA = 'c' * 64

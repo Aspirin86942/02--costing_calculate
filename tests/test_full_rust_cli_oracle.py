@@ -30,6 +30,7 @@ def _first_sample(env_name: str, patterns: tuple[str, ...]) -> Path | None:
     return None
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(_first_sample('COSTING_GB_SAMPLE', ('data/raw/gb/*.xlsx',)) is None, reason='GB raw sample missing')
 def test_rust_gb_workbook_matches_python_oracle(tmp_path: Path) -> None:
     input_path = _first_sample('COSTING_GB_SAMPLE', ('data/raw/gb/*.xlsx',))
@@ -45,6 +46,7 @@ def test_rust_gb_workbook_matches_python_oracle(tmp_path: Path) -> None:
     assert_runtime_contract_matches(python_summary, rust_summary)
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(_first_sample('COSTING_SK_SAMPLE', ('data/raw/sk/*.xlsx',)) is None, reason='SK raw sample missing')
 def test_rust_sk_workbook_matches_python_oracle(tmp_path: Path) -> None:
     input_path = _first_sample('COSTING_SK_SAMPLE', ('data/raw/sk/*.xlsx',))

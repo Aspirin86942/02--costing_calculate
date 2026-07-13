@@ -45,6 +45,8 @@ from tests.rust_oracle.benchmark_protocol import (
     validate_metric_group,
 )
 
+pytestmark = pytest.mark.meta
+
 
 def _recovery_provenance() -> RecoveryProvenance:
     return RecoveryProvenance(

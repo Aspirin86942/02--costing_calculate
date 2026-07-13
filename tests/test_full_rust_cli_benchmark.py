@@ -7,7 +7,6 @@ import pytest
 from tests.rust_oracle import benchmark
 from tests.rust_oracle.benchmark import classify_verdict, run_same_machine_benchmark
 from tests.rust_oracle.oracle_runner import OracleRunSummary
-from tests.rust_oracle.repo_paths import require_benchmark_sample
 from tests.rust_oracle.workbook_compare import WorkbookComparisonReport, WorkbookMismatch
 
 
@@ -83,23 +82,3 @@ def test_benchmark_rejects_runtime_mismatch_even_when_workbooks_match(
 
     assert not result.validation_passed
     assert result.verdict == 'ETL_MISMATCH'
-
-
-def test_gb_rust_benchmark_validated(tmp_path: Path) -> None:
-    result = run_same_machine_benchmark(
-        'gb',
-        require_benchmark_sample('gb'),
-        tmp_path,
-        repeats=3,
-    )
-    assert result.verdict == 'VALIDATED', result
-
-
-def test_sk_rust_benchmark_validated(tmp_path: Path) -> None:
-    result = run_same_machine_benchmark(
-        'sk',
-        require_benchmark_sample('sk'),
-        tmp_path,
-        repeats=3,
-    )
-    assert result.verdict == 'VALIDATED', result

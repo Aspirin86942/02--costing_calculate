@@ -18,6 +18,8 @@ from tests.rust_oracle import evidence
 from tests.rust_oracle.benchmark_protocol import RecoveryProvenance, RecoveryReason, UpstreamGateProvenance
 from tests.rust_oracle.evidence import DependencyEvidence, EvidenceSanitizer
 
+pytestmark = pytest.mark.meta
+
 _UPSTREAM_BASE = '9134de25afadaee955d0f821862338e3d046a338'
 _REVISION = 'f4e4e99f920937709d6dacb4680c60ea3f80486f'
 _PRE_PIN_COMMIT = '000d7c3867600908b1d2631fb5033b5092883c14'

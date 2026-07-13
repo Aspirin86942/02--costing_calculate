@@ -150,7 +150,7 @@ class FastSheetWriter:
             freeze_row, freeze_col = _freeze_panes_to_rc(model.freeze_panes)
             worksheet.freeze_panes(freeze_row, freeze_col)
         if model.auto_filter and model.columns:
-            worksheet.autofilter(0, 0, max(last_row, 1), len(model.columns) - 1)
+            worksheet.autofilter(0, 0, last_row, len(model.columns) - 1)
 
         for rule in model.conditional_formats:
             highlight_format = formats.get(rule.format_key)
@@ -209,7 +209,7 @@ class FastSheetWriter:
             freeze_row, freeze_col = _freeze_panes_to_rc(model.freeze_panes)
             worksheet.freeze_panes(freeze_row, freeze_col)
         if model.auto_filter and model.columns:
-            worksheet.autofilter(0, 0, max(last_row, 1), len(model.columns) - 1)
+            worksheet.autofilter(0, 0, last_row, len(model.columns) - 1)
 
         return worksheet
 
@@ -370,7 +370,7 @@ class FastSheetWriter:
             worksheet.freeze_panes(freeze_row, freeze_col)
 
         if auto_filter and columns:
-            filter_end_row = max(len(df), 1)
+            filter_end_row = len(df)
             worksheet.autofilter(0, 0, filter_end_row, len(columns) - 1)
 
         if apply_column_widths:
@@ -460,7 +460,7 @@ class FastSheetWriter:
             worksheet.freeze_panes(freeze_row, freeze_col)
 
         if auto_filter and columns:
-            filter_end_row = max(len(df), 1)
+            filter_end_row = len(df)
             worksheet.autofilter(0, 0, filter_end_row, len(columns) - 1)
 
         return worksheet

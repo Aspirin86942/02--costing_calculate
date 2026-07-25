@@ -21,7 +21,7 @@
 - writer 预计算每列文本/数字行为和格式，空白单元格直接跳过。
 - CLI 默认启用 `low-memory` feature；单张 Sheet 达到 `5,000,000` 个 cell slots 时进入 low-memory。
 - low-memory 临时目录位于最终输出目录，并在成功、失败及错误合并路径中显式清理。
-- 受控 `rust_xlsxwriter` fork revision 固定在 `rust/Cargo.toml`；大 workbook 使用经过输出大小门禁验证的 ZIP 压缩等级。
+- 受控 `rust_xlsxwriter` fork revision 固定在 `rust/Cargo.toml`；大 workbook 保持 ZIP 压缩 Level 5。2026-07-25 的 Level 3/2 N=5 实验虽降低保存耗时，但分别超出 SK 输出大小门禁 `3,869,470` 和 `8,286,515` bytes，均未采用；详见 [`../evidence/2026-07-25-v0.2.0-m6b-zip-compression.md`](../evidence/2026-07-25-v0.2.0-m6b-zip-compression.md)。
 
 ## 快速复测
 

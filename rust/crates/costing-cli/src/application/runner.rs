@@ -23,12 +23,28 @@ fn execute_with_publisher(
     let request_id = new_request_id();
     let summary_output = request.summary_output.clone();
     let redact_paths = request.redact_paths;
-    let mut audit = RunAudit::new(&request, summary_output.is_some());
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(source) => {
+            let error = CostingError::io_with_source(
+                ErrorCode::InvalidInput,
+                format!("无法获取当前工作目录: {source}"),
+                source,
+            )
+            .with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::ResolveCliPaths,
+                None,
+            ));
+            return RunOutcome::Failed(failure_from_error(&error));
+        }
+    };
+    let mut audit = RunAudit::new(&request, summary_output.is_some(), cwd.clone());
     if let Some(path) = summary_output.as_deref() {
         if let Err(error) = preflight_summary_output(path, &request_id) {
             let mut failure = failure_from_error(&error);
             if redact_paths {
-                redact_failure_paths(&mut failure, current_dir());
+                redact_failure_paths(&mut failure, &cwd);
             }
             return RunOutcome::Failed(failure);
         }
@@ -105,7 +121,7 @@ fn execute_with_publisher(
                         }
                     }
                     if redact_paths {
-                        redact_run_summary(&mut summary, current_dir());
+                        redact_run_summary(&mut summary, &cwd);
                     }
                     RunOutcome::Succeeded(summary)
                 }
@@ -138,7 +154,7 @@ fn failed_outcome(
         if let Err(manifest_error) = publisher(path, request_id, &manifest) {
             let mut manifest_failure = failure_from_error(&manifest_error);
             if redact_paths {
-                redact_failure_paths(&mut manifest_failure, current_dir());
+                redact_failure_paths(&mut manifest_failure, audit.cwd());
             }
             failure.message = format!(
                 "{}; 失败 Manifest 写出失败: {}",
@@ -181,10 +197,6 @@ fn new_request_id() -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("costing-{}-{nanos}", std::process::id())
-}
-
-fn current_dir() -> &'static Path {
-    Path::new(".")
 }
 
 #[cfg(test)]

@@ -63,18 +63,26 @@ impl TempWorkspace {
     }
 }
 
+/// Request identity carried through workbook writer diagnostics.
 pub struct WriterContext {
+    /// Stable request identifier emitted by the CLI.
     pub request_id: String,
 }
 
+/// Metadata returned after a complete workbook has been atomically published.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkbookWriteReport {
+    /// Seconds spent populating workbook structures.
     pub writer_populate_seconds: f64,
+    /// Seconds spent serializing the workbook into the staging file.
     pub xlsx_save_seconds: f64,
+    /// Size of the final published workbook.
     pub output_size_bytes: u64,
+    /// Whether any sheet used the low-memory writer.
     pub low_memory_writer: bool,
 }
 
+/// Primary writer failure, separate from its stable stage context.
 #[derive(Debug, thiserror::Error)]
 pub enum WriterPrimaryError {
     #[error("{0}")]
@@ -85,12 +93,24 @@ pub enum WriterPrimaryError {
     Contract(String),
 }
 
+/// Workbook writer failure with stage, cleanup, and writer-mode evidence.
 #[derive(Debug, thiserror::Error)]
 #[error("{primary}")]
 pub struct WriterError {
+    /// Stable request and filesystem stage context.
     pub context: ErrorContext,
+    /// Whether the attempted workbook used the low-memory writer.
+    pub low_memory_writer: bool,
+    /// Original writer or filesystem failure.
     #[source]
     pub primary: WriterPrimaryError,
+}
+
+impl WriterError {
+    fn with_low_memory_writer(mut self, enabled: bool) -> Self {
+        self.low_memory_writer = enabled;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -98,7 +118,9 @@ enum WriterTestFault {
     #[default]
     None,
     FailAfterStagingWrite,
+    InterruptAfterStagingWrite,
     CompeteBeforePublish,
+    FailAfterPublish,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -170,6 +192,7 @@ fn write_workbook_controlled(
                 ErrorStage::PrepareOutputDirectory,
                 WriterPrimaryError::Io(error),
             )
+            .with_low_memory_writer(needs_low_memory)
         })?;
         Some(
             TempWorkspace::create(parent, &context.request_id).map_err(|error| {
@@ -179,6 +202,7 @@ fn write_workbook_controlled(
                     ErrorStage::CreateTempWorkspace,
                     WriterPrimaryError::Io(error),
                 )
+                .with_low_memory_writer(needs_low_memory)
             })?,
         )
     } else {
@@ -201,8 +225,10 @@ fn write_workbook_controlled(
                     workspace.path(),
                     ErrorStage::InitializeLowMemoryTempWriter,
                     WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-                )),
+                )
+                .with_low_memory_writer(needs_low_memory)),
                 temp_workspace,
+                needs_low_memory,
             );
         }
         if let Err(error) = workbook.set_tempdir(workspace.path()) {
@@ -214,8 +240,10 @@ fn write_workbook_controlled(
                     workspace.path(),
                     ErrorStage::InitializeLowMemoryTempWriter,
                     WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-                )),
+                )
+                .with_low_memory_writer(needs_low_memory)),
                 temp_workspace,
+                needs_low_memory,
             );
         }
     }
@@ -309,7 +337,9 @@ fn write_workbook_controlled(
 
         let mut staged = AtomicFile::create(path, &context.request_id)
             .map_err(|error| atomic_file_error(context, path, error))?;
-        if control.fault == WriterTestFault::FailAfterStagingWrite {
+        if control.fault == WriterTestFault::FailAfterStagingWrite
+            || control.fault == WriterTestFault::InterruptAfterStagingWrite
+        {
             if let Err(source) = staged.writer().write_all(b"partial workbook") {
                 return Err(finish_staging_failure(
                     writer_error(
@@ -327,8 +357,16 @@ fn write_workbook_controlled(
                     path,
                     ErrorStage::SaveWorkbook,
                     WriterPrimaryError::Io(std::io::Error::new(
-                        std::io::ErrorKind::StorageFull,
-                        "injected staging write failure",
+                        if control.fault == WriterTestFault::InterruptAfterStagingWrite {
+                            std::io::ErrorKind::Interrupted
+                        } else {
+                            std::io::ErrorKind::StorageFull
+                        },
+                        if control.fault == WriterTestFault::InterruptAfterStagingWrite {
+                            "injected catchable interruption"
+                        } else {
+                            "injected staging write failure"
+                        },
                     )),
                 ),
                 staged,
@@ -368,6 +406,19 @@ fn write_workbook_controlled(
         let published = staged
             .publish()
             .map_err(|error| atomic_file_error(context, path, error))?;
+        if control.fault == WriterTestFault::FailAfterPublish {
+            let mut error = writer_error(
+                context,
+                path,
+                ErrorStage::ReadOutputMetadata,
+                WriterPrimaryError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected output metadata failure",
+                )),
+            );
+            error.context.details.final_output_valid = true;
+            return Err(error);
+        }
         let metadata = published.metadata().map_err(|source| {
             let mut error = writer_error(
                 context,
@@ -394,12 +445,13 @@ fn write_workbook_controlled(
             output_size_bytes: metadata.len(),
             low_memory_writer: needs_low_memory,
         })
-    })();
+    })()
+    .map_err(|error| error.with_low_memory_writer(needs_low_memory));
 
     drop(workbook);
 
     #[cfg(feature = "low-memory")]
-    return finish_with_temp_cleanup(context, primary_result, temp_workspace);
+    return finish_with_temp_cleanup(context, primary_result, temp_workspace, needs_low_memory);
 
     #[cfg(not(feature = "low-memory"))]
     primary_result
@@ -456,6 +508,7 @@ fn finish_with_temp_cleanup(
     context: &WriterContext,
     primary_result: Result<WorkbookWriteReport, WriterError>,
     workspace: Option<TempWorkspace>,
+    low_memory_writer: bool,
 ) -> Result<WorkbookWriteReport, WriterError> {
     let Some(workspace) = workspace else {
         return primary_result;
@@ -476,7 +529,8 @@ fn finish_with_temp_cleanup(
                 &workspace_path,
                 ErrorStage::CleanupTempWorkspace,
                 WriterPrimaryError::Io(cleanup_error),
-            );
+            )
+            .with_low_memory_writer(low_memory_writer);
             error.context.details.final_output_valid = true;
             Err(error)
         }
@@ -491,6 +545,7 @@ fn writer_error(
 ) -> WriterError {
     WriterError {
         context: ErrorContext::new(context.request_id.clone(), stage, Some(path.to_path_buf())),
+        low_memory_writer: false,
         primary,
     }
 }
@@ -534,7 +589,8 @@ fn atomic_file_error(context: &WriterContext, path: &Path, error: AtomicFileErro
         AtomicFileStage::CheckTarget => ErrorStage::CreateFinalOutput,
         AtomicFileStage::PrepareParent => ErrorStage::PrepareOutputDirectory,
         AtomicFileStage::CreateStaging => ErrorStage::CreateWorkbookTempFile,
-        AtomicFileStage::Flush | AtomicFileStage::Sync => ErrorStage::SyncWorkbookTempFile,
+        AtomicFileStage::Flush => ErrorStage::FlushWorkbookTempFile,
+        AtomicFileStage::Sync => ErrorStage::SyncWorkbookTempFile,
         AtomicFileStage::Publish => ErrorStage::PublishWorkbook,
         AtomicFileStage::Cleanup => ErrorStage::CleanupWorkbookTempFile,
     };
@@ -691,6 +747,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::error::Error;
     use std::io::ErrorKind;
+    use std::path::PathBuf;
     use std::process;
     use std::sync::{Arc, Barrier};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -717,6 +774,7 @@ mod tests {
                 ErrorStage::SaveWorkbook,
                 Some(std::path::PathBuf::from("output.xlsx")),
             ),
+            low_memory_writer: false,
             primary: WriterPrimaryError::Io(std::io::Error::from_raw_os_error(raw_os_error)),
         }
     }
@@ -931,6 +989,7 @@ mod tests {
                     .unwrap_err();
 
             assert_eq!(error.context.details.stage, ErrorStage::SaveWorkbook);
+            assert_eq!(error.low_memory_writer, force_low_memory);
             assert!(!error.context.details.final_output_valid);
             assert!(!output.exists());
             assert_no_temporary_artifacts(&parent);
@@ -963,12 +1022,85 @@ mod tests {
                     .unwrap_err();
 
             assert_eq!(error.context.details.stage, ErrorStage::PublishWorkbook);
+            assert_eq!(error.low_memory_writer, force_low_memory);
             assert!(matches!(
                 error.primary,
                 WriterPrimaryError::Io(ref source) if source.kind() == ErrorKind::AlreadyExists
             ));
             assert!(!error.context.details.final_output_valid);
             assert_eq!(std::fs::read(&output).unwrap(), b"competing workbook");
+            assert_no_temporary_artifacts(&parent);
+            std::fs::remove_file(output).unwrap();
+            std::fs::remove_dir(parent).unwrap();
+        }
+    }
+
+    #[cfg(feature = "low-memory")]
+    #[test]
+    fn catchable_interruption_cleans_staging_in_either_writer_mode() {
+        for force_low_memory in [false, true] {
+            let parent = unique_temp_dir(if force_low_memory {
+                "interrupt-low"
+            } else {
+                "interrupt-standard"
+            });
+            let output = parent.join("output.xlsx");
+            let payload = payload(vec![
+                sheet("成本计算单总表"),
+                sheet("成本计算单数量聚合维度"),
+                sheet("成本分析工单维度"),
+            ]);
+            let control = WriterTestControl {
+                force_low_memory,
+                fault: WriterTestFault::InterruptAfterStagingWrite,
+            };
+
+            let error =
+                write_workbook_with_test_control(&writer_context(), &output, &payload, control)
+                    .unwrap_err();
+
+            assert_eq!(error.context.details.stage, ErrorStage::SaveWorkbook);
+            assert_eq!(error.low_memory_writer, force_low_memory);
+            assert!(matches!(
+                error.primary,
+                WriterPrimaryError::Io(ref source) if source.kind() == ErrorKind::Interrupted
+            ));
+            assert!(!error.context.details.final_output_valid);
+            assert!(!output.exists());
+            assert_no_temporary_artifacts(&parent);
+            std::fs::remove_dir(parent).unwrap();
+        }
+    }
+
+    #[cfg(feature = "low-memory")]
+    #[test]
+    fn post_publish_failure_reports_a_valid_output_in_either_writer_mode() {
+        for force_low_memory in [false, true] {
+            let parent = unique_temp_dir(if force_low_memory {
+                "post-publish-low"
+            } else {
+                "post-publish-standard"
+            });
+            let output = parent.join("output.xlsx");
+            let payload = payload(vec![
+                sheet("成本计算单总表"),
+                sheet("成本计算单数量聚合维度"),
+                sheet("成本分析工单维度"),
+            ]);
+            let control = WriterTestControl {
+                force_low_memory,
+                fault: WriterTestFault::FailAfterPublish,
+            };
+
+            let error =
+                write_workbook_with_test_control(&writer_context(), &output, &payload, control)
+                    .unwrap_err();
+
+            assert_eq!(error.context.details.stage, ErrorStage::ReadOutputMetadata);
+            assert_eq!(error.low_memory_writer, force_low_memory);
+            assert!(error.context.details.final_output_valid);
+            let workbook = open_workbook_auto(&output).unwrap();
+            assert_eq!(workbook.sheet_names().len(), 3);
             assert_no_temporary_artifacts(&parent);
             std::fs::remove_file(output).unwrap();
             std::fs::remove_dir(parent).unwrap();
@@ -1035,5 +1167,28 @@ mod tests {
         assert_eq!(cleanup.stage, ErrorStage::RemovePartialOutput);
         assert_eq!(cleanup.path.as_deref(), Some(output.as_path()));
         assert_eq!(cleanup.io_meta.kind, IoKindCode::PermissionDenied);
+    }
+
+    #[test]
+    fn atomic_flush_failure_keeps_a_distinct_workbook_stage() {
+        let output = PathBuf::from("output.xlsx");
+        let error = atomic_file_error(
+            &writer_context(),
+            &output,
+            AtomicFileError {
+                stage: AtomicFileStage::Flush,
+                final_path: output.clone(),
+                staging_path: Some(PathBuf::from(".costing-publish-test.tmp")),
+                final_published: false,
+                cleanup_error: None,
+                source: std::io::Error::new(ErrorKind::StorageFull, "flush failed"),
+            },
+        );
+
+        assert_eq!(
+            error.context.details.stage,
+            ErrorStage::FlushWorkbookTempFile
+        );
+        assert!(!error.context.details.final_output_valid);
     }
 }

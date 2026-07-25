@@ -11,11 +11,11 @@ use costing_core::split::split_detail_and_qty;
 use costing_core::timing::measure;
 use costing_core::{CostingError, ErrorCode, PipelineRules, RunSummary, StageTimings};
 use costing_xlsx::{
-    reader::{read_raw_workbook, CostingXlsxError, XlsxError},
+    reader::{read_raw_workbook, read_raw_workbook_from_bytes, CostingXlsxError, XlsxError},
     writer::{write_workbook, WriterContext, WriterError, WriterPrimaryError},
 };
 
-use crate::application::manifest::{sha256_file, RunAudit};
+use crate::application::manifest::{sha256_bytes, sha256_file, RunAudit};
 use crate::application::RunRequest;
 use crate::config::input_pattern_matches;
 
@@ -32,7 +32,19 @@ pub(crate) fn run(
     input_pattern: String,
     request_id: String,
 ) -> anyhow::Result<RunSummary> {
-    let mut audit = RunAudit::new(&args, false);
+    let cwd = std::env::current_dir().map_err(|source| {
+        CostingError::io_with_source(
+            ErrorCode::InvalidInput,
+            format!("无法获取当前工作目录: {source}"),
+            source,
+        )
+        .with_context(ErrorContext::new(
+            &request_id,
+            ErrorStage::ResolveCliPaths,
+            None,
+        ))
+    })?;
+    let mut audit = RunAudit::new(&args, false, cwd);
     run_with_audit(args, pipeline, input_pattern, request_id, &mut audit)
 }
 
@@ -47,19 +59,7 @@ pub(crate) fn run_with_audit(
         .map_err(|error| {
             with_stage_context(error, &request_id, ErrorStage::ValidateCliRequest, None)
         })?;
-    let base_dir = std::env::current_dir().map_err(|error| {
-        let error = CostingError::io_with_source(
-            ErrorCode::InvalidInput,
-            format!("无法获取当前工作目录: {error}"),
-            error,
-        );
-        with_stage_context(
-            error,
-            &request_id,
-            ErrorStage::ResolveCliPaths,
-            Some(PathBuf::from(".")),
-        )
-    })?;
+    let base_dir = audit.cwd().to_path_buf();
     let resolve_path = args.input.clone().unwrap_or_else(|| {
         base_dir
             .join("data")
@@ -84,7 +84,7 @@ pub(crate) fn run_with_audit(
             .expect("resolved paths always include input"),
         args.output.as_deref(),
     );
-    validate_cli_request(&args).map_err(|error| {
+    validate_cli_request_from(&args, &base_dir).map_err(|error| {
         with_stage_context(
             error,
             &request_id,
@@ -101,10 +101,28 @@ pub(crate) fn run_with_audit(
         .clone();
     let total_started = args.benchmark.then(Instant::now);
 
-    let (raw, reader_rows) = measure(&mut timings, "ingest", || {
-        let raw = read_raw_workbook(&input).map_err(|error| map_xlsx_read_error(&input, error))?;
+    let capture_input_identity = audit.enabled();
+    let (raw, reader_rows, input_identity) = measure(&mut timings, "ingest", || {
+        let (raw, input_identity) = if capture_input_identity {
+            let bytes = std::fs::read(&input).map_err(|source| {
+                CostingError::io_with_source(
+                    ErrorCode::FileNotReadable,
+                    format!("读取 workbook 字节失败: {source}"),
+                    source,
+                )
+            })?;
+            let size_bytes = bytes.len() as u64;
+            let sha256 = sha256_bytes(&bytes);
+            let raw = read_raw_workbook_from_bytes(&bytes)
+                .map_err(|error| map_xlsx_read_error(&input, error))?;
+            (raw, Some((size_bytes, sha256)))
+        } else {
+            let raw =
+                read_raw_workbook(&input).map_err(|error| map_xlsx_read_error(&input, error))?;
+            (raw, None)
+        };
         let reader_rows = raw.rows.len();
-        Ok::<_, CostingError>((raw, reader_rows))
+        Ok::<_, CostingError>((raw, reader_rows, input_identity))
     })
     .map_err(|error| {
         with_stage_context(
@@ -115,19 +133,7 @@ pub(crate) fn run_with_audit(
         )
     })?;
     audit.record_reader_identity(raw.sheet_name.clone(), reader_rows);
-    if audit.enabled() {
-        let (input_size_bytes, input_sha256) = sha256_file(&input).map_err(|source| {
-            CostingError::io_with_source(
-                ErrorCode::FileNotReadable,
-                format!("计算输入 workbook SHA-256 失败: {source}"),
-                source,
-            )
-            .with_context(ErrorContext::new(
-                &request_id,
-                ErrorStage::HashInput,
-                Some(input.clone()),
-            ))
-        })?;
+    if let Some((input_size_bytes, input_sha256)) = input_identity {
         audit.record_input(
             input_size_bytes,
             input_sha256,
@@ -254,18 +260,14 @@ pub(crate) fn run_with_audit(
         let writer_context = WriterContext {
             request_id: request_id.clone(),
         };
-        let report = measure(&mut timings, "export", || {
-            write_workbook(&writer_context, output, &payload)
-                .map_err(|error| map_xlsx_write_error(output, error))
-        })
-        .map_err(|error| {
-            with_stage_context(
-                error,
-                &request_id,
-                ErrorStage::SaveWorkbook,
-                Some(output.clone()),
-            )
-        })?;
+        let report = match measure(&mut timings, "export", || {
+            write_workbook(&writer_context, output, &payload).map_err(Box::new)
+        }) {
+            Ok(report) => report,
+            Err(error) => {
+                return Err(record_and_map_writer_error(audit, output, *error).into());
+            }
+        };
         timings.insert("writer_populate", report.writer_populate_seconds);
         timings.insert("xlsx_save", report.xlsx_save_seconds);
         audit.mark_output_published(report.output_size_bytes, report.low_memory_writer);
@@ -479,7 +481,19 @@ fn month_output_suffix(month_range: Option<&MonthRange>) -> Option<String> {
     }
 }
 
+#[cfg(test)]
 pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
+    let cwd = std::env::current_dir().map_err(|source| {
+        CostingError::io_with_source(
+            ErrorCode::InvalidInput,
+            format!("无法获取当前工作目录: {source}"),
+            source,
+        )
+    })?;
+    validate_cli_request_from(args, &cwd)
+}
+
+fn validate_cli_request_from(args: &RunRequest, cwd: &Path) -> Result<(), CostingError> {
     let input = args
         .input
         .as_ref()
@@ -521,7 +535,7 @@ pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
     }
     if !args.check_only {
         let output = args.output.as_ref().expect("checked output above");
-        if paths_resolve_to_same_file(input, output) {
+        if paths_resolve_to_same_file(input, output, cwd) {
             return Err(CostingError::invalid_input(
                 "输入文件与输出文件不能是同一文件",
             ));
@@ -545,14 +559,12 @@ pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
         }
     }
     if let Some(summary_output) = args.summary_output.as_ref() {
-        if args
-            .output
-            .as_ref()
-            .is_some_and(|output| paths_resolve_to_same_file(output, summary_output))
-        {
-            return Err(CostingError::invalid_input(
-                "workbook 输出与运行 Manifest 不能指向同一文件",
-            ));
+        if let Some(output) = args.output.as_ref() {
+            if paths_resolve_to_same_file(output, summary_output, cwd) {
+                return Err(CostingError::invalid_input(
+                    "workbook 输出与运行 Manifest 不能指向同一文件",
+                ));
+            }
         }
         match summary_output.try_exists() {
             Ok(true) => {
@@ -578,13 +590,10 @@ pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
     Ok(())
 }
 
-fn paths_resolve_to_same_file(input: &Path, output: &Path) -> bool {
+fn paths_resolve_to_same_file(input: &Path, output: &Path, cwd: &Path) -> bool {
     match (input.canonicalize(), output.canonicalize()) {
         (Ok(input), Ok(output)) => input == output,
-        _ => {
-            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            normalize_comparison_path(input, &cwd) == normalize_comparison_path(output, &cwd)
-        }
+        _ => normalize_comparison_path(input, cwd) == normalize_comparison_path(output, cwd),
     }
 }
 
@@ -620,8 +629,33 @@ fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
     )
 }
 
+fn record_and_map_writer_error(
+    audit: &mut RunAudit,
+    path: &Path,
+    error: WriterError,
+) -> CostingError {
+    let low_memory_writer = error.low_memory_writer;
+    let final_output_valid = error.context.details.final_output_valid;
+    audit.record_writer_failure(low_memory_writer, final_output_valid);
+    if final_output_valid && audit.enabled() {
+        match sha256_file(path) {
+            Ok((size_bytes, sha256)) => {
+                audit.record_output(size_bytes, sha256, low_memory_writer);
+            }
+            Err(source) => {
+                audit.warn(format!(
+                    "有效 workbook 已发布，但恢复输出 SHA-256 失败: {source}"
+                ));
+            }
+        }
+    }
+    map_xlsx_write_error(path, error)
+}
+
 fn map_xlsx_write_error(path: &Path, error: WriterError) -> CostingError {
-    let WriterError { context, primary } = error;
+    let WriterError {
+        context, primary, ..
+    } = error;
     let mapped = match primary {
         WriterPrimaryError::Io(source) => {
             let is_create_race = matches!(
@@ -665,7 +699,7 @@ mod tests {
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
     use super::*;
-    use crate::application::{RunOperation, RunRequest};
+    use crate::application::{RunManifestV1, RunOperation, RunRequest};
 
     fn run(request: RunRequest) -> anyhow::Result<RunSummary> {
         let effective = crate::config::load_configuration(None, "costing-unit-test")
@@ -878,6 +912,7 @@ mod tests {
                     ErrorStage::CreateFinalOutput,
                     Some(output.clone()),
                 ),
+                low_memory_writer: false,
                 primary: WriterPrimaryError::Io(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     "already exists",
@@ -908,6 +943,7 @@ mod tests {
                 ErrorStage::SaveWorkbook,
                 Some(output.clone()),
             ),
+            low_memory_writer: false,
             primary: WriterPrimaryError::Xlsx(CostingXlsxError::Writer(XlsxError::IoError(
                 std::io::Error::from_raw_os_error(112),
             ))),
@@ -934,6 +970,54 @@ mod tests {
         let json = serde_json::to_value(ErrorSummary::from_error(&error)).unwrap();
         assert_eq!(json["details"]["io_kind"], "StorageFull");
         assert_eq!(json["details"]["raw_os_error"], 112);
+    }
+
+    #[test]
+    fn post_publish_writer_failure_recovers_manifest_output_identity_and_mode() {
+        let root = unique_temp_path(&std::env::temp_dir(), "post-publish-audit", "dir");
+        std::fs::create_dir(&root).unwrap();
+        let input = root.join("input.xlsx");
+        let output = root.join("output.xlsx");
+        std::fs::write(&input, b"input").unwrap();
+        std::fs::write(&output, b"complete published workbook").unwrap();
+        let request = RunRequest {
+            input: Some(input),
+            output: Some(output.clone()),
+            summary_output: Some(root.join("summary.json")),
+            ..args("unused.xlsx")
+        };
+        let mut audit = RunAudit::new(&request, true, root.clone());
+        let mut context = ErrorContext::new(
+            "post-publish-request",
+            ErrorStage::ReadOutputMetadata,
+            Some(output.clone()),
+        );
+        context.details.final_output_valid = true;
+        let writer_error = WriterError {
+            context,
+            low_memory_writer: true,
+            primary: WriterPrimaryError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected metadata failure",
+            )),
+        };
+
+        let mapped = record_and_map_writer_error(&mut audit, &output, writer_error);
+        let failure = ErrorSummary::from_error(&mapped);
+        let manifest = audit.build_failure("post-publish-request", None, &failure, false);
+
+        let RunManifestV1::Failed(manifest) = manifest else {
+            panic!("expected failure manifest");
+        };
+        assert!(manifest.final_output_valid);
+        assert!(manifest.execution.low_memory_writer);
+        let final_output = manifest.final_output.expect("hashed valid output");
+        assert_eq!(final_output.path, output.display().to_string());
+        assert_eq!(
+            final_output.sha256,
+            sha256_bytes(b"complete published workbook")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

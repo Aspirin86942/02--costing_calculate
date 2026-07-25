@@ -14,7 +14,7 @@ use costing_core::error::{
 use costing_core::model::{ErrorSummary, QualityMetric};
 use costing_core::{CostingError, ErrorCode, RunSummary, StageTimings};
 use costing_xlsx::atomic_file::{AtomicFile, AtomicFileError, AtomicFileStage};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::build_info::BuildInfo;
@@ -22,28 +22,47 @@ use crate::config::{ConfigSource, EffectiveConfigDocument};
 
 use super::request::RunRequest;
 
+/// Only run-manifest schema version accepted by this executable.
 pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
+
+fn deserialize_manifest_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let version = u32::deserialize(deserializer)?;
+    if version != RUN_MANIFEST_SCHEMA_VERSION {
+        return Err(serde::de::Error::custom(format!(
+            "unsupported run manifest schema_version {version}; expected {RUN_MANIFEST_SCHEMA_VERSION}"
+        )));
+    }
+    Ok(version)
+}
 
 /// Successful or failed version-one audit record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RunManifestV1 {
+    /// Complete evidence for a successful run.
     Succeeded(SuccessRunManifestV1),
+    /// Bounded evidence for a failed run.
     Failed(FailureRunManifestV1),
 }
 
+/// Closed success status vocabulary for schema v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuccessManifestStatus {
     #[serde(rename = "succeeded")]
     Succeeded,
 }
 
+/// Closed failure status vocabulary for schema v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FailureManifestStatus {
     #[serde(rename = "failed")]
     Failed,
 }
 
+/// Reproducible executable identity recorded in every manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestApplication {
@@ -55,6 +74,7 @@ pub struct ManifestApplication {
     pub target: String,
 }
 
+/// User-visible execution mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManifestExecutionMode {
@@ -62,6 +82,7 @@ pub enum ManifestExecutionMode {
     CheckOnly,
 }
 
+/// Timing and writer-mode identity for one execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestExecution {
@@ -73,6 +94,7 @@ pub struct ManifestExecution {
     pub low_memory_writer: bool,
 }
 
+/// Fully known input identity for a successful run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestInput {
@@ -84,6 +106,7 @@ pub struct ManifestInput {
     pub reader_rows: usize,
 }
 
+/// Optional month filter applied to the run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestFilter {
@@ -91,6 +114,7 @@ pub struct ManifestFilter {
     pub month_end: Option<String>,
 }
 
+/// Validated configuration identity and semantic fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestConfig {
@@ -102,6 +126,7 @@ pub struct ManifestConfig {
     pub path: Option<String>,
 }
 
+/// Published workbook identity and stable output contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestResult {
@@ -114,6 +139,7 @@ pub struct ManifestResult {
     pub final_output_valid: bool,
 }
 
+/// Quality and audit aggregates that contain no business detail rows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestQuality {
@@ -122,9 +148,11 @@ pub struct ManifestQuality {
     pub quality_metrics: Vec<QualityMetric>,
 }
 
+/// Version-one manifest for a successful run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SuccessRunManifestV1 {
+    #[serde(deserialize_with = "deserialize_manifest_schema_version")]
     pub schema_version: u32,
     pub status: SuccessManifestStatus,
     pub request_id: String,
@@ -140,6 +168,7 @@ pub struct SuccessRunManifestV1 {
     pub warnings: Vec<String>,
 }
 
+/// Input identity fields known before or at the point of failure.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KnownManifestInput {
@@ -157,6 +186,7 @@ pub struct KnownManifestInput {
     pub reader_rows: Option<usize>,
 }
 
+/// Identity of a workbook that remains valid after a later failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ValidFinalOutput {
@@ -165,9 +195,11 @@ pub struct ValidFinalOutput {
     pub sha256: String,
 }
 
+/// Version-one manifest for a failed run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FailureRunManifestV1 {
+    #[serde(deserialize_with = "deserialize_manifest_schema_version")]
     pub schema_version: u32,
     pub status: FailureManifestStatus,
     pub request_id: String,
@@ -214,10 +246,10 @@ pub(crate) struct RunAudit {
 }
 
 impl RunAudit {
-    pub(crate) fn new(request: &RunRequest, enabled: bool) -> Self {
+    pub(crate) fn new(request: &RunRequest, enabled: bool, cwd: PathBuf) -> Self {
         Self {
             enabled,
-            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd,
             pipeline: request.pipeline.as_str().to_string(),
             mode: if request.check_only {
                 ManifestExecutionMode::CheckOnly
@@ -251,6 +283,10 @@ impl RunAudit {
 
     pub(crate) fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     pub(crate) fn record_resolved_paths(&mut self, input: &Path, output: Option<&Path>) {
@@ -299,6 +335,19 @@ impl RunAudit {
         self.output_size_bytes = Some(size_bytes);
         self.low_memory_writer = low_memory_writer;
         self.final_output_valid = true;
+    }
+
+    pub(crate) fn record_writer_failure(
+        &mut self,
+        low_memory_writer: bool,
+        final_output_valid: bool,
+    ) {
+        self.low_memory_writer = low_memory_writer;
+        self.final_output_valid |= final_output_valid;
+    }
+
+    pub(crate) fn warn(&mut self, warning: impl Into<String>) {
+        self.warnings.push(warning.into());
     }
 
     pub(crate) fn build_success(
@@ -382,8 +431,13 @@ impl RunAudit {
             selected_sheet: self.selected_sheet.clone(),
             reader_rows: self.reader_rows,
         };
+        let error_reports_valid_output = failure
+            .details
+            .as_ref()
+            .is_some_and(|details| details.final_output_valid);
+        let final_output_valid = self.final_output_valid || error_reports_valid_output;
         let final_output = match (
-            self.final_output_valid,
+            final_output_valid,
             self.output_path.as_deref(),
             self.output_size_bytes,
             self.output_sha256.as_deref(),
@@ -408,14 +462,19 @@ impl RunAudit {
             input,
             filter: self.filter_identity(),
             config: config.map(|config| self.config_identity(config, redact_paths)),
-            final_output_valid: self.final_output_valid,
+            final_output_valid,
             final_output,
             warnings: self.warnings.clone(),
         })
     }
 
     pub(crate) fn enrich_failure(&self, failure: &mut ErrorSummary, redact_paths: bool) {
-        if self.final_output_valid {
+        let final_output_valid = self.final_output_valid
+            || failure
+                .details
+                .as_ref()
+                .is_some_and(|details| details.final_output_valid);
+        if final_output_valid {
             let details = failure
                 .details
                 .get_or_insert_with(|| ErrorDetails::new(ErrorStage::BuildManifest, None));
@@ -551,12 +610,22 @@ pub(crate) fn sha256_file(path: &Path) -> io::Result<(u64, String)> {
         }
         digest.update(&buffer[..read]);
     }
+    Ok((size_bytes, hex_digest(digest)))
+}
+
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    hex_digest(digest)
+}
+
+fn hex_digest(digest: Sha256) -> String {
     let digest = digest.finalize();
     let mut sha256 = String::with_capacity(digest.len() * 2);
     for byte in digest {
         write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
     }
-    Ok((size_bytes, sha256))
+    sha256
 }
 
 pub(crate) fn publish_manifest(
@@ -676,7 +745,7 @@ fn map_atomic_error(request_id: &str, error: AtomicFileError) -> CostingError {
         AtomicFileStage::CheckTarget => ErrorStage::CheckSummaryOutput,
         AtomicFileStage::PrepareParent => ErrorStage::PrepareSummaryDirectory,
         AtomicFileStage::CreateStaging => ErrorStage::CreateSummaryTempFile,
-        AtomicFileStage::Flush => ErrorStage::WriteSummary,
+        AtomicFileStage::Flush => ErrorStage::FlushSummaryTempFile,
         AtomicFileStage::Sync => ErrorStage::SyncSummaryTempFile,
         AtomicFileStage::Publish => ErrorStage::PublishSummary,
         AtomicFileStage::Cleanup => ErrorStage::CleanupSummaryTempFile,
@@ -793,7 +862,10 @@ mod tests {
             .join("private-parent")
             .join("output.xlsx");
 
-        assert_eq!(present_path(&inside, &cwd, true), "data\\input.xlsx");
+        assert_eq!(
+            present_path(&inside, &cwd, true),
+            Path::new("data").join("input.xlsx").display().to_string()
+        );
         assert_eq!(present_path(&outside, &cwd, true), "output.xlsx");
     }
 
@@ -835,6 +907,27 @@ mod tests {
         assert!(!output.exists());
         assert_no_publish_temps(&root);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn atomic_flush_failure_keeps_a_distinct_summary_stage() {
+        let output = PathBuf::from("summary.json");
+        let error = map_atomic_error(
+            "manifest-flush",
+            AtomicFileError {
+                stage: AtomicFileStage::Flush,
+                final_path: output,
+                staging_path: Some(PathBuf::from(".costing-publish-test.tmp")),
+                final_published: false,
+                cleanup_error: None,
+                source: io::Error::new(io::ErrorKind::StorageFull, "flush failed"),
+            },
+        );
+
+        assert_eq!(
+            error.context().unwrap().details.stage,
+            ErrorStage::FlushSummaryTempFile
+        );
     }
 
     fn sample_failure_manifest() -> RunManifestV1 {

@@ -98,9 +98,14 @@ Manifest 关联 `request_id`、构建身份、输入文件和最终 workbook SHA
 哈希、质量指标、计数及阶段耗时。运行失败且 summary 路径有效时写失败变体；
 若 workbook 已发布而 Manifest 写出失败，命令返回非零但保留有效 workbook，
 stderr 明确 `final_output_valid=true` 并给出 workbook 路径和哈希。
+显式请求 Manifest 时，输入只读取一次，Calamine 解析与 `input.sha256` 使用同一份
+不可变字节快照，避免运行期间源路径被替换后产生审计错配。
 
 workbook 与 Manifest 都先在最终目录写入唯一 `.costing-publish-*` 临时成品，
 flush/sync 后以禁止覆盖方式发布；最终路径已存在时在读取大 workbook 前拒绝。
+可捕获的 I/O 中断沿稳定 writer stage 返回并尽力清理 `.costing-publish-*` 与
+`.costing-tmp-*`；断电或强制终止仍可能留下诊断临时文件，但不会把半成品发布到
+最终路径。
 `--redact-paths` 会把当前目录内路径变为相对路径、目录外路径缩减为 basename，
 同时保留哈希。Schema 与固定示例见
 [`run-manifest.schema.json`](rust/crates/costing-cli/config/run-manifest.schema.json)、

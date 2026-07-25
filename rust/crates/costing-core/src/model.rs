@@ -368,6 +368,7 @@ mod error_summary_tests {
             ErrorStage::PopulateWorkbook,
             ErrorStage::CreateFinalOutput,
             ErrorStage::SaveWorkbook,
+            ErrorStage::FlushWorkbookTempFile,
             ErrorStage::SyncWorkbookTempFile,
             ErrorStage::PublishWorkbook,
             ErrorStage::CleanupWorkbookTempFile,
@@ -378,6 +379,7 @@ mod error_summary_tests {
             ErrorStage::PrepareSummaryDirectory,
             ErrorStage::CreateSummaryTempFile,
             ErrorStage::WriteSummary,
+            ErrorStage::FlushSummaryTempFile,
             ErrorStage::SyncSummaryTempFile,
             ErrorStage::PublishSummary,
             ErrorStage::CleanupSummaryTempFile,
@@ -390,7 +392,7 @@ mod error_summary_tests {
             .map(|stage| serde_json::to_value(stage).unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(stages.len(), 35);
+        assert_eq!(stages.len(), 37);
         assert_eq!(
             serde_json::Value::Array(serialized),
             serde_json::json!([
@@ -413,6 +415,7 @@ mod error_summary_tests {
                 "PopulateWorkbook",
                 "CreateFinalOutput",
                 "SaveWorkbook",
+                "FlushWorkbookTempFile",
                 "SyncWorkbookTempFile",
                 "PublishWorkbook",
                 "CleanupWorkbookTempFile",
@@ -423,6 +426,7 @@ mod error_summary_tests {
                 "PrepareSummaryDirectory",
                 "CreateSummaryTempFile",
                 "WriteSummary",
+                "FlushSummaryTempFile",
                 "SyncSummaryTempFile",
                 "PublishSummary",
                 "CleanupSummaryTempFile",

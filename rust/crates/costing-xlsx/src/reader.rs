@@ -1,6 +1,7 @@
+use std::io::{Cursor, Read, Seek};
 use std::path::Path;
 
-use calamine::{open_workbook_auto, Data, Range, Reader};
+use calamine::{open_workbook_auto, open_workbook_auto_from_rs, Data, Range, Reader, Sheets};
 use costing_core::model::{CellValue, RawWorkbook};
 use rust_decimal::Decimal;
 pub use rust_xlsxwriter::XlsxError;
@@ -19,7 +20,21 @@ pub enum CostingXlsxError {
 }
 
 pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
-    let mut workbook = open_workbook_auto(path)?;
+    read_open_workbook(open_workbook_auto(path)?)
+}
+
+/// Parse a workbook from bytes already read by the caller.
+///
+/// This seam lets audit-enabled callers hash exactly the same immutable byte
+/// slice that Calamine parses, even if the source path is replaced concurrently.
+pub fn read_raw_workbook_from_bytes(bytes: &[u8]) -> Result<RawWorkbook, CostingXlsxError> {
+    read_open_workbook(open_workbook_auto_from_rs(Cursor::new(bytes))?)
+}
+
+fn read_open_workbook<RS>(mut workbook: Sheets<RS>) -> Result<RawWorkbook, CostingXlsxError>
+where
+    RS: Read + Seek,
+{
     let sheet_name = workbook
         .sheet_names()
         .first()
@@ -208,6 +223,21 @@ mod tests {
         assert_eq!(raw.rows[1][0], CellValue::Text("次行".to_string()));
         assert_eq!(raw.rows[1][1], CellValue::Decimal(Decimal::new(1234, 2)));
         assert_eq!(raw.rows[1][2], CellValue::Blank);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_the_captured_bytes_after_the_source_path_is_replaced() {
+        let path = unique_temp_path("captured-bytes");
+        write_reader_fixture(&path);
+        let captured = std::fs::read(&path).unwrap();
+        std::fs::write(&path, b"replacement is not a workbook").unwrap();
+
+        let raw = read_raw_workbook_from_bytes(&captured).unwrap();
+
+        assert_eq!(raw.sheet_name, "成本计算单");
+        assert_eq!(raw.rows.len(), 2);
+        assert!(read_raw_workbook(&path).is_err());
         let _ = std::fs::remove_file(path);
     }
 

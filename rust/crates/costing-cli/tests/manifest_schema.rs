@@ -29,6 +29,12 @@ fn success_and_failure_goldens_round_trip_through_the_closed_v1_model() {
     let mut unknown_status: Value = serde_json::from_str(SUCCESS_GOLDEN).unwrap();
     unknown_status["status"] = Value::String("completed".to_string());
     assert!(serde_json::from_value::<RunManifestV1>(unknown_status).is_err());
+
+    for golden in [SUCCESS_GOLDEN, FAILURE_GOLDEN] {
+        let mut future_version: Value = serde_json::from_str(golden).unwrap();
+        future_version["schema_version"] = Value::from(2);
+        assert!(serde_json::from_value::<RunManifestV1>(future_version).is_err());
+    }
 }
 
 #[test]
@@ -92,6 +98,7 @@ fn published_schema_is_closed_and_tracks_the_runtime_error_vocabulary() {
         ErrorStage::PopulateWorkbook,
         ErrorStage::CreateFinalOutput,
         ErrorStage::SaveWorkbook,
+        ErrorStage::FlushWorkbookTempFile,
         ErrorStage::SyncWorkbookTempFile,
         ErrorStage::PublishWorkbook,
         ErrorStage::CleanupWorkbookTempFile,
@@ -102,6 +109,7 @@ fn published_schema_is_closed_and_tracks_the_runtime_error_vocabulary() {
         ErrorStage::PrepareSummaryDirectory,
         ErrorStage::CreateSummaryTempFile,
         ErrorStage::WriteSummary,
+        ErrorStage::FlushSummaryTempFile,
         ErrorStage::SyncSummaryTempFile,
         ErrorStage::PublishSummary,
         ErrorStage::CleanupSummaryTempFile,

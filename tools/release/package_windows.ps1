@@ -106,10 +106,30 @@ if ($LASTEXITCODE -ne 0) {
 }
 $version = $versionText | ConvertFrom-Json
 $baseVersion = ($ReleaseLabel.TrimStart('v') -split '-')[0]
+$actualBuildTimestamp = if ($version.build_timestamp -is [DateTime]) {
+    ([DateTime]$version.build_timestamp).ToUniversalTime().ToString(
+        'yyyy-MM-ddTHH:mm:ssZ',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+}
+elseif ($version.build_timestamp -is [DateTimeOffset]) {
+    ([DateTimeOffset]$version.build_timestamp).UtcDateTime.ToString(
+        'yyyy-MM-ddTHH:mm:ssZ',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+}
+else {
+    [DateTimeOffset]::ParseExact(
+        [string]$version.build_timestamp,
+        'yyyy-MM-ddTHH:mm:ssZ',
+        [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+    ).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
+}
 if (
     $version.version -ne $baseVersion -or
     $version.git_commit -ne $SourceCommit -or
-    $version.build_timestamp -ne $expectedTimestamp -or
+    $actualBuildTimestamp -ne $expectedTimestamp -or
     $version.rustc_version -notmatch '^rustc 1\.96\.0 ' -or
     $version.target -ne 'x86_64-pc-windows-msvc'
 ) {

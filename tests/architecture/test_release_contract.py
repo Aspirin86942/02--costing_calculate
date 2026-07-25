@@ -77,4 +77,6 @@ def test_packaging_scripts_and_release_assets_cover_the_frozen_layout() -> None:
     assert '--version-json' in smoke_script
     assert '--check-only' in smoke_script
     assert '--summary-output' in smoke_script
+    assert '$normalManifest.result.final_output_valid -ne $true' in smoke_script
+    assert '$normalManifest.result.output_sha256' in smoke_script
     assert 'Environment.Clear()' in smoke_script

@@ -230,10 +230,47 @@ try {
         ) {
             throw "$pipeline packaged check-only returned an unexpected contract."
         }
+
+        $outputPath = Join-Path $workDirectory "$pipeline-output.xlsx"
+        $normalManifestPath = Join-Path $workDirectory "$pipeline-normal-manifest.json"
+        $normalResult = Invoke-IsolatedExecutable $executable @(
+            $pipeline,
+            '--input',
+            $inputs[$pipeline],
+            '--output',
+            $outputPath,
+            '--summary-output',
+            $normalManifestPath,
+            '--redact-paths'
+        ) $workDirectory
+        if ($normalResult.exit_code -ne 0) {
+            throw "$pipeline packaged workbook run failed: $($normalResult.stderr)"
+        }
+        $normalSummary = $normalResult.stdout | ConvertFrom-Json
+        $normalManifest = Get-Content -LiteralPath $normalManifestPath -Raw | ConvertFrom-Json
+        $expectedSheets = @('成本计算单总表', '成本计算单数量聚合维度', '成本分析工单维度')
+        $actualSheets = @($normalManifest.result.sheet_names)
+        if (
+            $normalSummary.status -ne 'succeeded' -or
+            $normalSummary.output_written -ne $true -or
+            $normalManifest.status -ne 'succeeded' -or
+            $normalManifest.result.output_written -ne $true -or
+            $normalManifest.result.final_output_valid -ne $true -or
+            -not (Test-Path -LiteralPath $outputPath -PathType Leaf) -or
+            (Compare-Object -ReferenceObject $expectedSheets -DifferenceObject $actualSheets -SyncWindow 0)
+        ) {
+            throw "$pipeline packaged workbook run returned an unexpected contract."
+        }
+        $actualOutputHash = (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualOutputHash -ne $normalManifest.result.output_sha256) {
+            throw "$pipeline packaged workbook hash differs from its Manifest."
+        }
         $pipelineResults += [pscustomobject]@{
             pipeline = $pipeline
             reader_rows = $manifest.input.reader_rows
             input_sha256 = $manifest.input.sha256
+            output_size_bytes = $normalManifest.result.output_size_bytes
+            output_sha256 = $normalManifest.result.output_sha256
         }
     }
 

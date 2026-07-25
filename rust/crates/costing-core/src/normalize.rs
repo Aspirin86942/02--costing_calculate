@@ -198,7 +198,7 @@ fn infer_rename_map(columns: &[String]) -> BTreeMap<String, String> {
 
 fn is_total_row(row: &IndexedRow, columns: &NormalizeColumns) -> Result<bool, CostingError> {
     for id in columns.total_row_columns.iter().flatten().copied() {
-        if cell_text(row.get(id)?).contains("合计") {
+        if cell_text_str(row.get(id)?).is_some_and(|value| value.contains("合计")) {
             return Ok(true);
         }
     }
@@ -217,7 +217,7 @@ fn forward_fill_with_rules(
                 .cost_center
                 .map(|id| {
                     row.get(id)
-                        .map(|value| cell_text(value) == INTEGRATED_WORKSHOP_NAME)
+                        .map(|value| cell_text_str(value) == Some(INTEGRATED_WORKSHOP_NAME))
                 })
                 .transpose()?
                 .unwrap_or(false);
@@ -407,6 +407,13 @@ fn cell_text(value: &CellValue) -> String {
     }
 }
 
+fn cell_text_str(value: &CellValue) -> Option<&str> {
+    match value {
+        CellValue::Text(value) | CellValue::DateLike(value) => Some(value.trim()),
+        CellValue::Blank | CellValue::Decimal(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +428,23 @@ mod tests {
             ],
             rows,
         }
+    }
+
+    #[test]
+    fn cell_text_str_borrows_only_trimmed_text_values() {
+        assert_eq!(
+            cell_text_str(&CellValue::Text("  集成车间  ".to_string())),
+            Some("集成车间")
+        );
+        assert_eq!(
+            cell_text_str(&CellValue::DateLike(" 2025年01期 ".to_string())),
+            Some("2025年01期")
+        );
+        assert_eq!(cell_text_str(&CellValue::Blank), None);
+        assert_eq!(
+            cell_text_str(&CellValue::Decimal("1.00".parse().unwrap())),
+            None
+        );
     }
 
     fn value(frame: &NormalizedCostFrame, row_index: usize, column: &str) -> CellValue {

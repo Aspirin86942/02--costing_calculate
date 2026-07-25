@@ -34,6 +34,7 @@ pub struct CliArgs {
     #[arg(
         long,
         conflicts_with = "print_effective_config",
+        conflicts_with = "version_json",
         conflicts_with_all = [
             "input",
             "output",
@@ -48,6 +49,7 @@ pub struct CliArgs {
     #[arg(
         long,
         conflicts_with = "validate_config",
+        conflicts_with = "version_json",
         conflicts_with_all = [
             "input",
             "output",
@@ -59,6 +61,20 @@ pub struct CliArgs {
         help = "输出完整有效配置、字段来源和配置哈希，不运行 ETL"
     )]
     pub print_effective_config: bool,
-    #[arg(long, help = "输出确定性的构建与 schema 版本 JSON，不运行 ETL")]
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "input",
+            "output",
+            "month_start",
+            "month_end",
+            "check_only",
+            "benchmark",
+            "config",
+            "validate_config",
+            "print_effective_config"
+        ],
+        help = "输出确定性的构建与 schema 版本 JSON，不运行 ETL"
+    )]
     pub version_json: bool,
 }

@@ -1,7 +1,10 @@
+//! Versioned configuration loading, validation and diagnostic models.
+
 mod loader;
 mod model;
 mod validation;
 
+/// Complete reviewed configuration embedded into the executable.
 pub const DEFAULT_CONFIG: &str = include_str!("../../config/costing.default.toml");
 
 pub use model::{

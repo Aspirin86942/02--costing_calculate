@@ -27,6 +27,7 @@ struct ResolvedCliPaths {
 pub(crate) fn run(
     mut args: RunRequest,
     pipeline: PipelineRules,
+    input_pattern: String,
     request_id: String,
 ) -> anyhow::Result<RunSummary> {
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
@@ -52,20 +53,16 @@ pub(crate) fn run(
             .join("raw")
             .join(args.pipeline.as_str())
     });
-    let paths = resolve_cli_paths(
-        &args,
-        &base_dir,
-        month_range.as_ref(),
-        &pipeline.input_pattern,
-    )
-    .map_err(|error| {
-        with_stage_context(
-            error,
-            &request_id,
-            ErrorStage::ResolveCliPaths,
-            Some(resolve_path),
-        )
-    })?;
+    let paths = resolve_cli_paths(&args, &base_dir, month_range.as_ref(), &input_pattern).map_err(
+        |error| {
+            with_stage_context(
+                error,
+                &request_id,
+                ErrorStage::ResolveCliPaths,
+                Some(resolve_path),
+            )
+        },
+    )?;
     args.input = Some(paths.input);
     args.output = paths.output;
     validate_cli_request(&args).map_err(|error| {
@@ -535,12 +532,16 @@ mod tests {
     use crate::application::{RunOperation, RunRequest};
 
     fn run(request: RunRequest) -> anyhow::Result<RunSummary> {
-        let rules = crate::config::load_configuration(None, "costing-unit-test")
+        let effective = crate::config::load_configuration(None, "costing-unit-test")
             .unwrap()
             .for_pipeline(request.pipeline)
-            .unwrap()
-            .rules;
-        super::run(request, rules, "costing-unit-test".to_string())
+            .unwrap();
+        super::run(
+            request,
+            effective.rules,
+            effective.input_pattern,
+            "costing-unit-test".to_string(),
+        )
     }
 
     fn args(input: &str) -> RunRequest {

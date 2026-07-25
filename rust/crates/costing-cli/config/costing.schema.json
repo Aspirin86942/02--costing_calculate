@@ -28,7 +28,7 @@
             {
               "properties": {
                 "input_pattern": {
-                  "pattern": "^gb-[^/\\\\]*\\.xlsx$"
+                  "pattern": "^gb-.*\\.[xX][lL][sS][xX]$"
                 },
                 "standalone_cost_items": {
                   "const": [
@@ -47,7 +47,7 @@
             {
               "properties": {
                 "input_pattern": {
-                  "pattern": "^sk-[^/\\\\]*\\.xlsx$"
+                  "pattern": "^sk-.*\\.[xX][lL][sS][xX]$"
                 },
                 "standalone_cost_items": {
                   "const": [
@@ -74,7 +74,8 @@
       "properties": {
         "input_pattern": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^(?!.*\\.\\.)(?!.*[:\\[\\]\\{\\}\\u0000-\\u001F\\u007F])[^/\\\\]*\\.[xX][lL][sS][xX]$"
         },
         "standalone_cost_items": {
           "type": "array",

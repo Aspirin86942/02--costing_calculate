@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -41,12 +42,26 @@ def test_config_schema_is_closed_and_requires_both_pipelines() -> None:
     assert schema['$defs']['product']['additionalProperties'] is False
 
 
+def test_config_schema_input_patterns_match_runtime_safety_examples() -> None:
+    schema = json.loads(CONFIG_SCHEMA.read_text(encoding='utf-8'))
+    pipeline = schema['$defs']['pipeline']['properties']['input_pattern']
+    gb = schema['properties']['pipelines']['properties']['gb']['allOf'][1]['properties']['input_pattern']
+
+    def accepted(value: str) -> bool:
+        return re.search(pipeline['pattern'], value) is not None and re.search(gb['pattern'], value) is not None
+
+    assert accepted('gb-file.XLSX')
+    assert not accepted('gb-..xlsx')
+    assert not accepted('gb-[unsafe].xlsx')
+    assert not accepted('gb-folder/file.xlsx')
+
+
 def test_core_receives_owned_rules_without_parsing_or_environment_access() -> None:
     core_manifest = (CORE_ROOT / 'Cargo.toml').read_text(encoding='utf-8')
     core_source = '\n'.join(path.read_text(encoding='utf-8') for path in (CORE_ROOT / 'src').glob('*.rs'))
 
     assert 'toml' not in core_manifest
     assert 'sha2' not in core_manifest
-    for forbidden in ('std::fs', 'std::env', '.toml', 'CliArgs'):
+    for forbidden in ('std::fs', 'std::env', '.toml', 'CliArgs', 'input_pattern'):
         assert forbidden not in core_source
     assert 'PipelineRules' in core_source

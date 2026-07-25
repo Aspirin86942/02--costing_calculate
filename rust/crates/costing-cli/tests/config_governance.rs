@@ -161,6 +161,36 @@ fn print_effective_config_marks_external_and_sealed_fields() {
 }
 
 #[test]
+fn version_json_cannot_bypass_a_requested_config_diagnostic() {
+    let root = temp_root("version-conflict");
+    let missing = root.join("missing.toml");
+
+    let output = run(
+        &root,
+        &[
+            "gb",
+            "--config",
+            missing.to_str().unwrap(),
+            "--validate-config",
+            "--version-json",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["code"], "INVALID_INPUT");
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("--version-json"));
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("--validate-config"));
+    fs::remove_dir_all(root).expect("remove temporary test root");
+}
+
+#[test]
 fn equivalent_external_config_has_the_embedded_semantic_hash() {
     let root = temp_root("equivalent-hash");
     let reordered = DEFAULT_CONFIG
@@ -209,7 +239,8 @@ fn unknown_fields_fail_during_config_parse_before_input_discovery() {
 
     assert_eq!(error["code"], "INVALID_CONFIG");
     assert_eq!(error["details"]["stage"], "ParseConfig");
-    assert_eq!(error["details"]["path"], config_path.display().to_string());
+    assert_eq!(error["details"]["path"], "unknown.toml");
+    assert!(!error.to_string().contains(root.to_str().unwrap()));
     assert!(error["message"]
         .as_str()
         .unwrap()

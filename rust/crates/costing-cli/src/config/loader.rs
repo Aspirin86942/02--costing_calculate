@@ -11,8 +11,6 @@ use super::{
     DEFAULT_CONFIG,
 };
 
-const MAX_CONFIG_BYTES: usize = 1024 * 1024;
-
 #[derive(Debug)]
 pub(crate) struct LoadedConfiguration {
     file: FileConfigV1,
@@ -64,7 +62,6 @@ impl LoadedConfiguration {
         };
         let rules = PipelineRules {
             name: pipeline,
-            input_pattern: configured.input_pattern.clone(),
             product_order: configured
                 .product_order
                 .iter()
@@ -72,7 +69,11 @@ impl LoadedConfiguration {
                 .collect(),
             standalone_cost_items: configured.standalone_cost_items.clone(),
         };
-        Ok(EffectiveConfiguration { rules, document })
+        Ok(EffectiveConfiguration {
+            input_pattern: configured.input_pattern.clone(),
+            rules,
+            document,
+        })
     }
 }
 
@@ -102,14 +103,6 @@ pub(crate) fn load_configuration(
             None,
         ),
     };
-    if bytes.len() > MAX_CONFIG_BYTES {
-        return Err(contextual(
-            CostingError::invalid_config(format!("配置文件超过 {MAX_CONFIG_BYTES} 字节上限")),
-            request_id,
-            ErrorStage::LoadConfig,
-            error_path,
-        ));
-    }
     let text = std::str::from_utf8(&bytes).map_err(|error| {
         contextual(
             CostingError::invalid_config(format!("配置文件不是合法 UTF-8: {error}")),
@@ -148,7 +141,8 @@ fn contextual(
     stage: ErrorStage,
     path: Option<PathBuf>,
 ) -> CostingError {
-    error.with_context(ErrorContext::new(request_id, stage, path))
+    let diagnostic_path = path.and_then(|path| path.file_name().map(PathBuf::from));
+    error.with_context(ErrorContext::new(request_id, stage, diagnostic_path))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

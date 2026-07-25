@@ -27,10 +27,17 @@ pub fn execute(request: RunRequest) -> RunOutcome {
     match request.operation {
         RunOperation::ValidateConfig => RunOutcome::ConfigValidated(effective.validation_record()),
         RunOperation::PrintEffectiveConfig => RunOutcome::EffectiveConfig(effective.document),
-        RunOperation::Execute => match crate::run::run(request, effective.rules, request_id) {
-            Ok(summary) => RunOutcome::Succeeded(summary),
-            Err(error) => RunOutcome::Failed(failure_from_anyhow(&error)),
-        },
+        RunOperation::Execute => {
+            match crate::run::run(
+                request,
+                effective.rules,
+                effective.input_pattern,
+                request_id,
+            ) {
+                Ok(summary) => RunOutcome::Succeeded(summary),
+                Err(error) => RunOutcome::Failed(failure_from_anyhow(&error)),
+            }
+        }
     }
 }
 

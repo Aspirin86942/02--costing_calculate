@@ -83,7 +83,7 @@ jobs:
         run: uv run python -m ruff format src tests tools --check
 
       - name: Test public Python suites
-        run: uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" --basetemp .pytest-tmp/ci
+        run: uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" --basetemp "${{ runner.temp }}/costing-pytest"
 
       - name: Build release binary
         env:

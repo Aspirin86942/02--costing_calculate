@@ -33,8 +33,8 @@
 - `--summary-output <path>` 显式请求版本化 `RunManifestV1`；默认不计算文件 SHA-256 或创建 sidecar，summary 已存在时在读取 workbook 前失败
 - workbook 与 Manifest 均使用同目录 `.costing-publish-*` 临时成品、flush/sync 和禁止覆盖发布；`--redact-paths` 对目录内路径相对化、目录外路径仅保留 basename
 - 仓库根 `rust-toolchain.toml` 精确锁定 Rust `1.96.0`；从仓库根执行的 Cargo/CI/Release 命令必须受该文件约束
-- `.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0-rc.1 -OutputDirectory dist`：从干净 commit 构建自包含 Windows ZIP、包内 `SHA256SUMS` 和 ZIP `.sha256`
-- `tools/release/smoke_package_windows.ps1`：解压并校验固定包布局/哈希，在不含 Rust/Python 的 child `PATH` 中执行 help、version-json 与 synthetic GB/SK check-only
+- `.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0 -OutputDirectory dist`：从干净 commit 构建自包含 Windows ZIP、包内 `SHA256SUMS` 和 ZIP `.sha256`
+- `tools/release/smoke_package_windows.ps1`：解压并校验固定包布局/哈希，在不含 Rust/Python 的 child `PATH` 中执行 help、version-json、配置校验、synthetic GB/SK check-only 和正常 workbook + Manifest smoke
 - `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
 - `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查
 - `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖
@@ -47,8 +47,8 @@
 - `uv run python -m pytest tests -q -m "slow"`: 仅跑真实数据端到端正确性(需 `data/raw` 样本)
 - `uv run python -m pytest tests -q -m "benchmark"`: 仅跑正式性能基准 N=5(需 `data/raw` 样本)
 - `uv run python -m pytest tests -q -m ""`: 跑全部测试(含 slow/benchmark/meta)
-- `uv run python -m ruff check src tests`: Python 代码检查
-- `uv run python -m ruff format src tests --check`: Python 代码格式化检查
+- `uv run python -m ruff check src tests tools`: Python 代码检查
+- `uv run python -m ruff format src tests tools --check`: Python 代码格式化检查
 
 ### Rust 性能与内存约束
 

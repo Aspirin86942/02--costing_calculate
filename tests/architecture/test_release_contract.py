@@ -13,6 +13,10 @@ RELEASE_ASSETS = (
     PROJECT_ROOT / 'tools' / 'release' / 'run-examples.txt',
     PROJECT_ROOT / 'CHANGELOG.md',
 )
+RELEASE_NOTES = (
+    PROJECT_ROOT / 'docs' / 'releases' / 'v0.2.0-rc.1.md',
+    PROJECT_ROOT / 'docs' / 'releases' / 'v0.2.0.md',
+)
 
 
 def test_root_toolchain_is_exact_and_applies_to_repository_root_commands() -> None:
@@ -47,6 +51,8 @@ def test_release_workflow_is_pinned_and_calls_ci_before_packaging() -> None:
     assert 'contents: write' in workflow
     assert 'SOURCE_DATE_EPOCH' in workflow
     assert 'COSTING_GIT_COMMIT' in workflow
+    assert '$notes = "docs/releases/$($env:RELEASE_LABEL).md"' in workflow
+    assert all(notes.is_file() for notes in RELEASE_NOTES)
 
     action_refs = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
     assert action_refs

@@ -5,6 +5,7 @@ use costing_core::PipelineName;
 
 use super::{FileConfigV1, FilePipelineV1, CONFIG_SCHEMA_VERSION};
 
+// 独立成本项直接参与 GB/SK 总成本勾稽；保持冻结集合和顺序可防止普通外部配置悄然改变核算口径。
 const GB_STANDALONE_ITEMS: &[&str] = &["委外加工费"];
 const SK_STANDALONE_ITEMS: &[&str] = &["委外加工费", "软件费用"];
 

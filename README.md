@@ -250,10 +250,10 @@ uv run python -c "import sys; print(sys.executable)"
 uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
 
 # Python lint
-uv run python -m ruff check src tests
+uv run python -m ruff check src tests tools
 
 # Python format check
-uv run python -m ruff format src tests --check
+uv run python -m ruff format src tests tools --check
 ```
 
 ## Contract Baseline

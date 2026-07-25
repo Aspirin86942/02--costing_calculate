@@ -108,7 +108,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $notes = "docs/releases/$($env:RELEASE_LABEL.TrimStart('v')).md"
+          $notes = "docs/releases/$($env:RELEASE_LABEL).md"
           if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
             throw "Release notes are missing: $notes"
           }

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from tools.ci.baseline_policy import evaluate_baseline_policy
+from tools.ci.run_synthetic_e2e import load_expected_sheet_order
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = PROJECT_ROOT / '.github' / 'workflows' / 'ci.yml'
@@ -25,6 +27,8 @@ def test_ci_workflow_is_pinned_and_runs_required_public_gates() -> None:
 
     for trigger in ('pull_request:', 'push:', 'workflow_dispatch:', 'workflow_call:'):
         assert trigger in workflow
+    for pull_request_update in ('labeled', 'unlabeled', 'edited'):
+        assert pull_request_update in workflow
     assert 'windows-latest' in workflow
     assert 'ubuntu-latest' in workflow
     for command in REQUIRED_CI_COMMANDS:
@@ -35,6 +39,21 @@ def test_ci_workflow_is_pinned_and_runs_required_public_gates() -> None:
     action_refs = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
     assert action_refs
     assert all(re.fullmatch(r'[0-9a-f]{40}', ref) for ref in action_refs)
+
+
+def test_ci_verifies_fixed_build_identity_before_running_synthetic_smokes() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding='utf-8')
+
+    assert 'SOURCE_DATE_EPOCH: 1704067200' in workflow
+    assert 'COSTING_GIT_COMMIT: ${{ github.sha }}' in workflow
+    assert 'tools/ci/verify_build_identity.py' in workflow
+
+
+def test_synthetic_e2e_uses_the_frozen_workbook_baseline() -> None:
+    baseline_path = PROJECT_ROOT / 'tests' / 'contracts' / 'baselines' / 'workbook_semantics.json'
+    baseline = json.loads(baseline_path.read_text(encoding='utf-8'))
+
+    assert load_expected_sheet_order() == tuple(baseline['default_workbook']['sheet_order'])
 
 
 def test_codeowners_requires_review_for_frozen_baselines() -> None:

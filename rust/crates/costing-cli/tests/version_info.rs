@@ -18,10 +18,9 @@ fn version_json_reports_deterministic_build_identity_without_a_pipeline() {
     assert!(value["target"]
         .as_str()
         .is_some_and(|value| value.contains('-')));
-    assert!(value["git_commit"].as_str().is_some_and(|value| {
-        value == "unknown"
-            || (value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    }));
+    assert!(value["git_commit"].as_str().is_some_and(
+        |value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    ));
     assert!(value["build_timestamp"]
         .as_str()
         .is_some_and(|value| value.ends_with('Z')));

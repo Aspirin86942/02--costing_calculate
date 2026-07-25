@@ -14,13 +14,20 @@ from openpyxl import load_workbook
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from tests.rust_oracle.benchmark_protocol import PipelineName  # noqa: E402
 from tests.rust_oracle.sanitized_fixture import build_raw_fixture  # noqa: E402
 
-EXPECTED_SHEETS = [
-    '成本计算单总表',
-    '成本计算单数量聚合维度',
-    '成本分析工单维度',
-]
+WORKBOOK_BASELINE = PROJECT_ROOT / 'tests' / 'contracts' / 'baselines' / 'workbook_semantics.json'
+PIPELINES: tuple[PipelineName, ...] = ('gb', 'sk')
+
+
+def load_expected_sheet_order() -> tuple[str, ...]:
+    """Read the single frozen workbook-contract source of truth."""
+    baseline = json.loads(WORKBOOK_BASELINE.read_text(encoding='utf-8'))
+    sheet_order = baseline.get('default_workbook', {}).get('sheet_order')
+    if not isinstance(sheet_order, list) or not sheet_order or not all(isinstance(name, str) for name in sheet_order):
+        raise RuntimeError(f'invalid default_workbook.sheet_order in {WORKBOOK_BASELINE}')
+    return tuple(sheet_order)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,7 +36,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run(binary: Path, pipeline: str, cwd: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def _run(binary: Path, pipeline: PipelineName, cwd: Path, *extra: str) -> subprocess.CompletedProcess[str]:
     # `binary` is resolved and verified as a local file by main before this helper is called.
     return subprocess.run(  # noqa: S603
         [str(binary), pipeline, *extra],
@@ -41,26 +48,39 @@ def _run(binary: Path, pipeline: str, cwd: Path, *extra: str) -> subprocess.Comp
     )
 
 
-def _assert_success(result: subprocess.CompletedProcess[str], pipeline: str) -> dict[str, object]:
+def _assert_success(
+    result: subprocess.CompletedProcess[str],
+    pipeline: PipelineName,
+    expected_sheet_count: int,
+) -> dict[str, object]:
     if result.returncode != 0:
         raise RuntimeError(f'{pipeline} synthetic run failed with {result.returncode}: {result.stderr.strip()}')
     payload = json.loads(result.stdout)
     if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
         raise RuntimeError(f'{pipeline} returned an unexpected RunSummary: {payload}')
-    if payload.get('sheet_count') != 3:
+    if payload.get('sheet_count') != expected_sheet_count:
         raise RuntimeError(f'{pipeline} returned an unexpected sheet count: {payload}')
     return payload
 
 
-def _exercise_pipeline(binary: Path, root: Path, pipeline: str) -> None:
+def _exercise_pipeline(
+    binary: Path,
+    root: Path,
+    pipeline: PipelineName,
+    expected_sheets: tuple[str, ...],
+) -> None:
     input_path = root / 'data' / 'raw' / pipeline / f'{pipeline}-synthetic.xlsx'
-    build_raw_fixture(input_path, pipeline, 'small')  # type: ignore[arg-type]
+    build_raw_fixture(input_path, pipeline, 'small')
 
-    check_summary = _assert_success(_run(binary, pipeline, root, '--check-only'), pipeline)
+    check_summary = _assert_success(
+        _run(binary, pipeline, root, '--check-only'),
+        pipeline,
+        len(expected_sheets),
+    )
     if check_summary.get('output_written') is not False:
         raise RuntimeError(f'{pipeline} check-only unexpectedly wrote an output')
 
-    normal_summary = _assert_success(_run(binary, pipeline, root), pipeline)
+    normal_summary = _assert_success(_run(binary, pipeline, root), pipeline, len(expected_sheets))
     output_path_text = normal_summary.get('workbook_path')
     if not isinstance(output_path_text, str):
         raise RuntimeError(f'{pipeline} did not report a workbook path')
@@ -72,7 +92,7 @@ def _exercise_pipeline(binary: Path, root: Path, pipeline: str) -> None:
 
     workbook = load_workbook(output_path, read_only=True, data_only=False)
     try:
-        if workbook.sheetnames != EXPECTED_SHEETS:
+        if tuple(workbook.sheetnames) != expected_sheets:
             raise RuntimeError(f'{pipeline} workbook sheets differ: {workbook.sheetnames}')
     finally:
         workbook.close()
@@ -95,8 +115,9 @@ def main() -> int:
     pytest_tmp.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='synthetic-e2e-', dir=pytest_tmp) as temporary:
         root = Path(temporary)
-        for pipeline in ('gb', 'sk'):
-            _exercise_pipeline(binary, root, pipeline)
+        expected_sheets = load_expected_sheet_order()
+        for pipeline in PIPELINES:
+            _exercise_pipeline(binary, root, pipeline, expected_sheets)
     print('synthetic GB/SK check-only, workbook, and no-overwrite smokes passed')
     return 0
 

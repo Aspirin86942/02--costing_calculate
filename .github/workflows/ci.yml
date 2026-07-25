@@ -2,6 +2,13 @@ name: CI
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      - edited
   push:
     branches:
       - main
@@ -79,7 +86,19 @@ jobs:
         run: uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" --basetemp .pytest-tmp/ci
 
       - name: Build release binary
+        env:
+          COSTING_GIT_COMMIT: ${{ github.sha }}
+          SOURCE_DATE_EPOCH: 1704067200
         run: cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
+
+      - name: Verify deterministic build identity
+        shell: pwsh
+        run: |
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          uv run python tools/ci/verify_build_identity.py `
+            --binary "rust/target/release/costing-calculate$suffix" `
+            --expected-commit "${{ github.sha }}" `
+            --expected-timestamp "2024-01-01T00:00:00Z"
 
       - name: Run synthetic GB/SK end-to-end smokes
         shell: pwsh

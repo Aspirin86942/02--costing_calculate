@@ -24,6 +24,7 @@
 - [`evidence/2026-07-25-v0.2.0-m6a-cell-text.md`](evidence/2026-07-25-v0.2.0-m6a-cell-text.md)：M6A `cell_text` 借用化 N=8/N=5 A/B、PWS、真实 oracle 和采用结论。
 - [`evidence/2026-07-25-v0.2.0-m6b-zip-compression.md`](evidence/2026-07-25-v0.2.0-m6b-zip-compression.md)：M6B ZIP 压缩 Level 3/2 N=5、完整 comparator、体积门禁拒绝和 Level 5 回退证据。
 - [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md)：Windows RC 的兼容性、主要变更、已知问题和校验说明。
+- [`releases/v0.2.0.md`](releases/v0.2.0.md)：v0.2.0 正式版本的兼容性、P0 变更、性能决策、验证和回滚说明。
 - [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
 
 ## 权威顺序

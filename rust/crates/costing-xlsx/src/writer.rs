@@ -1137,7 +1137,8 @@ mod tests {
     #[test]
     fn cleanup_failure_does_not_replace_primary_error() {
         let output = unique_temp_path("cleanup-primary");
-        let error = writer_io_error(112);
+        let raw_os_error = if cfg!(windows) { 112 } else { 28 };
+        let error = writer_io_error(raw_os_error);
 
         let error = merge_cleanup_failure(
             error,
@@ -1150,7 +1151,7 @@ mod tests {
             panic!("expected original I/O primary error")
         };
         assert_eq!(primary.kind(), ErrorKind::StorageFull);
-        assert_eq!(primary.raw_os_error(), Some(112));
+        assert_eq!(primary.raw_os_error(), Some(raw_os_error));
         assert_eq!(
             error
                 .source()
@@ -1160,7 +1161,7 @@ mod tests {
                 .downcast_ref::<std::io::Error>()
                 .unwrap()
                 .raw_os_error(),
-            Some(112)
+            Some(raw_os_error)
         );
         assert_eq!(error.context.details.cleanup_failures.len(), 1);
         let cleanup = &error.context.details.cleanup_failures[0];

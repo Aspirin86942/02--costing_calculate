@@ -336,6 +336,7 @@ fn retryable_io(error: &std::io::Error) -> bool {
         std::io::ErrorKind::Interrupted
             | std::io::ErrorKind::WouldBlock
             | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::StorageFull
     ) || matches!(error.raw_os_error(), Some(32 | 33 | 39 | 112))
 }
 
@@ -349,10 +350,11 @@ mod tests {
 
     #[test]
     fn contextual_io_error_preserves_source_chain_and_delegates() {
+        let raw_os_error = if cfg!(windows) { 112 } else { 28 };
         let contextual = CostingError::io_with_source(
             ErrorCode::OutputNotWritable,
             "write failed",
-            std::io::Error::from_raw_os_error(112),
+            std::io::Error::from_raw_os_error(raw_os_error),
         )
         .with_context(ErrorContext::new(
             "costing-test-1",
@@ -371,7 +373,7 @@ mod tests {
             .downcast_ref::<std::io::Error>()
             .expect("original std::io::Error");
         assert_eq!(io_error.kind(), ErrorKind::StorageFull);
-        assert_eq!(io_error.raw_os_error(), Some(112));
+        assert_eq!(io_error.raw_os_error(), Some(raw_os_error));
     }
 
     #[test]
@@ -390,6 +392,22 @@ mod tests {
             .expect("original std::io::Error");
         assert_eq!(io_error.kind(), ErrorKind::TimedOut);
         assert_eq!(io_error.raw_os_error(), None);
+    }
+
+    #[test]
+    fn storage_full_io_error_is_retryable_without_platform_raw_os_error() {
+        let error = CostingError::io_with_source(
+            ErrorCode::OutputNotWritable,
+            "storage full",
+            std::io::Error::new(ErrorKind::StorageFull, "storage full"),
+        );
+
+        assert!(error.retryable());
+        assert_eq!(
+            error.io_meta().expect("I/O metadata").kind,
+            super::IoKindCode::StorageFull
+        );
+        assert_eq!(error.io_meta().expect("I/O metadata").raw_os_error, None);
     }
 
     #[test]

@@ -308,10 +308,11 @@ mod error_summary_tests {
 
     #[test]
     fn error_summary_serializes_context_and_flattened_io_metadata() {
+        let raw_os_error = if cfg!(windows) { 112 } else { 28 };
         let contextual = CostingError::io_with_source(
             ErrorCode::OutputNotWritable,
             "write failed",
-            std::io::Error::from_raw_os_error(112),
+            std::io::Error::from_raw_os_error(raw_os_error),
         )
         .with_context(ErrorContext::new(
             "costing-test-1",
@@ -331,7 +332,7 @@ mod error_summary_tests {
         );
         assert_eq!(
             details.io_meta.as_ref().expect("I/O metadata").raw_os_error,
-            Some(112)
+            Some(raw_os_error)
         );
 
         let json = serde_json::to_value(summary).expect("serialize error summary");
@@ -339,7 +340,7 @@ mod error_summary_tests {
         assert_eq!(json["details"]["stage"], "SaveWorkbook");
         assert_eq!(json["details"]["path"], "output.xlsx");
         assert_eq!(json["details"]["io_kind"], "StorageFull");
-        assert_eq!(json["details"]["raw_os_error"], 112);
+        assert_eq!(json["details"]["raw_os_error"], raw_os_error);
         assert_eq!(json["details"]["final_output_valid"], false);
         assert!(json["details"]["partial_output_removed"].is_null());
         assert_eq!(json["details"]["cleanup_failures"], serde_json::json!([]));

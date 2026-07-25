@@ -1,14 +1,17 @@
-mod args;
-mod run;
-
 use std::process::ExitCode;
 
 use clap::{error::ErrorKind, Parser};
-use costing_core::{model::ErrorSummary, CostingError, ErrorCode};
-
-use args::CliArgs;
+use costing_calculate::{
+    application::{execute, RunOutcome, RunRequest},
+    args::CliArgs,
+    build_info::BuildInfo,
+};
+use costing_core::{model::ErrorSummary, ErrorCode};
 
 fn main() -> ExitCode {
+    if standalone_version_json_requested() {
+        return emit_json(&BuildInfo::current());
+    }
     let args = match CliArgs::try_parse() {
         Ok(args) => args,
         Err(error)
@@ -31,29 +34,27 @@ fn main() -> ExitCode {
             });
         }
     };
-    match run::run(args) {
-        Ok(summary) => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&summary).expect("serialize run summary")
-            );
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            let error_summary = error
-                .downcast_ref::<CostingError>()
-                .map(ErrorSummary::from_error)
-                .unwrap_or_else(|| ErrorSummary {
-                    status: "failed".to_string(),
-                    code: ErrorCode::InternalError,
-                    message: error.to_string(),
-                    retryable: false,
-                    request_id: None,
-                    details: None,
-                });
-            emit_error(error_summary)
-        }
+    if args.version_json {
+        return emit_json(&BuildInfo::current());
     }
+    match execute(RunRequest::from(args)) {
+        RunOutcome::Succeeded(summary) => emit_json(&summary),
+        RunOutcome::Failed(failure) => emit_error(failure),
+    }
+}
+
+fn standalone_version_json_requested() -> bool {
+    let mut arguments = std::env::args_os().skip(1);
+    matches!(arguments.next(), Some(argument) if argument == "--version-json")
+        && arguments.next().is_none()
+}
+
+fn emit_json(value: &impl serde::Serialize) -> ExitCode {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).expect("serialize successful output")
+    );
+    ExitCode::SUCCESS
 }
 
 fn emit_error(error_summary: ErrorSummary) -> ExitCode {

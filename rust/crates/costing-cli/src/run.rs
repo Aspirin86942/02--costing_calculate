@@ -15,7 +15,7 @@ use costing_xlsx::{
     writer::{write_workbook, WriterContext, WriterError, WriterPrimaryError},
 };
 
-use crate::args::CliArgs;
+use crate::application::RunRequest;
 
 #[derive(Debug, PartialEq, Eq)]
 struct ResolvedCliPaths {
@@ -23,7 +23,7 @@ struct ResolvedCliPaths {
     output: Option<PathBuf>,
 }
 
-pub fn run(mut args: CliArgs) -> anyhow::Result<RunSummary> {
+pub(crate) fn run(mut args: RunRequest) -> anyhow::Result<RunSummary> {
     let request_id = new_request_id();
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
         .map_err(|error| {
@@ -289,7 +289,7 @@ fn required_quality_count(
 }
 
 fn resolve_cli_paths(
-    args: &CliArgs,
+    args: &RunRequest,
     base_dir: &Path,
     month_range: Option<&MonthRange>,
 ) -> Result<ResolvedCliPaths, CostingError> {
@@ -410,7 +410,7 @@ fn month_output_suffix(month_range: Option<&MonthRange>) -> Option<String> {
     }
 }
 
-pub fn validate_cli_request(args: &CliArgs) -> Result<(), CostingError> {
+pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
     let input = args
         .input
         .as_ref()
@@ -527,10 +527,10 @@ mod tests {
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
     use super::*;
-    use crate::args::CliArgs;
+    use crate::application::RunRequest;
 
-    fn args(input: &str) -> CliArgs {
-        CliArgs {
+    fn args(input: &str) -> RunRequest {
+        RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(PathBuf::from(input)),
             output: Some(PathBuf::from("out.xlsx")),
@@ -562,7 +562,7 @@ mod tests {
     fn check_only_does_not_require_output_path() {
         let path = unique_temp_path(&std::env::temp_dir(), "check-only", "xlsx");
         std::fs::write(&path, "placeholder").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,
@@ -582,7 +582,7 @@ mod tests {
         std::fs::create_dir_all(&raw_dir).unwrap();
         let input = raw_dir.join("gb-sample.xlsx");
         std::fs::write(&input, "placeholder").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             pipeline: PipelineName::Gb,
             input: None,
             output: None,
@@ -609,7 +609,7 @@ mod tests {
         std::fs::create_dir_all(&raw_dir).unwrap();
         let input = raw_dir.join("sk-sample.xlsx");
         std::fs::write(&input, "placeholder").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             pipeline: PipelineName::Sk,
             input: None,
             output: None,
@@ -657,7 +657,7 @@ mod tests {
     fn requires_output_for_non_check_only_runs() {
         let path = unique_temp_path(&std::env::temp_dir(), "missing-output", "xlsx");
         std::fs::write(&path, "placeholder").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,
@@ -677,7 +677,7 @@ mod tests {
         let output = unique_temp_path(&std::env::temp_dir(), "existing-output", "xlsx");
         std::fs::write(&input, "input").unwrap();
         std::fs::write(&output, "existing").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             output: Some(output.clone()),
             ..args(input.to_str().unwrap())
         };
@@ -764,7 +764,7 @@ mod tests {
     fn rejects_input_and_output_that_resolve_to_same_file() {
         let input = unique_temp_path(&std::env::temp_dir(), "same-input-output", "xlsx");
         std::fs::write(&input, "input").unwrap();
-        let request = CliArgs {
+        let request = RunRequest {
             output: Some(input.clone()),
             ..args(input.to_str().unwrap())
         };
@@ -780,7 +780,7 @@ mod tests {
         let path = unique_temp_path(&std::env::temp_dir(), "run-reader", "xlsx");
         write_minimal_input_workbook(&path);
 
-        let args = CliArgs {
+        let args = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,
@@ -827,7 +827,7 @@ mod tests {
         let output = unique_temp_path(&std::env::temp_dir(), "run-writes-output", "xlsx");
         write_minimal_input_workbook(&input);
 
-        let args = CliArgs {
+        let args = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(input.clone()),
             output: Some(output.clone()),
@@ -875,7 +875,7 @@ mod tests {
         let path = unique_temp_path(&std::env::temp_dir(), "run-benchmark", "xlsx");
         write_minimal_input_workbook(&path);
 
-        let summary = run(CliArgs {
+        let summary = run(RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,
@@ -899,7 +899,7 @@ mod tests {
         write_minimal_input_workbook(&input);
         std::fs::write(&blocked_parent, "not a directory").unwrap();
 
-        let args = CliArgs {
+        let args = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(input.clone()),
             output: Some(output.clone()),
@@ -920,7 +920,7 @@ mod tests {
     fn run_rejects_non_strict_month_range() {
         let path = unique_temp_path(&std::env::temp_dir(), "invalid-month", "xlsx");
         std::fs::write(&path, "placeholder").unwrap();
-        let args = CliArgs {
+        let args = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,
@@ -975,7 +975,7 @@ mod tests {
         sheet.write_string(3, 7, "").unwrap();
         workbook.save(&path).unwrap();
 
-        let args = CliArgs {
+        let args = RunRequest {
             pipeline: PipelineName::Gb,
             input: Some(path.clone()),
             output: None,

@@ -4,7 +4,7 @@ use clap::Parser;
 use costing_core::PipelineName;
 
 #[derive(Debug, Parser)]
-#[command(name = "costing-calculate", about = "成本核算 ETL Rust CLI")]
+#[command(name = "costing-calculate", version, about = "成本核算 ETL Rust CLI")]
 pub struct CliArgs {
     pub pipeline: PipelineName,
     #[arg(
@@ -25,4 +25,6 @@ pub struct CliArgs {
     pub check_only: bool,
     #[arg(long)]
     pub benchmark: bool,
+    #[arg(long, help = "输出确定性的构建与 schema 版本 JSON，不运行 ETL")]
+    pub version_json: bool,
 }

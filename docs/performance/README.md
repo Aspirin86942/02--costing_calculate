@@ -16,6 +16,8 @@
 
 - release profile 固定 `codegen-units = 1`。
 - Calamine `0.36` 直接解析 worksheet range；reader 不再复制成中间 `Vec<Vec<Data>>`。
+- normalize 的合计行与集成车间比较直接借用已 trim 的文本；月份格式化和 Decimal
+  转换仍保留拥有型语义。
 - writer 预计算每列文本/数字行为和格式，空白单元格直接跳过。
 - CLI 默认启用 `low-memory` feature；单张 Sheet 达到 `5,000,000` 个 cell slots 时进入 low-memory。
 - low-memory 临时目录位于最终输出目录，并在成功、失败及错误合并路径中显式清理。

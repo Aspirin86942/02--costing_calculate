@@ -21,6 +21,7 @@
 - [`evidence/2026-07-25-v0.2.0-m3-config-governance.md`](evidence/2026-07-25-v0.2.0-m3-config-governance.md)：M3 配置治理、三路真实数据迁移对比和退出证据。
 - [`evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md`](evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md)：M4 Manifest、输入/输出哈希、原子发布和 standard/low-memory 失败注入证据。
 - [`evidence/2026-07-25-v0.2.0-m5-rc-packaging.md`](evidence/2026-07-25-v0.2.0-m5-rc-packaging.md)：M5 Windows RC、隔离环境打包冒烟、独立重建和整包回滚边界证据。
+- [`evidence/2026-07-25-v0.2.0-m6a-cell-text.md`](evidence/2026-07-25-v0.2.0-m6a-cell-text.md)：M6A `cell_text` 借用化 N=8/N=5 A/B、PWS、真实 oracle 和采用结论。
 - [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md)：Windows RC 的兼容性、主要变更、已知问题和校验说明。
 - [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
 

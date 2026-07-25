@@ -4,8 +4,11 @@ All notable changes to Costing Calculate are documented in this file.
 
 ## Unreleased
 
-- Complete the controlled `cell_text` and ZIP compression experiments before
-  the final v0.2.0 release.
+- Adopt comparison-only borrowed `cell_text` access after the controlled SK
+  check-only and normal-run experiments passed all performance and correctness
+  gates.
+- Complete the controlled ZIP compression experiment before the final v0.2.0
+  release.
 
 ## 0.2.0-rc.1 - 2026-07-25
 

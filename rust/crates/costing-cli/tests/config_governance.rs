@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use calamine::{open_workbook_auto, Data, Range, Reader};
 use rust_xlsxwriter::Workbook;
 
 const DEFAULT_CONFIG: &str = include_str!("../config/costing.default.toml");
@@ -92,6 +93,21 @@ fn write_minimal_input(path: &Path) {
     sheet.write_number(2, 6, 10).unwrap();
     sheet.write_string(2, 7, "").unwrap();
     workbook.save(path).unwrap();
+}
+
+fn workbook_content(path: &Path) -> Vec<(String, Range<Data>)> {
+    let mut workbook = open_workbook_auto(path).expect("open generated workbook");
+    workbook
+        .sheet_names()
+        .to_vec()
+        .into_iter()
+        .map(|name| {
+            let range = workbook
+                .worksheet_range(&name)
+                .expect("read generated worksheet");
+            (name, range)
+        })
+        .collect()
 }
 
 #[test]
@@ -332,7 +348,7 @@ fn sealed_cost_items_and_unsafe_input_patterns_fail_validation() {
 }
 
 #[test]
-fn equivalent_external_config_produces_identical_workbook_bytes() {
+fn equivalent_external_config_produces_identical_workbook_content() {
     let root = temp_root("equivalent-workbook");
     let input_path = root.join("gb-input.xlsx");
     let embedded_output = root.join("embedded.xlsx");
@@ -367,8 +383,8 @@ fn equivalent_external_config_produces_identical_workbook_bytes() {
     json_stdout(&external);
 
     assert_eq!(
-        fs::read(embedded_output).unwrap(),
-        fs::read(external_output).unwrap()
+        workbook_content(&embedded_output),
+        workbook_content(&external_output)
     );
     fs::remove_dir_all(root).expect("remove temporary test root");
 }

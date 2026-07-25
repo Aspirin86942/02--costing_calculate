@@ -5,7 +5,7 @@ edition.workspace = true
 
 [features]
 default = []
-low-memory = ["rust_xlsxwriter/constant_memory", "dep:tempfile", "dep:windows-sys"]
+low-memory = ["rust_xlsxwriter/constant_memory", "dep:windows-sys"]
 zlib = ["rust_xlsxwriter/zlib"]
 zmij = ["rust_xlsxwriter/zmij"]
 
@@ -14,7 +14,7 @@ calamine.workspace = true
 costing-core = { path = "../costing-core" }
 rust_decimal.workspace = true
 rust_xlsxwriter.workspace = true
-tempfile = { workspace = true, optional = true }
+tempfile.workspace = true
 thiserror.workspace = true
 windows-sys = { workspace = true, optional = true }
 

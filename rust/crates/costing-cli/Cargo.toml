@@ -11,6 +11,7 @@ zmij = ["costing-xlsx/zmij"]
 
 [dependencies]
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
 costing-core = { path = "../costing-core" }
 costing-xlsx = { path = "../costing-xlsx" }
@@ -23,4 +24,5 @@ toml.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
+calamine.workspace = true
 rust_xlsxwriter.workspace = true

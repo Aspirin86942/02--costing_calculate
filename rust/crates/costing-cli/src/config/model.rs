@@ -59,7 +59,7 @@ pub struct ProductOrderEntryV1 {
 }
 
 /// Origin of the complete loaded configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConfigSource {
     /// Reviewed configuration embedded at compile time.

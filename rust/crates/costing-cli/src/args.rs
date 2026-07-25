@@ -28,6 +28,19 @@ pub struct CliArgs {
     #[arg(
         long,
         value_name = "PATH",
+        conflicts_with_all = ["validate_config", "print_effective_config", "version_json"],
+        help = "原子写出版本化 RunManifestV1；默认拒绝覆盖"
+    )]
+    pub summary_output: Option<PathBuf>,
+    #[arg(
+        long,
+        conflicts_with = "version_json",
+        help = "当前目录内路径显示为相对路径，目录外路径仅显示文件名"
+    )]
+    pub redact_paths: bool,
+    #[arg(
+        long,
+        value_name = "PATH",
         help = "完整的 v1 TOML 配置；省略时使用内置默认配置"
     )]
     pub config: Option<PathBuf>,
@@ -41,7 +54,8 @@ pub struct CliArgs {
             "month_start",
             "month_end",
             "check_only",
-            "benchmark"
+            "benchmark",
+            "summary_output"
         ],
         help = "仅加载并严格校验配置，不读取 workbook"
     )]
@@ -56,7 +70,8 @@ pub struct CliArgs {
             "month_start",
             "month_end",
             "check_only",
-            "benchmark"
+            "benchmark",
+            "summary_output"
         ],
         help = "输出完整有效配置、字段来源和配置哈希，不运行 ETL"
     )]
@@ -70,6 +85,8 @@ pub struct CliArgs {
             "month_end",
             "check_only",
             "benchmark",
+            "summary_output",
+            "redact_paths",
             "config",
             "validate_config",
             "print_effective_config"

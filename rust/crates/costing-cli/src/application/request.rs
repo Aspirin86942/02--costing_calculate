@@ -20,6 +20,8 @@ pub struct RunRequest {
     pub month_end: Option<String>,
     pub check_only: bool,
     pub benchmark: bool,
+    pub summary_output: Option<PathBuf>,
+    pub redact_paths: bool,
     pub config: Option<PathBuf>,
     pub operation: RunOperation,
 }
@@ -42,6 +44,8 @@ impl From<CliArgs> for RunRequest {
             month_end: args.month_end,
             check_only: args.check_only,
             benchmark: args.benchmark,
+            summary_output: args.summary_output,
+            redact_paths: args.redact_paths,
             config: args.config,
             operation,
         }

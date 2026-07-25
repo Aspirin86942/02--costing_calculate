@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     InvalidInput,
@@ -23,7 +23,7 @@ pub enum ErrorCode {
     InternalError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorStage {
     ValidateCliRequest,
     LoadConfig,
@@ -38,14 +38,28 @@ pub enum ErrorStage {
     PrepareOutputDirectory,
     CheckDiskSpace,
     CreateTempWorkspace,
+    CreateWorkbookTempFile,
     PlanSheet,
     InitializeLowMemoryTempWriter,
     PopulateWorkbook,
     CreateFinalOutput,
     SaveWorkbook,
+    SyncWorkbookTempFile,
+    PublishWorkbook,
+    CleanupWorkbookTempFile,
     RemovePartialOutput,
     CleanupTempWorkspace,
     ReadOutputMetadata,
+    CheckSummaryOutput,
+    PrepareSummaryDirectory,
+    CreateSummaryTempFile,
+    WriteSummary,
+    SyncSummaryTempFile,
+    PublishSummary,
+    CleanupSummaryTempFile,
+    HashInput,
+    HashOutput,
+    BuildManifest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -105,12 +119,21 @@ pub struct CleanupFailureMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FinalOutputMeta {
+    pub final_output_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_output_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ErrorDetails {
     pub stage: ErrorStage,
     pub path: Option<PathBuf>,
     #[serde(flatten)]
     pub io_meta: Option<IoFailureMeta>,
     pub final_output_valid: bool,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub final_output: Option<Box<FinalOutputMeta>>,
     pub partial_output_removed: Option<bool>,
     pub cleanup_failures: Vec<CleanupFailureMeta>,
 }
@@ -122,6 +145,7 @@ impl ErrorDetails {
             path,
             io_meta: None,
             final_output_valid: false,
+            final_output: None,
             partial_output_removed: None,
             cleanup_failures: Vec::new(),
         }

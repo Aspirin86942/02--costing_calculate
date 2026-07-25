@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::error::{CostingError, ErrorCode, ErrorDetails};
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, IndexedTable};
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "value")]
@@ -220,7 +220,8 @@ pub struct ReaderSnapshot {
     pub null_counts: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StageTimings {
     pub stages: BTreeMap<String, f64>,
 }
@@ -231,7 +232,8 @@ impl StageTimings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QualityMetric {
     pub category: String,
     pub metric: String,
@@ -360,21 +362,35 @@ mod error_summary_tests {
             ErrorStage::PrepareOutputDirectory,
             ErrorStage::CheckDiskSpace,
             ErrorStage::CreateTempWorkspace,
+            ErrorStage::CreateWorkbookTempFile,
             ErrorStage::PlanSheet,
             ErrorStage::InitializeLowMemoryTempWriter,
             ErrorStage::PopulateWorkbook,
             ErrorStage::CreateFinalOutput,
             ErrorStage::SaveWorkbook,
+            ErrorStage::SyncWorkbookTempFile,
+            ErrorStage::PublishWorkbook,
+            ErrorStage::CleanupWorkbookTempFile,
             ErrorStage::RemovePartialOutput,
             ErrorStage::CleanupTempWorkspace,
             ErrorStage::ReadOutputMetadata,
+            ErrorStage::CheckSummaryOutput,
+            ErrorStage::PrepareSummaryDirectory,
+            ErrorStage::CreateSummaryTempFile,
+            ErrorStage::WriteSummary,
+            ErrorStage::SyncSummaryTempFile,
+            ErrorStage::PublishSummary,
+            ErrorStage::CleanupSummaryTempFile,
+            ErrorStage::HashInput,
+            ErrorStage::HashOutput,
+            ErrorStage::BuildManifest,
         ];
         let serialized = stages
             .iter()
             .map(|stage| serde_json::to_value(stage).unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(stages.len(), 21);
+        assert_eq!(stages.len(), 35);
         assert_eq!(
             serde_json::Value::Array(serialized),
             serde_json::json!([
@@ -391,14 +407,28 @@ mod error_summary_tests {
                 "PrepareOutputDirectory",
                 "CheckDiskSpace",
                 "CreateTempWorkspace",
+                "CreateWorkbookTempFile",
                 "PlanSheet",
                 "InitializeLowMemoryTempWriter",
                 "PopulateWorkbook",
                 "CreateFinalOutput",
                 "SaveWorkbook",
+                "SyncWorkbookTempFile",
+                "PublishWorkbook",
+                "CleanupWorkbookTempFile",
                 "RemovePartialOutput",
                 "CleanupTempWorkspace",
-                "ReadOutputMetadata"
+                "ReadOutputMetadata",
+                "CheckSummaryOutput",
+                "PrepareSummaryDirectory",
+                "CreateSummaryTempFile",
+                "WriteSummary",
+                "SyncSummaryTempFile",
+                "PublishSummary",
+                "CleanupSummaryTempFile",
+                "HashInput",
+                "HashOutput",
+                "BuildManifest"
             ])
         );
     }

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "status": "succeeded",
+  "request_id": "costing-golden-success",
+  "application": {
+    "name": "costing-calculate",
+    "version": "0.2.0",
+    "git_commit": "0123456789abcdef",
+    "build_timestamp": "2026-07-25T00:00:00Z",
+    "rustc_version": "1.96.0",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "execution": {
+    "pipeline": "gb",
+    "mode": "check-only",
+    "started_at": "2026-07-25T01:00:00.000Z",
+    "finished_at": "2026-07-25T01:00:01.000Z",
+    "duration_ms": 1000,
+    "low_memory_writer": false
+  },
+  "input": {
+    "path": "data/raw/gb/gb-golden.xlsx",
+    "file_name": "gb-golden.xlsx",
+    "size_bytes": 1024,
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "selected_sheet": "成本计算单",
+    "reader_rows": 10
+  },
+  "filter": {
+    "month_start": null,
+    "month_end": null
+  },
+  "config": {
+    "schema_version": 1,
+    "source": "embedded-default",
+    "effective_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "source_sha256": null
+  },
+  "result": {
+    "output_written": false,
+    "workbook_path": null,
+    "output_size_bytes": null,
+    "output_sha256": null,
+    "sheet_count": 3,
+    "sheet_names": [
+      "成本计算单总表",
+      "成本计算单数量聚合维度",
+      "成本分析工单维度"
+    ],
+    "final_output_valid": false
+  },
+  "quality": {
+    "error_log_count": 0,
+    "issue_type_counts": {},
+    "quality_metrics": []
+  },
+  "run_counts": {
+    "reader_rows": 10
+  },
+  "stage_timings": {
+    "stages": {
+      "ingest": 0.1
+    }
+  },
+  "warnings": []
+}

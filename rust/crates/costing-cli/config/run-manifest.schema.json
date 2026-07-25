@@ -1,0 +1,553 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Aspirin86942/02--costing_calculate/schemas/run-manifest-v1.json",
+  "title": "RunManifestV1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/success"
+    },
+    {
+      "$ref": "#/$defs/failure"
+    }
+  ],
+  "$defs": {
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "git_commit",
+        "build_timestamp",
+        "rustc_version",
+        "target"
+      ],
+      "properties": {
+        "name": {
+          "const": "costing-calculate"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "git_commit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "build_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "rustc_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline",
+        "mode",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "low_memory_writer"
+      ],
+      "properties": {
+        "pipeline": {
+          "enum": [
+            "gb",
+            "sk"
+          ]
+        },
+        "mode": {
+          "enum": [
+            "normal",
+            "check-only"
+          ]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "low_memory_writer": {
+          "type": "boolean"
+        }
+      }
+    },
+    "filter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "month_start",
+        "month_end"
+      ],
+      "properties": {
+        "month_start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "month_end": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "source",
+        "effective_sha256",
+        "source_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "source": {
+          "enum": [
+            "embedded-default",
+            "external"
+          ]
+        },
+        "effective_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "source_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "path": {
+          "type": "string"
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "qualityMetric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "metric",
+        "value",
+        "description"
+      ],
+      "properties": {
+        "category": {
+          "type": "string"
+        },
+        "metric": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "stageTimings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stages"
+      ],
+      "properties": {
+        "stages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "file_name",
+        "size_bytes",
+        "sha256",
+        "selected_sheet",
+        "reader_rows"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_sheet": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reader_rows": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "knownInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "file_name": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selected_sheet": {
+          "type": "string"
+        },
+        "reader_rows": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "validFinalOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "success": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "status",
+        "request_id",
+        "application",
+        "execution",
+        "input",
+        "filter",
+        "config",
+        "result",
+        "quality",
+        "run_counts",
+        "stage_timings",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "status": {
+          "const": "succeeded"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application": {
+          "$ref": "#/$defs/application"
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        },
+        "input": {
+          "$ref": "#/$defs/input"
+        },
+        "filter": {
+          "$ref": "#/$defs/filter"
+        },
+        "config": {
+          "$ref": "#/$defs/config"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "output_written",
+            "workbook_path",
+            "output_size_bytes",
+            "output_sha256",
+            "sheet_count",
+            "sheet_names",
+            "final_output_valid"
+          ],
+          "properties": {
+            "output_written": {
+              "type": "boolean"
+            },
+            "workbook_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "output_size_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "output_sha256": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/sha256"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sheet_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sheet_names": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "final_output_valid": {
+              "type": "boolean"
+            }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_log_count",
+            "issue_type_counts",
+            "quality_metrics"
+          ],
+          "properties": {
+            "error_log_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "issue_type_counts": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "quality_metrics": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/qualityMetric"
+              }
+            }
+          }
+        },
+        "run_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "stage_timings": {
+          "$ref": "#/$defs/stageTimings"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "status",
+        "request_id",
+        "application",
+        "execution",
+        "code",
+        "stage",
+        "message",
+        "retryable",
+        "input",
+        "filter",
+        "config",
+        "final_output_valid",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "status": {
+          "const": "failed"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application": {
+          "$ref": "#/$defs/application"
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        },
+        "code": {
+          "enum": [
+            "INVALID_INPUT",
+            "INVALID_CONFIG",
+            "FILE_NOT_FOUND",
+            "FILE_NOT_READABLE",
+            "UNSUPPORTED_FILE_TYPE",
+            "OUTPUT_EXISTS",
+            "OUTPUT_NOT_WRITABLE",
+            "INSUFFICIENT_DISK_SPACE",
+            "TEMP_CLEANUP_FAILED",
+            "READER_MISMATCH",
+            "ETL_MISMATCH",
+            "ANALYSIS_MISMATCH",
+            "WORKBOOK_MISMATCH",
+            "PERFORMANCE_REGRESSION",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "ValidateCliRequest",
+            "LoadConfig",
+            "ParseConfig",
+            "ValidateConfig",
+            "ResolveCliPaths",
+            "IngestWorkbook",
+            "Normalize",
+            "Split",
+            "BuildFact",
+            "BuildPresentation",
+            "PrepareOutputDirectory",
+            "CheckDiskSpace",
+            "CreateTempWorkspace",
+            "CreateWorkbookTempFile",
+            "PlanSheet",
+            "InitializeLowMemoryTempWriter",
+            "PopulateWorkbook",
+            "CreateFinalOutput",
+            "SaveWorkbook",
+            "SyncWorkbookTempFile",
+            "PublishWorkbook",
+            "CleanupWorkbookTempFile",
+            "RemovePartialOutput",
+            "CleanupTempWorkspace",
+            "ReadOutputMetadata",
+            "CheckSummaryOutput",
+            "PrepareSummaryDirectory",
+            "CreateSummaryTempFile",
+            "WriteSummary",
+            "SyncSummaryTempFile",
+            "PublishSummary",
+            "CleanupSummaryTempFile",
+            "HashInput",
+            "HashOutput",
+            "BuildManifest"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "input": {
+          "$ref": "#/$defs/knownInput"
+        },
+        "filter": {
+          "$ref": "#/$defs/filter"
+        },
+        "config": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/config"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "final_output_valid": {
+          "type": "boolean"
+        },
+        "final_output": {
+          "$ref": "#/$defs/validFinalOutput"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

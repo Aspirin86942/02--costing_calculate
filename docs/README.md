@@ -14,6 +14,8 @@
 - [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：Python oracle/legacy 的保留与独立退场边界。
 - [`../rust/crates/costing-cli/config/costing.default.toml`](../rust/crates/costing-cli/config/costing.default.toml)：内置且随 Release 分发的完整 GB/SK 默认配置。
 - [`../rust/crates/costing-cli/config/costing.schema.json`](../rust/crates/costing-cli/config/costing.schema.json)：严格配置 schema v1。
+- [`../rust/crates/costing-cli/config/run-manifest.schema.json`](../rust/crates/costing-cli/config/run-manifest.schema.json)：成功/失败 `RunManifestV1` 的封闭 JSON schema。
+- [`../rust/crates/costing-cli/config/run-manifest.success.golden.json`](../rust/crates/costing-cli/config/run-manifest.success.golden.json) 与 [`run-manifest.failure.golden.json`](../rust/crates/costing-cli/config/run-manifest.failure.golden.json)：Manifest v1 固定兼容示例。
 - [`dependencies/2026-07-25-toml-sha2-review.md`](dependencies/2026-07-25-toml-sha2-review.md)：M3 新增生产依赖的批准、许可证和锁文件影响。
 - [`evidence/2026-07-25-v0.2.0-m0-baseline.md`](evidence/2026-07-25-v0.2.0-m0-baseline.md)：v0.2.0 冻结输入、阶段基线、完整规则快照和签字。
 - [`evidence/2026-07-25-v0.2.0-m3-config-governance.md`](evidence/2026-07-25-v0.2.0-m3-config-governance.md)：M3 配置治理、三路真实数据迁移对比和退出证据。

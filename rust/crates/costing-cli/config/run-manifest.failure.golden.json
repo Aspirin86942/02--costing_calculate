@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "status": "failed",
+  "request_id": "costing-golden-failure",
+  "application": {
+    "name": "costing-calculate",
+    "version": "0.2.0",
+    "git_commit": "0123456789abcdef",
+    "build_timestamp": "2026-07-25T00:00:00Z",
+    "rustc_version": "1.96.0",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "execution": {
+    "pipeline": "sk",
+    "mode": "normal",
+    "started_at": "2026-07-25T01:00:00.000Z",
+    "finished_at": "2026-07-25T01:00:02.000Z",
+    "duration_ms": 2000,
+    "low_memory_writer": true
+  },
+  "code": "OUTPUT_NOT_WRITABLE",
+  "stage": "PublishWorkbook",
+  "message": "workbook publication failed",
+  "retryable": false,
+  "input": {
+    "path": "data/raw/sk/sk-golden.xlsx",
+    "file_name": "sk-golden.xlsx",
+    "size_bytes": 2048,
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "selected_sheet": "成本计算单",
+    "reader_rows": 20
+  },
+  "filter": {
+    "month_start": "2026-01",
+    "month_end": "2026-06"
+  },
+  "config": {
+    "schema_version": 1,
+    "source": "external",
+    "effective_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "source_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "path": "costing.toml"
+  },
+  "final_output_valid": false,
+  "warnings": []
+}

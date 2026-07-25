@@ -313,6 +313,7 @@ name = "costing-calculate"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "calamine",
  "chrono",
  "clap",
  "costing-core",

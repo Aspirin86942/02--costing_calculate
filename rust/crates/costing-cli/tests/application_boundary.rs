@@ -15,6 +15,8 @@ fn execute_returns_a_typed_failure_for_an_invalid_request() {
         month_end: None,
         check_only: true,
         benchmark: false,
+        summary_output: None,
+        redact_paths: false,
         config: None,
         operation: RunOperation::Execute,
     };

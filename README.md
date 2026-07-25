@@ -10,6 +10,7 @@
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
 - 提供版本化 TOML 配置、严格 schema 校验、有效配置来源和 SHA-256 语义指纹
+- 可按需原子写出版本化 `RunManifestV1`，并支持路径脱敏
 - 字段名提取和标准化
 
 ## 安装
@@ -34,6 +35,7 @@ cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk -
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- --version-json
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --validate-config
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --print-effective-config
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --summary-output data/processed/gb/gb-check-summary.json
 ```
 
 上述正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径。
@@ -72,6 +74,39 @@ JSON Schema 见
 `effective_sha256` 对类型化语义值计算，因此 TOML 注释、空白和键顺序不
 改变它；外部配置另返回原始字节的 `source_sha256`，且诊断输出不暴露
 配置绝对路径。
+
+### 运行 Manifest 与原子发布
+
+不传 `--summary-output` 时，CLI 不计算输入/输出文件 SHA-256、不创建 sidecar，
+stdout/stderr、退出码和现有 `RunSummary` 字段保持不变。显式传入时，CLI 额外
+原子写出版本化 `RunManifestV1`：
+
+```powershell
+# 正常运行：写 workbook 和审计 Manifest
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk `
+  --input data/raw/sk/<file>.xlsx `
+  --output data/processed/sk/<file>_处理后.xlsx `
+  --summary-output data/processed/sk/<file>_summary.json
+
+# 预检：只写审计 Manifest，不写 workbook
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb `
+  --check-only `
+  --summary-output data/processed/gb/gb-check-summary.json
+```
+
+Manifest 关联 `request_id`、构建身份、输入文件和最终 workbook SHA-256、有效配置
+哈希、质量指标、计数及阶段耗时。运行失败且 summary 路径有效时写失败变体；
+若 workbook 已发布而 Manifest 写出失败，命令返回非零但保留有效 workbook，
+stderr 明确 `final_output_valid=true` 并给出 workbook 路径和哈希。
+
+workbook 与 Manifest 都先在最终目录写入唯一 `.costing-publish-*` 临时成品，
+flush/sync 后以禁止覆盖方式发布；最终路径已存在时在读取大 workbook 前拒绝。
+`--redact-paths` 会把当前目录内路径变为相对路径、目录外路径缩减为 basename，
+同时保留哈希。Schema 与固定示例见
+[`run-manifest.schema.json`](rust/crates/costing-cli/config/run-manifest.schema.json)、
+[`run-manifest.success.golden.json`](rust/crates/costing-cli/config/run-manifest.success.golden.json)
+和
+[`run-manifest.failure.golden.json`](rust/crates/costing-cli/config/run-manifest.failure.golden.json)。
 
 Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：
 
@@ -113,9 +148,9 @@ Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已�
 
 - 非 `--check-only` 模式省略 `--output` 时，默认写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
 - 显式传入 `--output` 时使用指定路径
-- 不再额外落盘 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`
+- 不再自动落盘 `*_处理后_error_log.csv` 或旧式 `*_处理后_summary.json`；仅在显式 `--summary-output` 时写版本化 Manifest
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台
-- `--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件
+- `--check-only` 默认只做预检与控制台摘要；显式 `--summary-output` 时只额外写 Manifest，仍不写 workbook
 
 ## 分析输出口径
 - `成本计算单总表` 保留成本计算单明细，`本期完工金额`为空时后续分析按 `0` 参与汇总，并继续写入 `error_log` 的 `MISSING_AMOUNT`

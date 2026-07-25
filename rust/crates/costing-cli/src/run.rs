@@ -15,6 +15,7 @@ use costing_xlsx::{
     writer::{write_workbook, WriterContext, WriterError, WriterPrimaryError},
 };
 
+use crate::application::manifest::{sha256_file, RunAudit};
 use crate::application::RunRequest;
 use crate::config::input_pattern_matches;
 
@@ -24,11 +25,23 @@ struct ResolvedCliPaths {
     output: Option<PathBuf>,
 }
 
+#[cfg(test)]
 pub(crate) fn run(
+    args: RunRequest,
+    pipeline: PipelineRules,
+    input_pattern: String,
+    request_id: String,
+) -> anyhow::Result<RunSummary> {
+    let mut audit = RunAudit::new(&args, false);
+    run_with_audit(args, pipeline, input_pattern, request_id, &mut audit)
+}
+
+pub(crate) fn run_with_audit(
     mut args: RunRequest,
     pipeline: PipelineRules,
     input_pattern: String,
     request_id: String,
+    audit: &mut RunAudit,
 ) -> anyhow::Result<RunSummary> {
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
         .map_err(|error| {
@@ -65,6 +78,12 @@ pub(crate) fn run(
     )?;
     args.input = Some(paths.input);
     args.output = paths.output;
+    audit.record_resolved_paths(
+        args.input
+            .as_deref()
+            .expect("resolved paths always include input"),
+        args.output.as_deref(),
+    );
     validate_cli_request(&args).map_err(|error| {
         with_stage_context(
             error,
@@ -95,6 +114,27 @@ pub(crate) fn run(
             Some(input.clone()),
         )
     })?;
+    audit.record_reader_identity(raw.sheet_name.clone(), reader_rows);
+    if audit.enabled() {
+        let (input_size_bytes, input_sha256) = sha256_file(&input).map_err(|source| {
+            CostingError::io_with_source(
+                ErrorCode::FileNotReadable,
+                format!("计算输入 workbook SHA-256 失败: {source}"),
+                source,
+            )
+            .with_context(ErrorContext::new(
+                &request_id,
+                ErrorStage::HashInput,
+                Some(input.clone()),
+            ))
+        })?;
+        audit.record_input(
+            input_size_bytes,
+            input_sha256,
+            raw.sheet_name.clone(),
+            reader_rows,
+        );
+    }
     let normalized = measure(&mut timings, "normalize", || {
         normalize_workbook(raw, &pipeline, month_range)
     })
@@ -198,6 +238,13 @@ pub(crate) fn run(
         ),
         ("work_order_rows".to_string(), work_order_rows),
     ]);
+    audit.record_sheet_names(
+        payload
+            .sheet_models
+            .iter()
+            .map(|sheet| sheet.sheet_name.clone())
+            .collect(),
+    );
     let workbook_path = args.output.as_ref().map(|path| path.display().to_string());
     let output_size_bytes = if !args.check_only {
         let output = args
@@ -221,6 +268,26 @@ pub(crate) fn run(
         })?;
         timings.insert("writer_populate", report.writer_populate_seconds);
         timings.insert("xlsx_save", report.xlsx_save_seconds);
+        audit.mark_output_published(report.output_size_bytes, report.low_memory_writer);
+        if audit.enabled() {
+            let (output_size_bytes, output_sha256) = sha256_file(output).map_err(|source| {
+                let mut context =
+                    ErrorContext::new(&request_id, ErrorStage::HashOutput, Some(output.clone()));
+                context.details.final_output_valid = true;
+                context.details.final_output =
+                    Some(Box::new(costing_core::error::FinalOutputMeta {
+                        final_output_path: output.clone(),
+                        final_output_sha256: None,
+                    }));
+                CostingError::io_with_source(
+                    ErrorCode::OutputNotWritable,
+                    format!("计算输出 workbook SHA-256 失败: {source}"),
+                    source,
+                )
+                .with_context(context)
+            })?;
+            audit.record_output(output_size_bytes, output_sha256, report.low_memory_writer);
+        }
         Some(report.output_size_bytes)
     } else {
         None
@@ -459,18 +526,85 @@ pub fn validate_cli_request(args: &RunRequest) -> Result<(), CostingError> {
                 "输入文件与输出文件不能是同一文件",
             ));
         }
+        match output.try_exists() {
+            Ok(true) => {
+                return Err(CostingError::io(
+                    ErrorCode::OutputExists,
+                    format!("输出 workbook 已存在: {}", output.display()),
+                    output.clone(),
+                ));
+            }
+            Ok(false) => {}
+            Err(source) => {
+                return Err(CostingError::io(
+                    ErrorCode::OutputNotWritable,
+                    format!("无法检查输出 workbook 路径 {}: {source}", output.display()),
+                    output.clone(),
+                ));
+            }
+        }
+    }
+    if let Some(summary_output) = args.summary_output.as_ref() {
+        if args
+            .output
+            .as_ref()
+            .is_some_and(|output| paths_resolve_to_same_file(output, summary_output))
+        {
+            return Err(CostingError::invalid_input(
+                "workbook 输出与运行 Manifest 不能指向同一文件",
+            ));
+        }
+        match summary_output.try_exists() {
+            Ok(true) => {
+                return Err(CostingError::io(
+                    ErrorCode::OutputExists,
+                    format!("运行 Manifest 已存在: {}", summary_output.display()),
+                    summary_output.clone(),
+                ));
+            }
+            Ok(false) => {}
+            Err(source) => {
+                return Err(CostingError::io(
+                    ErrorCode::OutputNotWritable,
+                    format!(
+                        "无法检查运行 Manifest 路径 {}: {source}",
+                        summary_output.display()
+                    ),
+                    summary_output.clone(),
+                ));
+            }
+        }
     }
     Ok(())
 }
 
 fn paths_resolve_to_same_file(input: &Path, output: &Path) -> bool {
-    if !output.exists() {
-        return false;
-    }
     match (input.canonicalize(), output.canonicalize()) {
         (Ok(input), Ok(output)) => input == output,
-        _ => input == output,
+        _ => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            normalize_comparison_path(input, &cwd) == normalize_comparison_path(output, &cwd)
+        }
     }
+}
+
+fn normalize_comparison_path(path: &Path, cwd: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn map_xlsx_read_error(path: &Path, error: CostingXlsxError) -> CostingError {
@@ -490,8 +624,10 @@ fn map_xlsx_write_error(path: &Path, error: WriterError) -> CostingError {
     let WriterError { context, primary } = error;
     let mapped = match primary {
         WriterPrimaryError::Io(source) => {
-            let is_create_race = context.details.stage == ErrorStage::CreateFinalOutput
-                && source.kind() == std::io::ErrorKind::AlreadyExists;
+            let is_create_race = matches!(
+                context.details.stage,
+                ErrorStage::CreateFinalOutput | ErrorStage::PublishWorkbook
+            ) && source.kind() == std::io::ErrorKind::AlreadyExists;
             let code = if is_create_race {
                 ErrorCode::OutputExists
             } else {
@@ -553,6 +689,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+            summary_output: None,
+            redact_paths: false,
             config: None,
             operation: RunOperation::Execute,
         }
@@ -587,7 +725,8 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -611,7 +750,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -642,7 +782,8 @@ mod tests {
             month_end: Some("2026-03".to_string()),
             check_only: false,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -694,7 +835,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -705,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_output_is_deferred_to_writer_atomic_create() {
+    fn existing_output_fails_request_validation_without_changing_original() {
         let input = unique_temp_path(&std::env::temp_dir(), "existing-output-input", "xlsx");
         let output = unique_temp_path(&std::env::temp_dir(), "existing-output", "xlsx");
         std::fs::write(&input, "input").unwrap();
@@ -715,9 +857,10 @@ mod tests {
             ..args(input.to_str().unwrap())
         };
 
-        let result = validate_cli_request(&request);
+        let error = validate_cli_request(&request).unwrap_err();
 
-        assert!(result.is_ok());
+        assert_eq!(error.code(), ErrorCode::OutputExists);
+        assert_eq!(error.path(), Some(output.as_path()));
         assert_eq!(std::fs::read_to_string(&output).unwrap(), "existing");
         let _ = std::fs::remove_file(input);
         let _ = std::fs::remove_file(output);
@@ -821,7 +964,8 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -872,7 +1016,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -924,7 +1069,8 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: true,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -952,7 +1098,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -977,7 +1124,8 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,
@@ -1036,7 +1184,8 @@ mod tests {
             month_end: Some("2025-02".to_string()),
             check_only: true,
             benchmark: false,
-
+            summary_output: None,
+            redact_paths: false,
             config: None,
 
             operation: RunOperation::Execute,

@@ -21,8 +21,8 @@
 - `cargo build --release --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
 - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb`: 从仓库根目录执行 GB Rust 管线
 - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk`: 从仓库根目录执行 SK Rust 管线
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark`: GB Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark`: SK Rust 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark`: GB Rust 预检模式；默认不落 workbook 或外部摘要，显式 `--summary-output` 时只原子写出 Manifest
+- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark`: SK Rust 预检模式；默认不落 workbook 或外部摘要，显式 `--summary-output` 时只原子写出 Manifest
 - 正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径
 - 省略 `--input` 时扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`
 - 非 `--check-only` 模式省略 `--output` 时，自动写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
@@ -30,6 +30,8 @@
   - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx`
   - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx`
 - Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件
+- `--summary-output <path>` 显式请求版本化 `RunManifestV1`；默认不计算文件 SHA-256 或创建 sidecar，summary 已存在时在读取 workbook 前失败
+- workbook 与 Manifest 均使用同目录 `.costing-publish-*` 临时成品、flush/sync 和禁止覆盖发布；`--redact-paths` 对目录内路径相对化、目录外路径仅保留 basename
 - `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
 - `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查
 - `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖
@@ -92,8 +94,8 @@
 - 成本核算 Rust CLI 默认按顺序输出以下 3 张 Sheet：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`。
 - `成本分析产品维度` 不属于 Rust 新系统输出契约；Python legacy helper 只作为退场前历史代码存在。
 - Python retirement 需单独批准；当前保留 Python 路径仅用于 oracle、回归和迁移校验。
-- 每次只落盘一个处理后 workbook：无月过滤时为 `*_处理后.xlsx`，有月过滤时为 `*_处理后_<月份后缀>.xlsx`；不再额外生成 `*_处理后_error_log.csv` 或 `*_处理后_summary.json`。
-- 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台；`--check-only` 只做预检与摘要，不写 workbook 或任何外部摘要文件。
+- 每次只落盘一个处理后 workbook：无月过滤时为 `*_处理后.xlsx`，有月过滤时为 `*_处理后_<月份后缀>.xlsx`；不再自动生成 `*_处理后_error_log.csv` 或旧式 `*_处理后_summary.json`，仅在显式 `--summary-output` 时写版本化 Manifest。
+- 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台；`--check-only` 默认不写外部文件，显式 `--summary-output` 时只写 Manifest、不写 workbook。
 - 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
 - 产品白名单池按 `产品编码 + 产品名称` 双字段精确匹配，影响分析维度 Sheet，不过滤 `成本计算单总表` 和 `成本计算单数量聚合维度`。
 - 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。

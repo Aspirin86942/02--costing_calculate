@@ -937,6 +937,8 @@ mod tests {
     #[test]
     fn writer_io_error_reaches_cli_with_same_raw_os_error() {
         let output = PathBuf::from("storage-full-output.xlsx");
+        // Windows ERROR_DISK_FULL and Unix ENOSPC use different native codes.
+        let raw_os_error = if cfg!(windows) { 112 } else { 28 };
         let writer_error = WriterError {
             context: ErrorContext::new(
                 "writer-owned-request",
@@ -945,7 +947,7 @@ mod tests {
             ),
             low_memory_writer: false,
             primary: WriterPrimaryError::Xlsx(CostingXlsxError::Writer(XlsxError::IoError(
-                std::io::Error::from_raw_os_error(112),
+                std::io::Error::from_raw_os_error(raw_os_error),
             ))),
         };
 
@@ -965,11 +967,11 @@ mod tests {
         }
         let original_io = original_io.expect("original std::io::Error in source chain");
         assert_eq!(original_io.kind(), std::io::ErrorKind::StorageFull);
-        assert_eq!(original_io.raw_os_error(), Some(112));
+        assert_eq!(original_io.raw_os_error(), Some(raw_os_error));
 
         let json = serde_json::to_value(ErrorSummary::from_error(&error)).unwrap();
         assert_eq!(json["details"]["io_kind"], "StorageFull");
-        assert_eq!(json["details"]["raw_os_error"], 112);
+        assert_eq!(json["details"]["raw_os_error"], raw_os_error);
     }
 
     #[test]

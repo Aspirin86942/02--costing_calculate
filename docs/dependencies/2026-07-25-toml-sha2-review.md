@@ -2,9 +2,8 @@
 
 ## Decision
 
-**Recommendation:** approve the exact versions and minimal features below for
-M3 configuration governance. **Approval status:** pending explicit repository
-owner approval; this record does not itself authorize a dependency change.
+**Decision:** the repository owner approved the exact versions and minimal
+features below for M3 configuration governance on 2026-07-25.
 
 ```toml
 toml = { version = "1.1.3", default-features = false, features = ["parse", "serde", "std"] }

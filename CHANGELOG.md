@@ -7,8 +7,8 @@ All notable changes to Costing Calculate are documented in this file.
 - Adopt comparison-only borrowed `cell_text` access after the controlled SK
   check-only and normal-run experiments passed all performance and correctness
   gates.
-- Complete the controlled ZIP compression experiment before the final v0.2.0
-  release.
+- Retain ZIP compression Level 5 after controlled Level 3 and Level 2
+  experiments improved save time but exceeded the frozen SK output-size gate.
 
 ## 0.2.0-rc.1 - 2026-07-25
 

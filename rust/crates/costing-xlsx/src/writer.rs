@@ -216,7 +216,7 @@ fn write_workbook_controlled(
 
     #[cfg(feature = "low-memory")]
     if let Some(workspace) = temp_workspace.as_ref() {
-        if let Err(error) = workbook.set_compression_level(2) {
+        if let Err(error) = workbook.set_compression_level(5) {
             drop(workbook);
             return finish_with_temp_cleanup(
                 context,

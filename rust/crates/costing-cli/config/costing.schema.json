@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Aspirin86942/02--costing_calculate/schemas/costing-config-v1.schema.json",
+  "title": "Costing Calculate Configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pipelines"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "pipelines": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gb",
+        "sk"
+      ],
+      "properties": {
+        "gb": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/pipeline"
+            },
+            {
+              "properties": {
+                "input_pattern": {
+                  "pattern": "^gb-[^/\\\\]*\\.xlsx$"
+                },
+                "standalone_cost_items": {
+                  "const": [
+                    "委外加工费"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "sk": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/pipeline"
+            },
+            {
+              "properties": {
+                "input_pattern": {
+                  "pattern": "^sk-[^/\\\\]*\\.xlsx$"
+                },
+                "standalone_cost_items": {
+                  "const": [
+                    "委外加工费",
+                    "软件费用"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_pattern",
+        "standalone_cost_items",
+        "product_order"
+      ],
+      "properties": {
+        "input_pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "standalone_cost_items": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "product_order": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/product"
+          }
+        }
+      }
+    },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "name",
+        "display_order"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

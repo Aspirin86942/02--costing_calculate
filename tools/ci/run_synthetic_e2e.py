@@ -63,12 +63,26 @@ def _assert_success(
     return payload
 
 
+def _assert_config_valid(result: subprocess.CompletedProcess[str], pipeline: PipelineName) -> None:
+    if result.returncode != 0:
+        raise RuntimeError(f'{pipeline} embedded config validation failed: {result.stderr.strip()}')
+    payload = json.loads(result.stdout)
+    if (
+        payload.get('status') != 'valid'
+        or payload.get('pipeline') != pipeline
+        or payload.get('schema_version') != 1
+        or payload.get('source') != 'embedded-default'
+    ):
+        raise RuntimeError(f'{pipeline} returned an unexpected config validation record: {payload}')
+
+
 def _exercise_pipeline(
     binary: Path,
     root: Path,
     pipeline: PipelineName,
     expected_sheets: tuple[str, ...],
 ) -> None:
+    _assert_config_valid(_run(binary, pipeline, root, '--validate-config'), pipeline)
     input_path = root / 'data' / 'raw' / pipeline / f'{pipeline}-synthetic.xlsx'
     build_raw_fixture(input_path, pipeline, 'small')
 
@@ -118,7 +132,7 @@ def main() -> int:
         expected_sheets = load_expected_sheet_order()
         for pipeline in PIPELINES:
             _exercise_pipeline(binary, root, pipeline, expected_sheets)
-    print('synthetic GB/SK check-only, workbook, and no-overwrite smokes passed')
+    print('synthetic GB/SK config, check-only, workbook, and no-overwrite smokes passed')
     return 0
 
 

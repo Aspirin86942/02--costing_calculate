@@ -5,6 +5,7 @@ use serde::Serialize;
 use crate::error::CostingError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PipelineName {
     Gb,
     Sk,
@@ -32,49 +33,39 @@ impl FromStr for PipelineName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PipelineConfig {
+pub struct PipelineRules {
     pub name: PipelineName,
-    pub product_order: &'static [(&'static str, &'static str)],
-    pub standalone_cost_items: &'static [&'static str],
+    pub input_pattern: String,
+    pub product_order: Vec<(String, String)>,
+    pub standalone_cost_items: Vec<String>,
 }
 
-pub const GB_PRODUCT_ORDER: &[(&str, &str)] = &[
-    ("GB_C.D.B0048AA", "BMS-400W驱动器"),
-    ("GB_C.D.B0040AA", "BMS-750W驱动器"),
-    ("GB_C.D.B0041AA", "BMS-1100W驱动器"),
-    ("GB_C.D.B0042AA", "BMS-1700W驱动器"),
-    ("GB_C.D.B0043AA", "BMS-2400W驱动器"),
-    ("GB_C.D.B0044AA", "BMS-3900W驱动器"),
-    ("GB_C.D.B0045AA", "BMS-5900W驱动器"),
-    ("GB_C.D.B0046AA", "BMS-7500W驱动器"),
-];
-
-pub const SK_PRODUCT_ORDER: &[(&str, &str)] = &[
-    ("DP.C.P0197AA", "动力线"),
-    ("DP.C.P0201AA", "动力线"),
-    ("DP.C.P0198AA", "动力线"),
-    ("DP.C.P0199AA", "动力线"),
-    ("DP.C.P0257AA", "动力线"),
-    ("DP.C.P0200AA", "动力线"),
-    ("DP.C.P0246AA", "动力抱闸线"),
-    ("DP.C.P0252AA", "动力线"),
-];
-
-impl PipelineConfig {
-    pub fn for_name(name: PipelineName) -> Self {
+#[cfg(test)]
+impl PipelineRules {
+    pub(crate) fn for_name(name: PipelineName) -> Self {
         match name {
             PipelineName::Gb => Self {
                 name,
-                product_order: GB_PRODUCT_ORDER,
-                standalone_cost_items: &["委外加工费"],
+                input_pattern: "gb-*.xlsx".to_string(),
+                product_order: Vec::new(),
+                standalone_cost_items: vec!["委外加工费".to_string()],
             },
             PipelineName::Sk => Self {
                 name,
-                product_order: SK_PRODUCT_ORDER,
-                standalone_cost_items: &["委外加工费", "软件费用"],
+                input_pattern: "sk-*.xlsx".to_string(),
+                product_order: Vec::new(),
+                standalone_cost_items: vec!["委外加工费".to_string(), "软件费用".to_string()],
             },
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn owned_product_order(values: &[(&str, &str)]) -> Vec<(String, String)> {
+    values
+        .iter()
+        .map(|(code, name)| ((*code).to_string(), (*name).to_string()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -82,13 +73,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gb_and_sk_configs_match_python_contract() {
-        let gb = PipelineConfig::for_name(PipelineName::Gb);
+    fn test_rules_keep_pipeline_identity_and_sealed_standalone_items() {
+        let gb = PipelineRules::for_name(PipelineName::Gb);
+        assert_eq!(gb.name, PipelineName::Gb);
+        assert_eq!(gb.input_pattern, "gb-*.xlsx");
         assert_eq!(gb.standalone_cost_items, ["委外加工费"]);
-        assert_eq!(gb.product_order, GB_PRODUCT_ORDER);
 
-        let sk = PipelineConfig::for_name(PipelineName::Sk);
+        let sk = PipelineRules::for_name(PipelineName::Sk);
+        assert_eq!(sk.name, PipelineName::Sk);
+        assert_eq!(sk.input_pattern, "sk-*.xlsx");
         assert_eq!(sk.standalone_cost_items, ["委外加工费", "软件费用"]);
-        assert_eq!(sk.product_order, SK_PRODUCT_ORDER);
     }
 }

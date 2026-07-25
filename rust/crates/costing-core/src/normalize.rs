@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::error::CostingError;
 use crate::model::{CellValue, MonthRange, NormalizedCostFrame, RawWorkbook};
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineRules;
 use crate::table::{ColumnId, ColumnSchema, DerivedColumnPosition, IndexedRow, IndexedTable};
 
 const PERIOD_COLUMN: &str = "年期";
@@ -86,7 +86,7 @@ pub fn build_month_range(
 
 pub fn normalize_workbook(
     raw: RawWorkbook,
-    _config: &PipelineConfig,
+    _config: &PipelineRules,
     month_range: Option<MonthRange>,
 ) -> Result<NormalizedCostFrame, CostingError> {
     let normalized_range = month_range.map(normalize_month_range).transpose()?;
@@ -410,7 +410,7 @@ fn cell_text(value: &CellValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::pipeline::{PipelineName, PipelineRules};
 
     fn raw_table(columns: &[&str], rows: Vec<Vec<CellValue>>) -> RawWorkbook {
         RawWorkbook {
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn forward_fill_skips_vendor_columns_for_integrated_workshop() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
         assert_eq!(
             value(&normalized, 1, "产品编码"),
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn integrated_workshop_rows_do_not_seed_vendor_forward_fill() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let raw = RawWorkbook {
             sheet_name: "成本计算单".to_string(),
             header_rows: [
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn removes_total_rows() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let mut raw = raw_with_vendor_rows();
         raw.rows.push(vec![
             CellValue::Text("合计".to_string()),
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn normalizes_alias_columns_like_python_infer_rename_map() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let raw = RawWorkbook {
             sheet_name: "成本计算单".to_string(),
             header_rows: [
@@ -601,7 +601,7 @@ mod tests {
 
     #[test]
     fn always_adds_blank_filled_cost_item_when_cost_item_column_missing() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let raw = RawWorkbook {
             sheet_name: "成本计算单".to_string(),
             header_rows: [
@@ -629,7 +629,7 @@ mod tests {
 
     #[test]
     fn key_columns_match_python_contract_even_if_some_columns_are_missing() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
 
         assert_eq!(
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn adds_month_column_after_period_column() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
         let (schema, display, rows) = normalized.into_table().into_parts();
         assert_eq!(schema.name(display[1]).unwrap(), "月份");
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn zero_pads_single_digit_month_display_like_python() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let raw = RawWorkbook {
             sheet_name: "成本计算单".to_string(),
             header_rows: [
@@ -681,7 +681,7 @@ mod tests {
 
     #[test]
     fn filters_rows_by_strict_month_range() {
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let raw = RawWorkbook {
             sheet_name: "成本计算单".to_string(),
             header_rows: [
@@ -740,7 +740,7 @@ mod tests {
                     vec![CellValue::Blank],
                 ],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();
@@ -763,7 +763,7 @@ mod tests {
                     CellValue::Text("LAST".to_string()),
                 ]],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();
@@ -787,7 +787,7 @@ mod tests {
                     CellValue::Text("last".to_string()),
                 ]],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();
@@ -813,7 +813,7 @@ mod tests {
                 &["月份"],
                 vec![vec![CellValue::Text("manual-month".to_string())]],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();
@@ -839,7 +839,7 @@ mod tests {
                     CellValue::Text("车间".to_string()),
                 ]],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();
@@ -873,7 +873,7 @@ mod tests {
                     CellValue::Text("last".to_string()),
                 ]],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             None,
         )
         .unwrap();

@@ -9,6 +9,7 @@
 - 默认输出 3 张业务工作表，覆盖成本总表、数量聚合和工单维度异常
 - 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台展示
 - 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
+- 提供版本化 TOML 配置、严格 schema 校验、有效配置来源和 SHA-256 语义指纹
 - 字段名提取和标准化
 
 ## 安装
@@ -30,11 +31,14 @@ cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- --version-json
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --validate-config
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --print-effective-config
 ```
 
 上述正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径。
 
-从仓库根目录运行并省略 `--input` 时，CLI 会扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`。
+从仓库根目录运行并省略 `--input` 时，CLI 会使用有效配置中的安全 basename glob 扫描 `data/raw/<pipeline>/`；内置默认值仍为 `<pipeline>-*.xlsx`。恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`。
 
 以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义输入、输出路径时，仍可显式指定：
 
@@ -42,6 +46,32 @@ cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk -
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
 cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
 ```
+
+### 配置治理
+
+不传 `--config` 时，可执行文件使用内置的完整
+[`costing.default.toml`](rust/crates/costing-cli/config/costing.default.toml)。
+外部配置必须完整声明 GB 和 SK，整体替换外部可维护面，不做隐式深层合并：
+
+```powershell
+# 只校验配置；不读取 workbook
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --config costing.toml --validate-config
+
+# 展示实际生效的字段、embedded-default/external/sealed 来源和 SHA-256
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --config costing.toml --print-effective-config
+
+# 正常运行
+cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --config costing.toml
+```
+
+未知字段、非 UTF-8、缺失管线、重复产品编码/顺序、危险输入 glob
+或越权修改独立成本项都会在读取 workbook 前失败。产品展示规则和安全
+输入模式可由外部维护；GB/SK 独立成本项集合与顺序仍是 sealed 契约。
+JSON Schema 见
+[`costing.schema.json`](rust/crates/costing-cli/config/costing.schema.json)。
+`effective_sha256` 对类型化语义值计算，因此 TOML 注释、空白和键顺序不
+改变它；外部配置另返回原始字节的 `source_sha256`，且诊断输出不暴露
+配置绝对路径。
 
 Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：
 

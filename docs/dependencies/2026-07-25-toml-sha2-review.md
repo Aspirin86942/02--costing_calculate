@@ -6,8 +6,8 @@
 features below for M3 configuration governance on 2026-07-25.
 
 ```toml
-toml = { version = "1.1.3", default-features = false, features = ["parse", "serde", "std"] }
-sha2 = { version = "0.11.0", default-features = false }
+toml = { version = "=1.1.3", default-features = false, features = ["parse", "serde", "std"] }
+sha2 = { version = "=0.11.0", default-features = false }
 ```
 
 The application will use existing `serde`/`serde_json` support, and will not add

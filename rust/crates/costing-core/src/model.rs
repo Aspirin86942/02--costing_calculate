@@ -126,7 +126,7 @@ pub(crate) struct CostAmounts {
     pub(crate) moh_consumables: Decimal,
     pub(crate) moh_depreciation: Decimal,
     pub(crate) moh_utilities: Decimal,
-    // 独立成本项按 PipelineConfig 的固定顺序保存，避免每个工单重复持有 bucket 字符串。
+    // 独立成本项按 PipelineRules 的固定顺序保存，避免每个工单重复持有 bucket 字符串。
     pub(crate) standalone: Vec<Decimal>,
 }
 
@@ -348,6 +348,9 @@ mod error_summary_tests {
     fn error_stage_has_exact_approved_serialization_set() {
         let stages = [
             ErrorStage::ValidateCliRequest,
+            ErrorStage::LoadConfig,
+            ErrorStage::ParseConfig,
+            ErrorStage::ValidateConfig,
             ErrorStage::ResolveCliPaths,
             ErrorStage::IngestWorkbook,
             ErrorStage::Normalize,
@@ -371,11 +374,14 @@ mod error_summary_tests {
             .map(|stage| serde_json::to_value(stage).unwrap())
             .collect::<Vec<_>>();
 
-        assert_eq!(stages.len(), 18);
+        assert_eq!(stages.len(), 21);
         assert_eq!(
             serde_json::Value::Array(serialized),
             serde_json::json!([
                 "ValidateCliRequest",
+                "LoadConfig",
+                "ParseConfig",
+                "ValidateConfig",
                 "ResolveCliPaths",
                 "IngestWorkbook",
                 "Normalize",

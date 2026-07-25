@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 
 use crate::error::CostingError;
 use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel};
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineRules;
 use crate::scoring::{
     decimal_ln, grade_score, modified_z_score, resolve_effective_log_mad, weighted_mad,
     weighted_median,
@@ -142,7 +142,7 @@ struct AnomalyRow<'a> {
 
 pub fn build_work_order_anomaly_sheet(
     bundle: &FactBundle,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> Result<SheetModel, CostingError> {
     let columns = work_order_columns(config);
     let mut rows = analysis_work_order_rows(bundle, config)?
@@ -173,7 +173,7 @@ pub fn build_work_order_anomaly_sheet(
 
 fn analysis_work_order_rows<'a>(
     bundle: &'a FactBundle,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> Result<Vec<&'a QtyFactRow>, CostingError> {
     if config.product_order.is_empty() {
         return Ok(bundle.work_order_rows().collect());
@@ -187,7 +187,7 @@ fn analysis_work_order_rows<'a>(
         if let Some(order_index) = config
             .product_order
             .iter()
-            .position(|(code, name)| *code == product_code && *name == product_name)
+            .position(|(code, name)| code == &product_code && name == &product_name)
         {
             rows.push((
                 order_index,
@@ -224,12 +224,12 @@ fn compare_order_line_text(left_text: &str, right_text: &str) -> std::cmp::Order
     }
 }
 
-fn work_order_columns(config: &PipelineConfig) -> Vec<String> {
+fn work_order_columns(config: &PipelineRules) -> Vec<String> {
     let mut columns = BASE_WORK_ORDER_COLUMNS
         .iter()
         .map(|value| (*value).to_string())
         .collect::<Vec<_>>();
-    for item in config.standalone_cost_items {
+    for item in &config.standalone_cost_items {
         let meta = standalone_meta(item);
         insert_before(&mut columns, "总单位完工成本", meta.amount_column);
         insert_before(&mut columns, "是否可参与分析", meta.unit_column);
@@ -251,7 +251,7 @@ fn insert_before(columns: &mut Vec<String>, marker: &str, value: &str) {
 fn build_anomaly_row<'a>(
     row: &'a QtyFactRow,
     schema: &ColumnSchema,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> Result<AnomalyRow<'a>, CostingError> {
     let completed_qty = row.completed_qty;
     let completed_total = row.completed_total;
@@ -558,7 +558,7 @@ fn map_work_order_value(
     row: &AnomalyRow<'_>,
     schema: &ColumnSchema,
     column: &str,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> Result<CellValue, CostingError> {
     Ok(match column {
         "月份" => value_any(schema, row.source, &["period_display", "月份", "年期"])?,
@@ -607,9 +607,9 @@ fn map_work_order_value(
 fn standalone_display_value(
     row: &AnomalyRow<'_>,
     column: &str,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> CellValue {
-    for item in config.standalone_cost_items {
+    for item in &config.standalone_cost_items {
         let meta = standalone_meta(item);
         if column == meta.amount_column {
             return decimal_value(row, meta.amount_key);
@@ -789,7 +789,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow};
-    use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::pipeline::{PipelineName, PipelineRules};
     use crate::table::IndexedTable;
 
     use super::*;
@@ -797,10 +797,10 @@ mod tests {
     const TEST_PRODUCT_ORDER: &[(&str, &str)] = &[("P1", "产品"), ("P-NEAR-MAD", "近零MAD产品")];
     type NamedTestRow = BTreeMap<String, CellValue>;
 
-    fn test_config(name: PipelineName) -> PipelineConfig {
-        PipelineConfig {
-            product_order: TEST_PRODUCT_ORDER,
-            ..PipelineConfig::for_name(name)
+    fn test_config(name: PipelineName) -> PipelineRules {
+        PipelineRules {
+            product_order: crate::pipeline::owned_product_order(TEST_PRODUCT_ORDER),
+            ..PipelineRules::for_name(name)
         }
     }
 
@@ -985,9 +985,9 @@ mod tests {
     #[test]
     fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
         const PRODUCT_ORDER: &[(&str, &str)] = &[("P2", "产品二"), ("P1", "产品一")];
-        let config = PipelineConfig {
-            product_order: PRODUCT_ORDER,
-            ..PipelineConfig::for_name(PipelineName::Gb)
+        let config = PipelineRules {
+            product_order: crate::pipeline::owned_product_order(PRODUCT_ORDER),
+            ..PipelineRules::for_name(PipelineName::Gb)
         };
         let rows = vec![
             row(
@@ -1230,9 +1230,9 @@ mod tests {
             ),
         ]);
         source.unique_work_order_indices = vec![1];
-        let config = PipelineConfig {
-            product_order: &[],
-            ..PipelineConfig::for_name(PipelineName::Sk)
+        let config = PipelineRules {
+            product_order: vec![],
+            ..PipelineRules::for_name(PipelineName::Sk)
         };
 
         let sheet = build_work_order_anomaly_sheet(&source, &config).unwrap();

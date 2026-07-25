@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use costing_calculate::application::{execute, RunOutcome, RunRequest};
+use costing_calculate::application::{execute, RunOperation, RunOutcome, RunRequest};
 use costing_core::error::ErrorStage;
 use costing_core::{ErrorCode, PipelineName};
 
@@ -15,6 +15,8 @@ fn execute_returns_a_typed_failure_for_an_invalid_request() {
         month_end: None,
         check_only: true,
         benchmark: false,
+        config: None,
+        operation: RunOperation::Execute,
     };
 
     let outcome = execute(request);

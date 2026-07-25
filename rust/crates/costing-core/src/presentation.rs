@@ -4,7 +4,7 @@ use crate::anomaly::build_work_order_anomaly_sheet;
 use crate::error::CostingError;
 use crate::fact::qty_sheet_columns;
 use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel, StageTimings, WorkbookPayload};
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineRules;
 use crate::quality::build_quality_metrics;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, ProjectionPlan};
 
@@ -35,7 +35,7 @@ const QTY_TWO_DECIMAL_COLUMNS: &[&str] = &[
 
 pub fn build_workbook_payload(
     bundle: FactBundle,
-    config: &PipelineConfig,
+    config: &PipelineRules,
     timings: StageTimings,
     month_filter_empty_result: bool,
 ) -> Result<WorkbookPayload, CostingError> {
@@ -119,7 +119,7 @@ fn build_typed_qty_sheet(
     base_column_count: usize,
     columns: Vec<String>,
     rows: Vec<QtyFactRow>,
-    config: &PipelineConfig,
+    config: &PipelineRules,
     number_format_columns: fn(&[String]) -> Vec<String>,
 ) -> Result<SheetModel, CostingError> {
     let plan = ProjectionPlan::new(schema, display_columns)?;
@@ -143,7 +143,7 @@ fn build_typed_qty_sheet(
     })
 }
 
-fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: &PipelineConfig) {
+fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: &PipelineRules) {
     let amounts = &row.amounts;
     for amount in [
         amounts.direct_material,
@@ -279,7 +279,7 @@ mod tests {
     use rust_decimal::Decimal;
 
     use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow, StageTimings};
-    use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::pipeline::{PipelineName, PipelineRules};
     use crate::sheet_contract::{detail_sheet_columns, qty_sheet_base_columns};
     use crate::table::IndexedTable;
 
@@ -567,7 +567,7 @@ mod tests {
     fn payload_has_exactly_three_default_sheets_without_product_dimension() {
         let payload = build_workbook_payload(
             bundle(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -597,7 +597,7 @@ mod tests {
 
         let payload = build_workbook_payload(
             source,
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -615,7 +615,7 @@ mod tests {
 
         let payload = build_workbook_payload(
             bundle(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             timings,
             false,
         )
@@ -650,7 +650,7 @@ mod tests {
                 vec!["委外加工费单位完工成本", "软件费用单位完工成本"],
             ),
         ] {
-            let config = PipelineConfig::for_name(pipeline);
+            let config = PipelineRules::for_name(pipeline);
             let payload = build_workbook_payload(
                 typed_projection_bundle(reason),
                 &config,
@@ -779,7 +779,7 @@ mod tests {
         source.qty_rows[0].amounts.direct_material = Decimal::MAX;
         let payload = build_workbook_payload(
             source,
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -798,9 +798,9 @@ mod tests {
     fn work_order_sheet_borrows_qty_fact_by_unique_indices() {
         let mut source = bundle();
         source.unique_work_order_indices = vec![0];
-        let config = PipelineConfig {
-            product_order: &[],
-            ..PipelineConfig::for_name(PipelineName::Gb)
+        let config = PipelineRules {
+            product_order: vec![],
+            ..PipelineRules::for_name(PipelineName::Gb)
         };
 
         let payload =
@@ -813,7 +813,7 @@ mod tests {
     fn presentation_preserves_three_sheet_order_after_fact_model_change() {
         let payload = build_workbook_payload(
             bundle(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -837,7 +837,7 @@ mod tests {
     fn empty_flat_sheets_keep_source_schema() {
         let payload = build_workbook_payload(
             empty_bundle_with_schema(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -871,7 +871,7 @@ mod tests {
     fn flat_sheet_metadata_matches_default_python_contract() {
         let payload = build_workbook_payload(
             bundle(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )
@@ -900,7 +900,7 @@ mod tests {
     fn flat_sheets_do_not_expose_internal_or_cross_sheet_columns() {
         let payload = build_workbook_payload(
             bundle_with_internal_schema_columns(),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
             StageTimings::default(),
             false,
         )

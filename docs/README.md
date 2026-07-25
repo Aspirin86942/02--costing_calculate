@@ -7,10 +7,16 @@
 - [`../README.md`](../README.md)：面向使用者的安装、运行、输出与性能行为。
 - [`../AGENTS.md`](../AGENTS.md)：面向代码代理的工程约束、业务规则和完成标准。
 - [`../CLAUDE.md`](../CLAUDE.md)：Claude Code 的当前 Rust/Cargo 与 uv 使用口径。
+- [`PRD-costing-calculate-v0.2.md`](PRD-costing-calculate-v0.2.md)：v0.2.0 生产化、配置、Manifest、原子发布与 Release 的验收规格。
 - [`rust_rewrite_validation.md`](rust_rewrite_validation.md)：2026-07-12 Rust 主路径最终验证结论和持续门禁。
 - [`performance/README.md`](performance/README.md)：当前性能目标、实现边界、复测方式和冻结基线说明。
 - [`evidence/2026-07-12-rust-performance-validation.md`](evidence/2026-07-12-rust-performance-validation.md)：最终 N=5 验收快照及证据限制。
 - [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：Python oracle/legacy 的保留与独立退场边界。
+- [`../rust/crates/costing-cli/config/costing.default.toml`](../rust/crates/costing-cli/config/costing.default.toml)：内置且随 Release 分发的完整 GB/SK 默认配置。
+- [`../rust/crates/costing-cli/config/costing.schema.json`](../rust/crates/costing-cli/config/costing.schema.json)：严格配置 schema v1。
+- [`dependencies/2026-07-25-toml-sha2-review.md`](dependencies/2026-07-25-toml-sha2-review.md)：M3 新增生产依赖的批准、许可证和锁文件影响。
+- [`evidence/2026-07-25-v0.2.0-m0-baseline.md`](evidence/2026-07-25-v0.2.0-m0-baseline.md)：v0.2.0 冻结输入、阶段基线、完整规则快照和签字。
+- [`evidence/2026-07-25-v0.2.0-m3-config-governance.md`](evidence/2026-07-25-v0.2.0-m3-config-governance.md)：M3 配置治理、三路真实数据迁移对比和退出证据。
 - [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
 
 ## 权威顺序

@@ -7,6 +7,7 @@ use thiserror::Error;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
     InvalidInput,
+    InvalidConfig,
     FileNotFound,
     FileNotReadable,
     UnsupportedFileType,
@@ -25,6 +26,9 @@ pub enum ErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ErrorStage {
     ValidateCliRequest,
+    LoadConfig,
+    ParseConfig,
+    ValidateConfig,
     ResolveCliPaths,
     IngestWorkbook,
     Normalize,
@@ -216,6 +220,14 @@ impl CostingError {
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::User {
             code: ErrorCode::InvalidInput,
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    pub fn invalid_config(message: impl Into<String>) -> Self {
+        Self::User {
+            code: ErrorCode::InvalidConfig,
             message: message.into(),
             retryable: false,
         }

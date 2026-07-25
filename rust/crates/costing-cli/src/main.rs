@@ -39,6 +39,8 @@ fn main() -> ExitCode {
     }
     match execute(RunRequest::from(args)) {
         RunOutcome::Succeeded(summary) => emit_json(&summary),
+        RunOutcome::ConfigValidated(record) => emit_json(&record),
+        RunOutcome::EffectiveConfig(config) => emit_json(&config),
         RunOutcome::Failed(failure) => emit_error(failure),
     }
 }

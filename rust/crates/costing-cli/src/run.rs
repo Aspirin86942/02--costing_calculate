@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use costing_core::error::{ErrorContext, ErrorStage};
 use costing_core::fact::build_fact_bundle;
@@ -9,13 +9,14 @@ use costing_core::normalize::{build_month_range, normalize_workbook};
 use costing_core::presentation::build_workbook_payload;
 use costing_core::split::split_detail_and_qty;
 use costing_core::timing::measure;
-use costing_core::{CostingError, ErrorCode, PipelineConfig, RunSummary, StageTimings};
+use costing_core::{CostingError, ErrorCode, PipelineRules, RunSummary, StageTimings};
 use costing_xlsx::{
     reader::{read_raw_workbook, CostingXlsxError, XlsxError},
     writer::{write_workbook, WriterContext, WriterError, WriterPrimaryError},
 };
 
 use crate::application::RunRequest;
+use crate::config::input_pattern_matches;
 
 #[derive(Debug, PartialEq, Eq)]
 struct ResolvedCliPaths {
@@ -23,8 +24,11 @@ struct ResolvedCliPaths {
     output: Option<PathBuf>,
 }
 
-pub(crate) fn run(mut args: RunRequest) -> anyhow::Result<RunSummary> {
-    let request_id = new_request_id();
+pub(crate) fn run(
+    mut args: RunRequest,
+    pipeline: PipelineRules,
+    request_id: String,
+) -> anyhow::Result<RunSummary> {
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
         .map_err(|error| {
             with_stage_context(error, &request_id, ErrorStage::ValidateCliRequest, None)
@@ -48,7 +52,13 @@ pub(crate) fn run(mut args: RunRequest) -> anyhow::Result<RunSummary> {
             .join("raw")
             .join(args.pipeline.as_str())
     });
-    let paths = resolve_cli_paths(&args, &base_dir, month_range.as_ref()).map_err(|error| {
+    let paths = resolve_cli_paths(
+        &args,
+        &base_dir,
+        month_range.as_ref(),
+        &pipeline.input_pattern,
+    )
+    .map_err(|error| {
         with_stage_context(
             error,
             &request_id,
@@ -67,7 +77,6 @@ pub(crate) fn run(mut args: RunRequest) -> anyhow::Result<RunSummary> {
         )
     })?;
     let month_filter_requested = month_range.is_some();
-    let pipeline = PipelineConfig::for_name(args.pipeline);
     let mut timings = StageTimings::default();
     let input = args
         .input
@@ -251,14 +260,6 @@ fn with_stage_context(
     error.with_context(ErrorContext::new(request_id, stage, path))
 }
 
-fn new_request_id() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("costing-{}-{nanos}", std::process::id())
-}
-
 fn required_quality_count(
     quality_metrics: &[costing_core::model::QualityMetric],
     metric_name: &str,
@@ -292,11 +293,12 @@ fn resolve_cli_paths(
     args: &RunRequest,
     base_dir: &Path,
     month_range: Option<&MonthRange>,
+    input_pattern: &str,
 ) -> Result<ResolvedCliPaths, CostingError> {
     let pipeline = args.pipeline.as_str();
     let input = match &args.input {
         Some(input) => input.clone(),
-        None => discover_default_input(base_dir, pipeline)?,
+        None => discover_default_input(base_dir, pipeline, input_pattern)?,
     };
     let output = match (&args.output, args.check_only) {
         (Some(output), _) => Some(output.clone()),
@@ -311,7 +313,11 @@ fn resolve_cli_paths(
     Ok(ResolvedCliPaths { input, output })
 }
 
-fn discover_default_input(base_dir: &Path, pipeline: &str) -> Result<PathBuf, CostingError> {
+fn discover_default_input(
+    base_dir: &Path,
+    pipeline: &str,
+    input_pattern: &str,
+) -> Result<PathBuf, CostingError> {
     let raw_dir = base_dir.join("data").join("raw").join(pipeline);
     let entries = std::fs::read_dir(&raw_dir).map_err(|error| {
         let code = if error.kind() == std::io::ErrorKind::NotFound {
@@ -325,7 +331,6 @@ fn discover_default_input(base_dir: &Path, pipeline: &str) -> Result<PathBuf, Co
             raw_dir.clone(),
         )
     })?;
-    let expected_prefix = format!("{pipeline}-");
     let mut candidates = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| {
@@ -337,8 +342,8 @@ fn discover_default_input(base_dir: &Path, pipeline: &str) -> Result<PathBuf, Co
         })?;
         let path = entry.path();
         let file_name = entry.file_name();
-        let normalized_name = file_name.to_string_lossy().to_ascii_lowercase();
-        if !normalized_name.starts_with(&expected_prefix) || !normalized_name.ends_with(".xlsx") {
+        let file_name = file_name.to_string_lossy();
+        if !input_pattern_matches(input_pattern, &file_name) {
             continue;
         }
         let metadata = entry.metadata().map_err(|error| {
@@ -359,8 +364,8 @@ fn discover_default_input(base_dir: &Path, pipeline: &str) -> Result<PathBuf, Co
         [] => Err(CostingError::io(
             ErrorCode::FileNotFound,
             format!(
-                "未在默认输入目录 {} 找到 {pipeline}-*.xlsx",
-                raw_dir.display()
+                "未在默认输入目录 {} 找到匹配 {input_pattern:?} 的文件",
+                raw_dir.display(),
             ),
             raw_dir,
         )),
@@ -527,7 +532,16 @@ mod tests {
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
     use super::*;
-    use crate::application::RunRequest;
+    use crate::application::{RunOperation, RunRequest};
+
+    fn run(request: RunRequest) -> anyhow::Result<RunSummary> {
+        let rules = crate::config::load_configuration(None, "costing-unit-test")
+            .unwrap()
+            .for_pipeline(request.pipeline)
+            .unwrap()
+            .rules;
+        super::run(request, rules, "costing-unit-test".to_string())
+    }
 
     fn args(input: &str) -> RunRequest {
         RunRequest {
@@ -538,6 +552,8 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+            config: None,
+            operation: RunOperation::Execute,
         }
     }
 
@@ -570,6 +586,10 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         assert!(validate_cli_request(&request).is_ok());
         let _ = std::fs::remove_file(path);
@@ -590,9 +610,13 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
 
-        let paths = resolve_cli_paths(&request, &root, None).unwrap();
+        let paths = resolve_cli_paths(&request, &root, None, "gb-*.xlsx").unwrap();
 
         assert_eq!(paths.input, input);
         assert_eq!(
@@ -617,13 +641,17 @@ mod tests {
             month_end: Some("2026-03".to_string()),
             check_only: false,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         let month_range = MonthRange {
             start: Some("2026-01".to_string()),
             end: Some("2026-03".to_string()),
         };
 
-        let paths = resolve_cli_paths(&request, &root, Some(&month_range)).unwrap();
+        let paths = resolve_cli_paths(&request, &root, Some(&month_range), "sk-*.xlsx").unwrap();
 
         assert_eq!(
             paths.output,
@@ -665,6 +693,10 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         let error = validate_cli_request(&request).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidInput);
@@ -788,6 +820,10 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         let summary = run(args).unwrap();
 
@@ -835,6 +871,10 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         let summary = run(args).unwrap();
 
@@ -883,6 +923,10 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: true,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         })
         .unwrap();
 
@@ -907,6 +951,10 @@ mod tests {
             month_end: None,
             check_only: false,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
 
         let error = run(args).unwrap_err().downcast::<CostingError>().unwrap();
@@ -928,6 +976,10 @@ mod tests {
             month_end: None,
             check_only: true,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
 
         let error = run(args).unwrap_err().downcast::<CostingError>().unwrap();
@@ -983,6 +1035,10 @@ mod tests {
             month_end: Some("2025-02".to_string()),
             check_only: true,
             benchmark: false,
+
+            config: None,
+
+            operation: RunOperation::Execute,
         };
         let summary = run(args).unwrap();
 

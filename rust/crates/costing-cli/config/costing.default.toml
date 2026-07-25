@@ -1,0 +1,89 @@
+schema_version = 1
+
+[pipelines.gb]
+input_pattern = "gb-*.xlsx"
+standalone_cost_items = ["委外加工费"]
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0048AA"
+name = "BMS-400W驱动器"
+display_order = 10
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0040AA"
+name = "BMS-750W驱动器"
+display_order = 20
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0041AA"
+name = "BMS-1100W驱动器"
+display_order = 30
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0042AA"
+name = "BMS-1700W驱动器"
+display_order = 40
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0043AA"
+name = "BMS-2400W驱动器"
+display_order = 50
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0044AA"
+name = "BMS-3900W驱动器"
+display_order = 60
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0045AA"
+name = "BMS-5900W驱动器"
+display_order = 70
+
+[[pipelines.gb.product_order]]
+code = "GB_C.D.B0046AA"
+name = "BMS-7500W驱动器"
+display_order = 80
+
+[pipelines.sk]
+input_pattern = "sk-*.xlsx"
+standalone_cost_items = ["委外加工费", "软件费用"]
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0197AA"
+name = "动力线"
+display_order = 10
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0201AA"
+name = "动力线"
+display_order = 20
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0198AA"
+name = "动力线"
+display_order = 30
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0199AA"
+name = "动力线"
+display_order = 40
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0257AA"
+name = "动力线"
+display_order = 50
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0200AA"
+name = "动力线"
+display_order = 60
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0246AA"
+name = "动力抱闸线"
+display_order = 70
+
+[[pipelines.sk.product_order]]
+code = "DP.C.P0252AA"
+name = "动力线"
+display_order = 80

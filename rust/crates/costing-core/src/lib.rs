@@ -14,4 +14,4 @@ pub mod timing;
 
 pub use error::{CostingError, ErrorCode};
 pub use model::{RunSummary, StageTimings};
-pub use pipeline::{PipelineConfig, PipelineName};
+pub use pipeline::{PipelineName, PipelineRules};

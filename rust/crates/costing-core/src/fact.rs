@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 
 use crate::error::CostingError;
 use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow, SplitResult};
-use crate::pipeline::PipelineConfig;
+use crate::pipeline::PipelineRules;
 use crate::sheet_contract::qty_sheet_base_columns;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow};
 
@@ -212,7 +212,7 @@ const NON_POSITIVE_UNIT_COST_METRICS: &[(UnitCostAmount, &str)] = &[
 
 pub fn build_fact_bundle(
     split: SplitResult,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> Result<FactBundle, CostingError> {
     let (schema, detail_display_columns, detail_rows, qty_display_columns, qty_source_rows) =
         split.into_parts();
@@ -312,7 +312,7 @@ pub fn build_fact_bundle(
 fn aggregate_detail_rows_in_input_order(
     rows: &[IndexedRow],
     columns: &DetailFactColumns,
-    config: &PipelineConfig,
+    config: &PipelineRules,
     error_issues: &mut Vec<ErrorIssue>,
 ) -> Result<HashMap<String, CostAmounts>, CostingError> {
     let mut amounts_by_key = HashMap::new();
@@ -321,7 +321,7 @@ fn aggregate_detail_rows_in_input_order(
         let cost_item = cell_to_text(row.get(columns.cost_item)?);
         let amount_cell = row.get(columns.completed_amount)?;
         let amount = cell_to_decimal(amount_cell);
-        let classification = classify_cost_item(&cost_item, config.standalone_cost_items);
+        let classification = classify_cost_item(&cost_item, &config.standalone_cost_items);
         if classification == CostClassification::Unmapped {
             if !cost_item.trim().is_empty() {
                 error_issues.push(error_issue(
@@ -367,7 +367,7 @@ fn duplicate_work_order_issue(work_order_key: &str, count: usize) -> ErrorIssue 
 fn calculate_reconciliation(
     amounts: &CostAmounts,
     completed_total: Decimal,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) -> ReconciliationAudit {
     let moh_component_sum = amounts.moh_component_sum();
     let derived_total = amounts.direct_material
@@ -381,7 +381,7 @@ fn calculate_reconciliation(
         derived_total,
         moh_matches,
         total_matches,
-        check_reason: build_check_reason(moh_matches, total_matches, config.standalone_cost_items),
+        check_reason: build_check_reason(moh_matches, total_matches, &config.standalone_cost_items),
     }
 }
 
@@ -391,7 +391,7 @@ fn append_reconciliation_issues_in_current_order(
     amounts: &CostAmounts,
     completed_total: Decimal,
     audit: &ReconciliationAudit,
-    config: &PipelineConfig,
+    config: &PipelineRules,
 ) {
     if !audit.moh_matches {
         error_issues.push(error_issue(
@@ -414,7 +414,7 @@ fn append_reconciliation_issues_in_current_order(
             format!("计算值={};数量页={}", audit.derived_total, completed_total),
             &format!(
                 "{}不等于数量页总完工成本",
-                total_expression(config.standalone_cost_items)
+                total_expression(&config.standalone_cost_items)
             ),
             "保留结果并标记需复核",
         ));
@@ -482,7 +482,7 @@ fn error_issue(
     }
 }
 
-pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> Vec<String> {
+pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineRules) -> Vec<String> {
     let mut columns = qty_sheet_base_columns(source_columns);
     append_column(&mut columns, QTY_DM_AMOUNT);
     append_column(&mut columns, QTY_DL_AMOUNT);
@@ -492,7 +492,7 @@ pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> 
     append_column(&mut columns, QTY_MOH_CONSUMABLES_AMOUNT);
     append_column(&mut columns, QTY_MOH_DEPRECIATION_AMOUNT);
     append_column(&mut columns, QTY_MOH_UTILITIES_AMOUNT);
-    for item in config.standalone_cost_items {
+    for item in &config.standalone_cost_items {
         append_column(&mut columns, &format!("本期完工{item}合计完工金额"));
     }
     append_column(&mut columns, QTY_DM_UNIT_COST);
@@ -503,13 +503,13 @@ pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineConfig) -> 
     append_column(&mut columns, QTY_MOH_CONSUMABLES_UNIT_COST);
     append_column(&mut columns, QTY_MOH_DEPRECIATION_UNIT_COST);
     append_column(&mut columns, QTY_MOH_UTILITIES_UNIT_COST);
-    for item in config.standalone_cost_items {
+    for item in &config.standalone_cost_items {
         append_column(&mut columns, standalone_unit_cost_column(item));
     }
     append_column(&mut columns, QTY_MOH_MATCH);
     append_column(
         &mut columns,
-        &total_match_column(config.standalone_cost_items),
+        &total_match_column(&config.standalone_cost_items),
     );
     append_column(&mut columns, QTY_CHECK_STATUS);
     append_column(&mut columns, QTY_CHECK_REASON);
@@ -522,7 +522,11 @@ fn append_column(columns: &mut Vec<String>, column: &str) {
     }
 }
 
-fn build_check_reason(moh_matches: bool, total_matches: bool, standalone_items: &[&str]) -> String {
+fn build_check_reason(
+    moh_matches: bool,
+    total_matches: bool,
+    standalone_items: &[String],
+) -> String {
     let total_mismatch_reason = format!("{}与总完工成本不一致", total_expression(standalone_items));
     match (moh_matches, total_matches) {
         (false, false) => format!("制造费用明细与合计不一致;{total_mismatch_reason}"),
@@ -532,9 +536,13 @@ fn build_check_reason(moh_matches: bool, total_matches: bool, standalone_items: 
     }
 }
 
-fn total_expression(standalone_items: &[&str]) -> String {
-    let mut parts = vec!["直接材料", "直接人工", "制造费用"];
-    parts.extend(standalone_items.iter().copied());
+fn total_expression(standalone_items: &[String]) -> String {
+    let mut parts = vec![
+        "直接材料".to_string(),
+        "直接人工".to_string(),
+        "制造费用".to_string(),
+    ];
+    parts.extend(standalone_items.iter().cloned());
     parts.join("+")
 }
 
@@ -563,7 +571,10 @@ fn normalize_key_value(value: &CellValue) -> String {
     normalized
 }
 
-fn classify_cost_item(cost_item: &str, standalone_items: &[&str]) -> CostClassification {
+fn classify_cost_item<T: AsRef<str>>(
+    cost_item: &str,
+    standalone_items: &[T],
+) -> CostClassification {
     let normalized = cost_item.trim();
     match normalized {
         "直接材料" => CostClassification::DirectMaterial,
@@ -581,7 +592,7 @@ fn classify_cost_item(cost_item: &str, standalone_items: &[&str]) -> CostClassif
         }
         value => standalone_items
             .iter()
-            .position(|item| item.trim() == value)
+            .position(|item| item.as_ref().trim() == value)
             .map(CostClassification::Standalone)
             .unwrap_or(CostClassification::Unmapped),
     }
@@ -595,7 +606,7 @@ fn standalone_unit_cost_column(item: &str) -> &'static str {
     }
 }
 
-fn total_match_column(items: &[&str]) -> String {
+fn total_match_column(items: &[String]) -> String {
     format!("{}是否等于总完工成本", total_expression(items))
 }
 
@@ -651,7 +662,7 @@ mod tests {
     use crate::anomaly::build_work_order_anomaly_sheet;
     use crate::error::ErrorCode;
     use crate::model::{CellValue, SplitResult};
-    use crate::pipeline::{PipelineConfig, PipelineName};
+    use crate::pipeline::{PipelineName, PipelineRules};
     use crate::table::IndexedTable;
 
     use super::*;
@@ -854,7 +865,7 @@ mod tests {
     fn unmapped_non_blank_cost_item_still_emits_the_same_issue() {
         let bundle = build_fact_bundle(
             split_result(vec![detail_row("未映射费用", CellValue::Blank)], vec![]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -876,7 +887,7 @@ mod tests {
     fn missing_amount_issue_payload_remains_exact() {
         let bundle = build_fact_bundle(
             split_result(vec![detail_row("直接材料", CellValue::Blank)], vec![]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -913,7 +924,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -943,7 +954,7 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
             ("本期完工金额", CellValue::Decimal(Decimal::ZERO)),
         ])];
-        let config = PipelineConfig::for_name(PipelineName::Sk);
+        let config = PipelineRules::for_name(PipelineName::Sk);
 
         let bundle = build_fact_bundle(split_result(vec![], qty), &config).unwrap();
         let amounts = &bundle.qty_rows[0].amounts;
@@ -990,7 +1001,7 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(Decimal::new(10, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(105, 0))),
         ])];
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         assert_eq!(
             bundle.qty_rows[0].amounts.standalone_amount(0),
@@ -1022,7 +1033,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1061,9 +1072,9 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(tiny_qty)),
             ("本期完工金额", CellValue::Decimal(amount)),
         ])];
-        let config = PipelineConfig {
-            product_order: PRODUCT_ORDER,
-            ..PipelineConfig::for_name(PipelineName::Gb)
+        let config = PipelineRules {
+            product_order: crate::pipeline::owned_product_order(PRODUCT_ORDER),
+            ..PipelineRules::for_name(PipelineName::Gb)
         };
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
@@ -1105,7 +1116,7 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
         ])];
-        let config = PipelineConfig::for_name(PipelineName::Sk);
+        let config = PipelineRules::for_name(PipelineName::Sk);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         assert_eq!(
             bundle.qty_rows[0].amounts.standalone_amount(1),
@@ -1147,7 +1158,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1184,7 +1195,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1252,7 +1263,7 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(99, 0))),
         ])];
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         let columns = qty_sheet_columns(&bundle_columns(&bundle), &config);
 
@@ -1321,7 +1332,7 @@ mod tests {
                 ("本期完工金额", CellValue::Blank),
             ]),
         ];
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
         assert_eq!(bundle.qty_rows.len(), 1);
@@ -1352,7 +1363,7 @@ mod tests {
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(0, 0))),
         ])];
-        let config = PipelineConfig::for_name(PipelineName::Gb);
+        let config = PipelineRules::for_name(PipelineName::Gb);
 
         let bundle = build_fact_bundle(split_result(detail, qty), &config).unwrap();
 
@@ -1401,7 +1412,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1462,7 +1473,7 @@ mod tests {
                 detail,
                 qty,
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap_err();
 
@@ -1474,7 +1485,7 @@ mod tests {
     fn empty_rows_still_validate_required_schema_columns() {
         let error = build_fact_bundle(
             split_result_with_columns(vec!["产品编码".to_string()], vec![], vec![]),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap_err();
 
@@ -1526,7 +1537,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1550,7 +1561,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(Vec::new(), qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1567,7 +1578,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(Vec::new(), qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1595,7 +1606,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(Vec::new(), qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
         let duplicate_issues = bundle
@@ -1627,7 +1638,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(Vec::new(), qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1686,7 +1697,7 @@ mod tests {
 
         let bundle = build_fact_bundle(
             split_result(detail, qty),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1717,7 +1728,7 @@ mod tests {
                 ],
                 vec![qty_row(Decimal::new(10, 0), Decimal::new(105, 0))],
             ),
-            &PipelineConfig::for_name(PipelineName::Gb),
+            &PipelineRules::for_name(PipelineName::Gb),
         )
         .unwrap();
 
@@ -1739,7 +1750,7 @@ mod tests {
                 ],
                 vec![qty_row(Decimal::new(10, 0), Decimal::new(112, 0))],
             ),
-            &PipelineConfig::for_name(PipelineName::Sk),
+            &PipelineRules::for_name(PipelineName::Sk),
         )
         .unwrap();
 

@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+pub use crate::config::CONFIG_SCHEMA_VERSION;
 pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

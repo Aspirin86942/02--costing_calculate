@@ -32,6 +32,9 @@
 - Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件
 - `--summary-output <path>` 显式请求版本化 `RunManifestV1`；默认不计算文件 SHA-256 或创建 sidecar，summary 已存在时在读取 workbook 前失败
 - workbook 与 Manifest 均使用同目录 `.costing-publish-*` 临时成品、flush/sync 和禁止覆盖发布；`--redact-paths` 对目录内路径相对化、目录外路径仅保留 basename
+- 仓库根 `rust-toolchain.toml` 精确锁定 Rust `1.96.0`；从仓库根执行的 Cargo/CI/Release 命令必须受该文件约束
+- `.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0-rc.1 -OutputDirectory dist`：从干净 commit 构建自包含 Windows ZIP、包内 `SHA256SUMS` 和 ZIP `.sha256`
+- `tools/release/smoke_package_windows.ps1`：解压并校验固定包布局/哈希，在不含 Rust/Python 的 child `PATH` 中执行 help、version-json 与 synthetic GB/SK check-only
 - `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
 - `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查
 - `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖

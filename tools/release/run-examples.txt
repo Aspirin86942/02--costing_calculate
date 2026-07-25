@@ -1,0 +1,22 @@
+Costing Calculate v0.2.0 Windows examples
+==========================================
+
+Show help and deterministic build identity:
+  costing-calculate.exe --help
+  costing-calculate.exe --version-json
+
+Validate the embedded GB or SK configuration without reading a workbook:
+  costing-calculate.exe gb --validate-config
+  costing-calculate.exe sk --validate-config
+
+Check one workbook without writing an output workbook:
+  costing-calculate.exe gb --input C:\input\gb.xlsx --check-only
+
+Write one workbook without overwriting an existing file:
+  costing-calculate.exe sk --input C:\input\sk.xlsx --output C:\output\sk-result.xlsx
+
+Write an audit Manifest and redact path parents:
+  costing-calculate.exe gb --input C:\input\gb.xlsx --check-only --summary-output C:\output\gb-manifest.json --redact-paths
+
+Use a reviewed external configuration:
+  costing-calculate.exe sk --config C:\config\costing.toml --validate-config

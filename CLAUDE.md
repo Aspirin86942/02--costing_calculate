@@ -75,7 +75,7 @@ Python legacy/oracle 代码仍保持严格分层，并由 `tests/architecture/te
 
 ## 依赖 (Dependencies)
 
-- **Rust**：`rust/rust-toolchain.toml` 指定 stable toolchain；release profile 固定 `codegen-units = 1`，正式性能比较不得用 dev profile
+- **Rust**：仓库根 `rust-toolchain.toml` 精确锁定 Rust 1.96.0；release profile 固定 `codegen-units = 1`，正式性能比较不得用 dev profile
 - **Python oracle/regression**：3.11+，由 `uv` 管理项目 `.venv`；除排查解释器问题外不用裸 `python`/`pip`
 
 ## 常用命令 (Common Commands)

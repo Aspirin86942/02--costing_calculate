@@ -20,6 +20,7 @@
 - [`evidence/2026-07-25-v0.2.0-m0-baseline.md`](evidence/2026-07-25-v0.2.0-m0-baseline.md)：v0.2.0 冻结输入、阶段基线、完整规则快照和签字。
 - [`evidence/2026-07-25-v0.2.0-m3-config-governance.md`](evidence/2026-07-25-v0.2.0-m3-config-governance.md)：M3 配置治理、三路真实数据迁移对比和退出证据。
 - [`evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md`](evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md)：M4 Manifest、输入/输出哈希、原子发布和 standard/low-memory 失败注入证据。
+- [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md)：Windows RC 的兼容性、主要变更、已知问题和校验说明。
 - [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
 
 ## 权威顺序

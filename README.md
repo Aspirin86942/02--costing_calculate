@@ -14,7 +14,7 @@
 - 字段名提取和标准化
 
 ## 安装
-Rust CLI 使用 `rust/rust-toolchain.toml` 指定的 stable toolchain。
+Rust CLI 使用仓库根 `rust-toolchain.toml` 精确锁定的 Rust 1.96.0 toolchain。
 
 仅在运行 Python oracle/regression 时安装其开发依赖：
 ```bash
@@ -22,6 +22,21 @@ uv sync --extra dev
 ```
 
 Python oracle/regression 的开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
+
+### Windows Release 包
+
+正式分发物是自包含 Windows x86_64 ZIP，不要求安装 Rust 或 Python。包内同时携带
+默认配置、配置 schema、Manifest schema、运行示例、CHANGELOG 和
+`SHA256SUMS`。从干净 Git commit 构建 RC：
+
+```powershell
+.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0-rc.1 -OutputDirectory dist
+```
+
+打包脚本使用当前 commit 时间作为确定性 `SOURCE_DATE_EPOCH`，并校验 executable
+中的 commit、Rust 1.96.0、target 和构建时间。ZIP 旁生成 `.zip.sha256`；脚本拒绝
+覆盖已有目录或归档。GitHub Release workflow 会先复用完整 CI，再在隔离后的 child
+`PATH` 中执行 `--help`、`--version-json` 和 synthetic GB/SK check-only smoke。
 
 ## 使用
 Rust CLI 是当前默认/主入口：

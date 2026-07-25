@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_label:
+        description: Existing tag to package, for example v0.2.0-rc.1
+        required: true
+        type: string
+      publish:
+        description: Publish the verified package to the existing tag
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Reuse public quality gates
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Build and verify Windows package
+    needs: quality
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_LABEL: ${{ github.event_name == 'push' && github.ref_name || inputs.release_label }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.release_label }}
+
+      - name: Resolve immutable release identity
+        id: identity
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_LABEL -notmatch '^v0\.2\.0(?:-rc\.[0-9]+)?$') {
+            throw "Unsupported release label: $env:RELEASE_LABEL"
+          }
+          $commit = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          $tagCommit = (& git rev-parse "$env:RELEASE_LABEL^{commit}").Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $commit) {
+            throw "Release tag $env:RELEASE_LABEL does not identify checked-out commit $commit."
+          }
+          $epoch = (& git show -s --format=%ct $commit).Trim()
+          "source_commit=$commit" >> $env:GITHUB_OUTPUT
+          "source_date_epoch=$epoch" >> $env:GITHUB_OUTPUT
+          "package_name=costing-calculate-$env:RELEASE_LABEL-windows-x86_64" >> $env:GITHUB_OUTPUT
+
+      - name: Install exact Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+          rustc --version --verbose
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Prepare public synthetic inputs
+        run: |
+          uv sync --frozen --extra dev
+          uv run python tools/release/generate_smoke_inputs.py --output .pytest-tmp/release-inputs
+
+      - name: Build deterministic Windows package
+        shell: pwsh
+        env:
+          COSTING_GIT_COMMIT: ${{ steps.identity.outputs.source_commit }}
+          SOURCE_DATE_EPOCH: ${{ steps.identity.outputs.source_date_epoch }}
+        run: |
+          ./tools/release/package_windows.ps1 `
+            -ReleaseLabel $env:RELEASE_LABEL `
+            -OutputDirectory dist `
+            -SourceCommit '${{ steps.identity.outputs.source_commit }}' `
+            -SourceDateEpoch ([long]'${{ steps.identity.outputs.source_date_epoch }}')
+
+      - name: Smoke package with Rust and Python absent from child PATH
+        shell: pwsh
+        run: |
+          $packageName = '${{ steps.identity.outputs.package_name }}'
+          ./tools/release/smoke_package_windows.ps1 `
+            -ArchivePath "dist/$packageName.zip" `
+            -ChecksumPath "dist/$packageName.zip.sha256" `
+            -GbInput '.pytest-tmp/release-inputs/gb-synthetic.xlsx' `
+            -SkInput '.pytest-tmp/release-inputs/sk-synthetic.xlsx' `
+            -ExpectedReleaseLabel $env:RELEASE_LABEL `
+            -ExpectedCommit '${{ steps.identity.outputs.source_commit }}'
+
+      - name: Publish verified GitHub Release
+        if: github.event_name == 'push' || inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = "docs/releases/$($env:RELEASE_LABEL.TrimStart('v')).md"
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) {
+            throw "Release notes are missing: $notes"
+          }
+          $packageName = '${{ steps.identity.outputs.package_name }}'
+          $arguments = @(
+            'release',
+            'create',
+            $env:RELEASE_LABEL,
+            "dist/$packageName.zip",
+            "dist/$packageName.zip.sha256",
+            '--verify-tag',
+            '--title',
+            "Costing Calculate $env:RELEASE_LABEL",
+            '--notes-file',
+            $notes
+          )
+          if ($env:RELEASE_LABEL -match '-rc\.') {
+            $arguments += '--prerelease'
+          }
+          else {
+            $arguments += '--latest'
+          }
+          # Contract command: gh release create
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release publication failed with exit code $LASTEXITCODE."
+          }

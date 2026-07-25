@@ -20,7 +20,7 @@ pub fn weighted_median(values: &[(Decimal, Decimal)]) -> Option<Decimal> {
         return None;
     }
 
-    valid.sort_by(|left, right| left.0.cmp(&right.0));
+    valid.sort_by_key(|item| item.0);
     let total_weight = valid.iter().map(|(_, weight)| *weight).sum::<Decimal>();
     let midpoint = total_weight / Decimal::new(2, 0);
     let mut cumulative = Decimal::ZERO;

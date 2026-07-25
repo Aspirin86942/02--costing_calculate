@@ -1,0 +1,3 @@
+# Frozen contract and performance baselines require repository-owner review.
+/tests/contracts/baselines/ @Aspirin86942
+/docs/performance/baselines/ @Aspirin86942

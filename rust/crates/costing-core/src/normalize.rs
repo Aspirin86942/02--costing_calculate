@@ -152,7 +152,7 @@ pub fn flatten_headers(header_rows: &[Vec<String>; 2]) -> Vec<String> {
 }
 
 fn clean_header_token(value: &str) -> String {
-    let token = value.trim().replace(' ', "").replace('\n', "");
+    let token = value.trim().replace([' ', '\n'], "");
     if token.is_empty()
         || token.to_ascii_lowercase().starts_with("unnamed")
         || matches!(token.as_str(), "None" | "nan" | "NaN")

@@ -99,6 +99,8 @@ enum OutputArtifactState {
     CompletedByCurrentRun,
 }
 
+// WriterError 保留完整阶段、路径与清理上下文；为压缩 Err 大小而装箱会改变现有公共错误链。
+#[allow(clippy::result_large_err)]
 pub fn write_workbook(
     context: &WriterContext,
     path: &Path,
@@ -426,6 +428,7 @@ fn configure_sheet_metadata(
 }
 
 #[cfg(feature = "low-memory")]
+#[allow(clippy::result_large_err)]
 fn finish_with_temp_cleanup(
     context: &WriterContext,
     primary_result: Result<WorkbookWriteReport, WriterError>,

@@ -110,6 +110,8 @@ fn build_flat_sheet(
     })
 }
 
+// 这些参数逐项对应冻结的工作簿契约；合并为不透明配置对象反而会弱化调用处的审计性。
+#[allow(clippy::too_many_arguments)]
 fn build_typed_qty_sheet(
     sheet_name: &str,
     schema: &ColumnSchema,

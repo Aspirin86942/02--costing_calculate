@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-gates:
+    name: Public gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Cache Cargo inputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Enforce frozen baseline policy
+        if: github.event_name == 'pull_request'
+        run: uv run python tools/ci/baseline_policy.py
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path rust/Cargo.toml --all --check
+
+      - name: Lint Rust
+        run: cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+
+      - name: Test Rust
+        run: cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
+
+      - name: Lint Python
+        run: uv run python -m ruff check src tests tools
+
+      - name: Check Python formatting
+        run: uv run python -m ruff format src tests tools --check
+
+      - name: Test public Python suites
+        run: uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" --basetemp .pytest-tmp/ci
+
+      - name: Build release binary
+        run: cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
+
+      - name: Run synthetic GB/SK end-to-end smokes
+        shell: pwsh
+        run: |
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          uv run python tools/ci/run_synthetic_e2e.py --binary "rust/target/release/costing-calculate$suffix"

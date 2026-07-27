@@ -10,7 +10,7 @@
 - GB/SK 输出大小不超过 Phase 0A 的 `1.10x`；
 - workbook、runtime、quality、error-log 和 CLI 契约保持一致。
 
-2026-07-12 最终结果已全部通过，详见 [`../evidence/2026-07-12-rust-performance-validation.md`](../evidence/2026-07-12-rust-performance-validation.md)。
+2026-07-12 最终结果已全部通过，详见 [`../changes/2026-07-12-rust-performance-validation.md`](../changes/2026-07-12-rust-performance-validation.md)。
 
 ## 当前实现
 
@@ -21,7 +21,7 @@
 - writer 预计算每列文本/数字行为和格式，空白单元格直接跳过。
 - CLI 默认启用 `low-memory` feature；单张 Sheet 达到 `5,000,000` 个 cell slots 时进入 low-memory。
 - low-memory 临时目录位于最终输出目录，并在成功、失败及错误合并路径中显式清理。
-- 受控 `rust_xlsxwriter` fork revision 固定在 `rust/Cargo.toml`；大 workbook 保持 ZIP 压缩 Level 5。2026-07-25 的 Level 3/2 N=5 实验虽降低保存耗时，但分别超出 SK 输出大小门禁 `3,869,470` 和 `8,286,515` bytes，均未采用；详见 [`../evidence/2026-07-25-v0.2.0-m6b-zip-compression.md`](../evidence/2026-07-25-v0.2.0-m6b-zip-compression.md)。
+- 受控 `rust_xlsxwriter` fork revision 固定在 `rust/Cargo.toml`；大 workbook 保持 ZIP 压缩 Level 5。2026-07-25 的 Level 3/2 N=5 实验虽降低保存耗时，但分别超出 SK 输出大小门禁 `3,869,470` 和 `8,286,515` bytes，均未采用；详见 [`../changes/2026-07-25-v0.2.0-m6b-zip-compression.md`](../changes/2026-07-25-v0.2.0-m6b-zip-compression.md)。
 
 ## 快速复测
 
@@ -49,4 +49,4 @@ normal-mode 性能验收必须使用独立且不存在的输出路径，并复�
 - 版本库只保留脱敏的最终快照、冻结 Phase 0A baseline JSON 和 fork dependency JSON。
 - `docs/performance/baselines/2026-07-11-windows-x64-phase0a.json` 是历史冻结基线，不是待执行协议。
 - `docs/performance/dependencies/2026-07-11-rust-xlsxwriter-0.96.0.json` 用于审计受控 fork 来源。
-- 已删除的 protocol v2/v3、append-only ledger 和 Superpowers 计划不得恢复为默认流程；现有测量工具能回答问题时直接复用。
+- `docs/superpowers/` 中恢复的 protocol v2/v3、append-only ledger 和其他历史计划仅供只读追溯，不得恢复为默认流程；现有测量工具能回答问题时直接复用。

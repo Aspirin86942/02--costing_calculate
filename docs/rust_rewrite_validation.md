@@ -31,7 +31,7 @@ SK 五轮 wall-clock 为 `19.584s`、`19.665s`、`19.994s`、`20.066s`、`19.883
 
 最终 SK workbook 与同实现 reference workbook 都包含 12 个 ZIP 成员；除 `docProps/core.xml` 正常生成时间外，所有解压成员 SHA-256 一致。Python-oracle 对比另外验证了值、样式、列顺序、package、业务勾稽和 runtime 契约；`shared string` 与 `inline string` 按 OOXML 等价文本编码比较，但每个 package 内部的 relationship、content type、part 和索引仍严格校验。数值 XML 尾差按单元格/工单分组 `1e-9`、整列累计 `1e-8` 比较；实测最大值分别为 `1e-10` 和 `2.509e-9`，`1e-7` 差异仍由测试明确拒绝。
 
-详细证据边界见 [`evidence/2026-07-12-rust-performance-validation.md`](evidence/2026-07-12-rust-performance-validation.md)。
+详细证据边界见 [`changes/2026-07-12-rust-performance-validation.md`](changes/2026-07-12-rust-performance-validation.md)。
 
 ## 持续验证命令
 

@@ -1,40 +1,49 @@
 # 文档导航
 
-本目录只保留当前操作说明、持续验证边界和少量可审计证据。业务真值仍来自当前代码与 `tests/contracts/baselines/`。
+本目录按“当前事实、计划、实际变更、重要决策、历史档案”分层。业务真值仍来自当前代码与 `tests/contracts/baselines/`；过程文档不能覆盖实际实现。
 
-## 当前文档
+## 文档生命周期
+
+| 位置 | 用途 | 写入规则 |
+|---|---|---|
+| [`plans/`](plans/README.md) | 尚未实施、待批准或用于追溯目标状态的方案 | 新计划写在这里；明确状态，不把目标写成已实现 |
+| [`changes/`](changes/README.md) | 已实施变更、验证证据和发布说明 | 只记录已经发生的结果、验证与剩余风险 |
+| [`decisions/`](decisions/README.md) | 重要且需长期解释的取舍 | 记录背景、结论、影响和替代方案 |
+| [`superpowers/`](superpowers/README.md) | 历史 Superpowers 计划与设计 | 只读；禁止新增、修改、移动或删除，不作为待办 |
+
+计划实际落地后，应在 `changes/` 记录结果；重要取舍同时写入 `decisions/`；最终行为必须同步到当前事实文档、配置/schema 或测试契约。
+
+## 当前事实
 
 - [`../README.md`](../README.md)：面向使用者的安装、运行、输出与性能行为。
-- [`../AGENTS.md`](../AGENTS.md)：面向代码代理的工程约束、业务规则和完成标准。
+- [`../AGENTS.md`](../AGENTS.md)：工程约束、业务规则、文档生命周期和完成标准。
 - [`../CLAUDE.md`](../CLAUDE.md)：Claude Code 的当前 Rust/Cargo 与 uv 使用口径。
-- [`PRD-costing-calculate-v0.2.md`](PRD-costing-calculate-v0.2.md)：v0.2.0 生产化、配置、Manifest、原子发布与 Release 的验收规格。
-- [`rust_rewrite_validation.md`](rust_rewrite_validation.md)：2026-07-12 Rust 主路径最终验证结论和持续门禁。
+- [`rust_rewrite_validation.md`](rust_rewrite_validation.md)：Rust 主路径最终验证结论和持续门禁。
 - [`performance/README.md`](performance/README.md)：当前性能目标、实现边界、复测方式和冻结基线说明。
-- [`evidence/2026-07-12-rust-performance-validation.md`](evidence/2026-07-12-rust-performance-validation.md)：最终 N=5 验收快照及证据限制。
-- [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：Python oracle/legacy 的保留与独立退场边界。
-- [`../rust/crates/costing-cli/config/costing.default.toml`](../rust/crates/costing-cli/config/costing.default.toml)：内置且随 Release 分发的完整 GB/SK 默认配置。
-- [`../rust/crates/costing-cli/config/costing.schema.json`](../rust/crates/costing-cli/config/costing.schema.json)：严格配置 schema v1。
-- [`../rust/crates/costing-cli/config/run-manifest.schema.json`](../rust/crates/costing-cli/config/run-manifest.schema.json)：成功/失败 `RunManifestV1` 的封闭 JSON schema。
-- [`../rust/crates/costing-cli/config/run-manifest.success.golden.json`](../rust/crates/costing-cli/config/run-manifest.success.golden.json) 与 [`run-manifest.failure.golden.json`](../rust/crates/costing-cli/config/run-manifest.failure.golden.json)：Manifest v1 固定兼容示例。
-- [`dependencies/2026-07-25-toml-sha2-review.md`](dependencies/2026-07-25-toml-sha2-review.md)：M3 新增生产依赖的批准、许可证和锁文件影响。
-- [`evidence/2026-07-25-v0.2.0-m0-baseline.md`](evidence/2026-07-25-v0.2.0-m0-baseline.md)：v0.2.0 冻结输入、阶段基线、完整规则快照和签字。
-- [`evidence/2026-07-25-v0.2.0-m3-config-governance.md`](evidence/2026-07-25-v0.2.0-m3-config-governance.md)：M3 配置治理、三路真实数据迁移对比和退出证据。
-- [`evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md`](evidence/2026-07-25-v0.2.0-m4-manifest-atomicity.md)：M4 Manifest、输入/输出哈希、原子发布和 standard/low-memory 失败注入证据。
-- [`evidence/2026-07-25-v0.2.0-m5-rc-packaging.md`](evidence/2026-07-25-v0.2.0-m5-rc-packaging.md)：M5 Windows RC、隔离环境打包冒烟、独立重建和整包回滚边界证据。
-- [`evidence/2026-07-25-v0.2.0-m6a-cell-text.md`](evidence/2026-07-25-v0.2.0-m6a-cell-text.md)：M6A `cell_text` 借用化 N=8/N=5 A/B、PWS、真实 oracle、独立 PR/双平台 CI 和采用结论。
-- [`evidence/2026-07-25-v0.2.0-m6b-zip-compression.md`](evidence/2026-07-25-v0.2.0-m6b-zip-compression.md)：M6B ZIP 压缩 Level 3/2 N=5、完整 comparator、独立 PR/双平台 CI、体积门禁拒绝和 Level 5 回退证据。
-- [`evidence/2026-07-25-v0.2.0-final-dod.md`](evidence/2026-07-25-v0.2.0-final-dod.md)：预标签 package 哈希、全门禁、正式包 smoke、RC 回滚、独立 code review 与远端发布流程。
-- [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md)：Windows RC 的兼容性、主要变更、已知问题和校验说明。
-- [`releases/v0.2.0.md`](releases/v0.2.0.md)：v0.2.0 正式版本的兼容性、P0 变更、性能决策、验证和回滚说明。
 - [`../tests/contracts/README.md`](../tests/contracts/README.md)：workbook、error-log 和 CLI 契约说明。
+- [`../rust/crates/costing-cli/config/costing.default.toml`](../rust/crates/costing-cli/config/costing.default.toml)：内置完整 GB/SK 默认配置。
+- [`../rust/crates/costing-cli/config/costing.schema.json`](../rust/crates/costing-cli/config/costing.schema.json)：严格配置 schema v1。
+- [`../rust/crates/costing-cli/config/run-manifest.schema.json`](../rust/crates/costing-cli/config/run-manifest.schema.json)：`RunManifestV1` 的封闭 JSON schema。
+- [`../rust/crates/costing-cli/config/run-manifest.success.golden.json`](../rust/crates/costing-cli/config/run-manifest.success.golden.json) 与 [`run-manifest.failure.golden.json`](../rust/crates/costing-cli/config/run-manifest.failure.golden.json)：Manifest v1 固定兼容示例。
+
+## 过程记录
+
+- [`plans/python_retirement_after_rust.md`](plans/python_retirement_after_rust.md)：仍需独立批准的 Python 退场计划。
+- [`plans/PRD-costing-calculate-v0.2.md`](plans/PRD-costing-calculate-v0.2.md)：已完成 v0.2.0 的历史目标与验收设计。
+- [`plans/optimization-assessment.md`](plans/optimization-assessment.md)：性能优化评估快照。
+- [`changes/2026-07-12-rust-performance-validation.md`](changes/2026-07-12-rust-performance-validation.md)：最终 N=5 验收快照及证据限制。
+- [`changes/releases/v0.2.0.md`](changes/releases/v0.2.0.md)：v0.2.0 正式发布说明。
+- [`decisions/2026-07-25-toml-sha2-review.md`](decisions/2026-07-25-toml-sha2-review.md)：M3 生产依赖批准与风险控制。
+- [`decisions/2026-07-27-documentation-lifecycle.md`](decisions/2026-07-27-documentation-lifecycle.md)：本目录分层与同步规则。
+
+各分类的写入规则和主要记录见对应目录的 `README.md`。
 
 ## 权威顺序
 
-1. 当前代码和 `tests/contracts/baselines/`。
-2. 根 `AGENTS.md` 与 `README.md`。
-3. `rust_rewrite_validation.md` 与 `performance/README.md` 中的当前验证口径。
-4. `docs/performance/baselines/` 和 `docs/performance/dependencies/` 中的冻结 JSON，仅用于审计历史基线与依赖 pin。
+1. 当前代码、配置/schema 和 `tests/contracts/baselines/`。
+2. 根 `AGENTS.md`、`README.md`、本文件及对应主题的当前事实文档。
+3. 已接受且尚未被取代的 `docs/decisions/` 记录。
+4. `docs/changes/` 中的历史实现与验证记录。
+5. `docs/plans/` 与只读 `docs/superpowers/`；二者只解释目标或历史，不证明当前行为。
 
-## 已清理的历史材料
-
-2026-07-12 已删除完成后的 `docs/superpowers/`、日期 plan/spec、旧 sidecar spike 和过期的 2026-07-10 验证快照。Git 历史仍可追溯原文，但这些材料不再出现在当前文档导航中，也不得作为待执行清单恢复。
+`docs/performance/baselines/` 和 `docs/performance/dependencies/` 中的冻结 JSON 仅用于审计历史基线与依赖 pin。

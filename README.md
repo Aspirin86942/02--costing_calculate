@@ -2,7 +2,7 @@
 
 金蝶 ERP 成本计算单数据处理工具。
 
-当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；验证与性能口径见 [`docs/README.md`](docs/README.md)。已完成的日期方案、Superpowers 计划和 sidecar spike 已从仓库移除。
+当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；验证与性能口径见 [`docs/README.md`](docs/README.md)。历史 Superpowers 计划与设计保存在只读档案中，不作为当前实现入口。
 
 ## 功能
 - 清洗原始 Excel 文件（去除表头、扁平化双层表头）
@@ -232,6 +232,11 @@ Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已�
 - `tests/` - 单元测试
 - `tests/contracts/` - workbook / error_log / CLI 契约测试
 - `tests/architecture/` - 模块依赖与导入边界测试
+- `docs/plans/` - 尚未实施或用于追溯目标状态的计划
+- `docs/changes/` - 已实施变更、验证证据和发布记录
+- `docs/decisions/` - 重要且需要长期保留的决策记录
+- `docs/superpowers/` - 只读历史计划与设计档案；禁止新增，不作为待办
+- `docs/performance/` - 当前性能口径与冻结基线
 - `docs/field_definitions/` - 字段定义文件
 
 ## 测试

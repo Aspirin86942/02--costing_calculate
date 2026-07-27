@@ -1,5 +1,8 @@
 # `toml` / `sha2` Production Dependency Review — 2026-07-25
 
+- Status: Accepted
+- Decision date: 2026-07-25
+
 ## Decision
 
 **Decision:** the repository owner approved the exact versions and minimal

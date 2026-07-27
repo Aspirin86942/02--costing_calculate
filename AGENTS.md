@@ -14,8 +14,21 @@
 - `data/raw/{gb,sk}/`: 原始 Excel 输入
 - `data/processed/{gb,sk}/`: 处理后输出
 - `docs/field_definitions/`: 字段映射参考
+- `docs/plans/`: 新计划、目标状态和待批准方案；计划不是当前事实
+- `docs/changes/`: 已实施变更、验证证据和发布记录
+- `docs/decisions/`: 重要、长期有效或需要解释取舍的决策记录
+- `docs/superpowers/`: 历史 Superpowers 计划与设计的只读档案；禁止新增、修改、移动或删除，不得作为当前待办
 - 历史 `scripts/` 已移除；新增业务功能默认在 `rust/` 实现，`src/` 仅用于 Python oracle/legacy/regression 或退场前必要修复
-- 当前执行口径以本文件、根 `README.md` 和 `docs/README.md` 为准；已完成的 `docs/superpowers/`、日期方案和 sidecar `spikes/` 已移除，不再作为实现入口
+- 当前执行口径以实际代码与测试、本文件、根 `README.md` 和 `docs/README.md` 为准；计划、变更记录、决策记录和历史档案均不得覆盖当前事实
+
+### 文档治理
+
+- `docs/superpowers/` 只保留历史 Superpowers 计划与设计，视为只读档案；禁止新增、修改、移动或删除，只有用户明确要求变更档案本身时才可例外。
+- 新计划、目标状态和待批准方案统一写入 `docs/plans/`，并明确状态；计划不能证明功能已经实现。
+- 已实际落地的实现、验证证据、性能实验结论和发布说明统一写入 `docs/changes/`。
+- 重要且需要长期解释的架构、依赖、安全、兼容性、业务口径、发布或文档治理决策统一写入 `docs/decisions/`。
+- 计划或决策落地后，必须把最终口径同步到实际代码与测试、根 `README.md`、本文件、`docs/README.md`，以及相关配置/schema、契约或主题事实文档；过程文档不得覆盖当前事实。
+- 文档迁移或重命名时，同步更新所有引用、自动化脚本和契约测试；至少检查旧路径残留、当前层 Markdown 相对链接、`git diff --check` 和 UTF-8/CRLF。
 
 ### Build / Test / Dev Commands
 - `cargo build --release --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现

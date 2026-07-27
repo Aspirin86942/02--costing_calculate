@@ -1,6 +1,8 @@
 # Python Retirement After Rust Validation
 
-The Rust CLI was validated for GB and SK on 2026-07-10; see [`rust_rewrite_validation.md`](rust_rewrite_validation.md) for the recorded snapshot and evidence limits. This document lists Python code that remains in place until a separate retirement change is reviewed and approved; validation alone is not deletion approval.
+> Status: Proposed. Python retirement still requires a separate explicit approval; this plan does not authorize deletion.
+
+The Rust CLI was validated for GB and SK on 2026-07-10; see [`../rust_rewrite_validation.md`](../rust_rewrite_validation.md) for the recorded snapshot and evidence limits. This document lists Python code that remains in place until a separate retirement change is reviewed and approved; validation alone is not deletion approval.
 
 ## Keep Until Retirement Is Approved
 

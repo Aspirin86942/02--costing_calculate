@@ -1,5 +1,7 @@
 # Costing Calculate 生产化与性能优化 PRD
 
+> 归档状态：`v0.2.0` 已完成。本文保留实施前目标与验收设计，不证明当前行为；最终发布结果见 [`../changes/releases/v0.2.0.md`](../changes/releases/v0.2.0.md)，当前口径见 [`../README.md`](../README.md)。
+
 ## 1. 文档信息
 
 | 项目       | 内容                                                        |
@@ -7,7 +9,7 @@
 | 产品名称   | Costing Calculate / 成本计算 ETL 工具                       |
 | PRD 主题   | Rust 主路径生产化、可审计性、配置治理与低风险性能优化        |
 | 目标版本   | `v0.2.0`                                                    |
-| 文档状态   | Review Ready（实施方案已对齐，待业务、测试和运维联合评审）   |
+| 文档状态   | Completed（历史目标与验收设计，不作为当前事实）              |
 | 评审对象   | 产品负责人、财务成本核算人员、Rust/Python 开发人员、测试及运维人员 |
 | 仓库       | `Aspirin86942/02--costing_calculate`                        |
 | 现状评估日期 | 2026-07-25                                                |
@@ -1050,7 +1052,7 @@ fn cell_text_str(value: &CellValue) -> Option<&str> {
 * SK `--check-only --benchmark` 采用交错、逐对反序的 `N≥8`；
 * SK check-only 的 normalize 中位数改善至少 10%，或绝对减少至少 `0.15s`；
 * SK 全量运行不得回退超过 2%；
-* 未达到采用门槛时回退代码，并在 `docs/evidence/` 记录“未采用”结论。
+* 未达到采用门槛时回退代码，并在 `docs/changes/` 记录“未采用”结论。
 
 仓库已有评估估计该改动可以减少约 840 万次热路径 String 分配，预期节省 normalize `0.3–0.5s`。该数值是优化假设，最终是否采用仍以 A/B 数据为准。 ([GitHub][9])
 
@@ -1606,7 +1608,7 @@ costing-calculate sk --log-format human
 * 新增公开结构必须有文档；
 * 配置和 manifest 必须带 `schema_version`；
 * 单个优化 PR 只处理一个主要性能假设；
-* 性能证据保存在 `docs/evidence/`；
+* 性能证据保存在 `docs/changes/`；
 * 不允许使用无法解释的 magic number；
 * pipeline 特有规则集中在配置或 pipeline 模块；
 * 不把 Excel writer 细节泄露到领域计算模块；
@@ -2239,12 +2241,12 @@ costing-calculate gb \
 [3]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/crates/costing-cli/src/run.rs "02--costing_calculate/rust/crates/costing-cli/src/run.rs at main · Aspirin86942/02--costing_calculate · GitHub"
 [4]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/crates/costing-core/src/pipeline.rs "02--costing_calculate/rust/crates/costing-core/src/pipeline.rs at main · Aspirin86942/02--costing_calculate · GitHub"
 [5]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/rust_rewrite_validation.md "02--costing_calculate/docs/rust_rewrite_validation.md at main · Aspirin86942/02--costing_calculate · GitHub"
-[6]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/python_retirement_after_rust.md "02--costing_calculate/docs/python_retirement_after_rust.md at main · Aspirin86942/02--costing_calculate · GitHub"
+[6]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/plans/python_retirement_after_rust.md "02--costing_calculate/docs/plans/python_retirement_after_rust.md at main · Aspirin86942/02--costing_calculate · GitHub"
 [7]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/Cargo.toml "02--costing_calculate/rust/Cargo.toml at main · Aspirin86942/02--costing_calculate · GitHub"
 [8]: https://github.com/Aspirin86942/02--costing_calculate/tree/main/rust/crates/costing-core/src "02--costing_calculate/rust/crates/costing-core/src at main · Aspirin86942/02--costing_calculate · GitHub"
-[9]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/optimization-assessment.md "02--costing_calculate/docs/optimization-assessment.md at main · Aspirin86942/02--costing_calculate · GitHub"
+[9]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/plans/optimization-assessment.md "02--costing_calculate/docs/plans/optimization-assessment.md at main · Aspirin86942/02--costing_calculate · GitHub"
 [10]: https://github.com/Aspirin86942/02--costing_calculate/tree/main/tests/contracts "02--costing_calculate/tests/contracts at main · Aspirin86942/02--costing_calculate · GitHub"
-[11]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/evidence/2026-07-12-rust-performance-validation.md "02--costing_calculate/docs/evidence/2026-07-12-rust-performance-validation.md at main · Aspirin86942/02--costing_calculate · GitHub"
+[11]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/docs/changes/2026-07-12-rust-performance-validation.md "02--costing_calculate/docs/changes/2026-07-12-rust-performance-validation.md at main · Aspirin86942/02--costing_calculate · GitHub"
 [12]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/crates/costing-core/src/normalize.rs "02--costing_calculate/rust/crates/costing-core/src/normalize.rs at main · Aspirin86942/02--costing_calculate · GitHub"
 [13]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/crates/costing-xlsx/src/writer.rs "02--costing_calculate/rust/crates/costing-xlsx/src/writer.rs at main · Aspirin86942/02--costing_calculate · GitHub"
 [14]: https://github.com/Aspirin86942/02--costing_calculate/blob/main/rust/crates/costing-xlsx/src/reader.rs "02--costing_calculate/rust/crates/costing-xlsx/src/reader.rs at main · Aspirin86942/02--costing_calculate · GitHub"

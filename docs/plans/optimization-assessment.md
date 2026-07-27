@@ -1,5 +1,7 @@
 # 优化评估报告 — 2026-07-17
 
+> 状态：Assessment Snapshot。本文保留当时的候选与实验方法，不表示候选已采用；当前性能口径见 [`../performance/README.md`](../performance/README.md)，实际实验结果见 [`../changes/`](../changes/)。
+
 ## 目录
 
 1. [性能现状](#一性能现状)
@@ -20,7 +22,7 @@
 - **二进制**：commit `7df7ddd` 以后（含 `f298649` 的 reader/writer 优化）
 - **输入**：SK 467,420 reader rows → 425,459 detail rows × ~30 columns；GB 42,573 → 40,057 detail rows
 - **输出**：SK 43,611,044 bytes，GB 3,808,077 bytes
-- **权威验收参考**：`docs/evidence/2026-07-12-rust-performance-validation.md`，SK wall median 19.883s，PWS 1,461,714,944 bytes
+- **权威验收参考**：`docs/changes/2026-07-12-rust-performance-validation.md`，SK wall median 19.883s，PWS 1,461,714,944 bytes
 
 ### 1.2 实测数据
 
@@ -423,7 +425,7 @@ SK 467k 行 × ~30 columns = ~14M cells。文本列约占 70%（年期、成本�
 
 ### 5.2 Python legacy/oracle 分批退场
 
-**基准文档**：`docs/python_retirement_after_rust.md`
+**基准文档**：`docs/plans/python_retirement_after_rust.md`
 
 **当前状态**：
 - Rust CLI 已于 2026-07-10 验收通过（GB/SK 双 pipeline，workbook 语义等价 oracle 验证，N=5 性能达验收线）
@@ -511,7 +513,7 @@ done
 
 ### 6.3 结果记录规范
 
-每次 A/B 实验记录到 `docs/evidence/`：
+每次 A/B 实验记录到 `docs/changes/`：
 - 两个 binary 的 exe sha256（`sha256sum`）区分身份
 - 配置差异（一句话描述）
 - 中位数表（total / fact / ingest / export）

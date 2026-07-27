@@ -4,7 +4,7 @@
   "request_id": "costing-golden-success",
   "application": {
     "name": "costing-calculate",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "git_commit": "0123456789abcdef",
     "build_timestamp": "2026-07-25T00:00:00Z",
     "rustc_version": "1.96.0",

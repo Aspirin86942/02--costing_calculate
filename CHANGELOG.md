@@ -4,6 +4,42 @@ All notable changes to Costing Calculate are documented in this file.
 
 ## Unreleased
 
+## 0.3.0-rc.1 - 2026-07-27
+
+### Added
+
+- A single cross-version workbook validation command with safe structured
+  reports.
+- Lightweight synthetic GB/SK input generation and release measurement tools.
+- Current architecture, workbook contract, performance, and documentation
+  lifecycle guides.
+
+### Changed
+
+- `costing-core` exposes one in-memory processing entry point while keeping
+  normalization, split, fact, anomaly, and presentation implementation
+  private.
+- The workspace and deterministic build identity report version `0.3.0`;
+  `RunManifestV1` remains schema V1.
+- Release tags are validated against the Cargo workspace version and accept
+  the matching final or `-rc.N` form.
+- Python is now a non-packaged validation environment containing only the
+  dependencies used by validation and release tools.
+
+### Removed
+
+- The retired Python business pipeline and command-line entry point.
+- Tests that only protected the retired implementation.
+- The Phase 0/meta migration harness and archived GUI.
+
+### Compatibility
+
+- The Rust CLI, three-Sheet workbook, business calculations, JSON error model,
+  Manifest V1, atomic publication, low-memory behavior, and Windows ZIP layout
+  remain compatible with v0.2.0.
+- The only intended operational removal is the old Python business entry
+  point.
+
 ## 0.2.0 - 2026-07-25
 
 ### Added

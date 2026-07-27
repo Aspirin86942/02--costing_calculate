@@ -1,4 +1,4 @@
-Costing Calculate v0.2.0 Windows examples
+Costing Calculate v0.3.0 Windows examples
 ==========================================
 
 Show help and deterministic build identity:

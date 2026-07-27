@@ -310,7 +310,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "costing-calculate"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "calamine",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "costing-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -338,14 +338,14 @@ dependencies = [
 
 [[package]]
 name = "costing-oracle-tests"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "costing-core",
 ]
 
 [[package]]
 name = "costing-xlsx"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "calamine",
  "costing-core",

@@ -1,52 +1,81 @@
-# Rust 性能口径
+# Rust 性能与内存门禁
 
-## 当前目标
+## 硬门禁
 
-正式比较统一使用 release profile、真实 GB/SK 输入、normal-mode 独立进程和 N=5 中位数：
+正式比较统一使用 release profile、真实输入、normal mode、独立进程和 N=5 中位数：
 
-- SK wall-clock 中位数 `<= 20.0s`；
-- SK Peak Working Set 中位数 `<= 2.0 GiB`；
-- GB wall/PWS 不超过冻结 Phase 0A 门槛；
-- GB/SK 输出大小不超过 Phase 0A 的 `1.10x`；
-- workbook、runtime、quality、error-log 和 CLI 契约保持一致。
+| Pipeline | Wall 中位数 | Peak Working Set 中位数 | 最大输出大小 |
+|---|---:|---:|---:|
+| GB | `<= 3.2554s` | `<= 375,700,685 bytes` | `<= 4,194,321 bytes` |
+| SK | `<= 20.0s` | `<= 2,147,483,648 bytes` | `<= 48,658,823 bytes` |
 
-2026-07-12 最终结果已全部通过，详见 [`../changes/2026-07-12-rust-performance-validation.md`](../changes/2026-07-12-rust-performance-validation.md)。
+同时必须满足：
 
-## 当前实现
+- workbook、运行摘要、质量、error log 和 CLI 契约与冻结基线一致；
+- 单元格 `1e-9`、列累计 `1e-8` 数值容差不变；
+- 输出路径每轮独立且事先不存在；
+- 真实输入、workbook、绝对路径和主机信息不进入版本库。
+
+## 当前实现边界
 
 - release profile 固定 `codegen-units = 1`。
-- Calamine `0.36` 直接解析 worksheet range；reader 不再复制成中间 `Vec<Vec<Data>>`。
-- normalize 的合计行与集成车间比较直接借用已 trim 的文本；月份格式化和 Decimal
-  转换仍保留拥有型语义。
-- writer 预计算每列文本/数字行为和格式，空白单元格直接跳过。
-- CLI 默认启用 `low-memory` feature；单张 Sheet 达到 `5,000,000` 个 cell slots 时进入 low-memory。
-- low-memory 临时目录位于最终输出目录，并在成功、失败及错误合并路径中显式清理。
-- 受控 `rust_xlsxwriter` fork revision 固定在 `rust/Cargo.toml`；大 workbook 保持 ZIP 压缩 Level 5。2026-07-25 的 Level 3/2 N=5 实验虽降低保存耗时，但分别超出 SK 输出大小门禁 `3,869,470` 和 `8,286,515` bytes，均未采用；详见 [`../changes/2026-07-25-v0.2.0-m6b-zip-compression.md`](../changes/2026-07-25-v0.2.0-m6b-zip-compression.md)。
+- Calamine `0.36` 读取 workbook。
+- 默认启用 `low-memory`；单张 Sheet 达到 `5,000,000` cell slots 时切换。
+- low-memory 临时目录位于最终输出目录，禁止回退系统 `%TEMP%`。
+- writer 预计算列行为并跳过空白单元格。
+- `rust_xlsxwriter` 使用 `rust/Cargo.toml` 中的精确 fork revision。
+- ZIP 压缩保持 Level 5。历史 Level 3/2 实验虽更快，但输出大小越过门禁，因此未采用。
 
-## 快速复测
+## 复测顺序
 
-先做正确性门禁：
+先通过正确性：
 
 ```powershell
 cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo test --manifest-path rust/Cargo.toml
-uv run python -m pytest tests/contracts -q --basetemp .pytest-tmp/contracts
+cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
+uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp .pytest-tmp/python-validation
+cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
+uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate.exe
 ```
 
-真实输入快速检查：
+再完成基线/候选真实 workbook 比较，最后运行 N=5：
+
+当前测量入口是 `tools/validation/measure_release.ps1`。
 
 ```powershell
-cargo build --release --manifest-path rust/Cargo.toml -p costing-calculate
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
+.\tools\validation\measure_release.ps1 `
+  -BinaryPath .\rust\target\release\costing-calculate.exe `
+  -Pipeline gb `
+  -InputPath <gb-real.xlsx> `
+  -OutputDirectory .\.pytest-tmp\perf-gb `
+  -Iterations 5 `
+  -ReportPath .\.pytest-tmp\perf-gb.json
+
+.\tools\validation\measure_release.ps1 `
+  -BinaryPath .\rust\target\release\costing-calculate.exe `
+  -Pipeline sk `
+  -InputPath <sk-real.xlsx> `
+  -OutputDirectory .\.pytest-tmp\perf-sk `
+  -Iterations 5 `
+  -ReportPath .\.pytest-tmp\perf-sk.json
 ```
 
-normal-mode 性能验收必须使用独立且不存在的输出路径，并复用 `tests/rust_oracle/measure_peak_working_set.ps1` 记录外部 wall-clock 与 Peak Working Set。快速筛选可以少于五轮；只有正确性通过的最终候选才执行 N=5。
+脚本输出不含输入路径，但输出 workbook 和原始本地报告仍只保存在忽略目录。
 
-## 证据边界
+## 优化规则
 
-- 原始 stdout/stderr、真实 workbook、ERP 文件名、用户名、绝对路径和主机信息只保存在已忽略的 `rust/target/perf-local/`。
-- 版本库只保留脱敏的最终快照、冻结 Phase 0A baseline JSON 和 fork dependency JSON。
-- `docs/performance/baselines/2026-07-11-windows-x64-phase0a.json` 是历史冻结基线，不是待执行协议。
-- `docs/performance/dependencies/2026-07-11-rust-xlsxwriter-0.96.0.json` 用于审计受控 fork 来源。
-- `docs/superpowers/` 中恢复的 protocol v2/v3、append-only ledger 和其他历史计划仅供只读追溯，不得恢复为默认流程；现有测量工具能回答问题时直接复用。
+- 没有可复现瓶颈就不优化。
+- 优化必须先通过跨版本正确性，再做交错配对。
+- 正式优化实验至少 8 对，报告中同时记录 wall、PWS、输出大小和环境限制。
+- 无论采用或拒绝，都在 `docs/changes/` 留下脱敏结果。
+- 不得通过改用 dev profile、放宽阈值、放宽容差或更新基线来获得通过。
+
+## 历史证据
+
+- v0.2.0 N=5：[`../changes/2026-07-12-rust-performance-validation.md`](../changes/2026-07-12-rust-performance-validation.md)
+- ZIP 压缩拒绝实验：[`../changes/2026-07-25-v0.2.0-m6b-zip-compression.md`](../changes/2026-07-25-v0.2.0-m6b-zip-compression.md)
+- 冻结 JSON：`docs/performance/baselines/`
+- 依赖来源：`docs/performance/dependencies/`
+
+`docs/superpowers/` 中的历史协议全程只读，不恢复为当前默认流程。

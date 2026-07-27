@@ -1,142 +1,113 @@
+# Costing Calculate 项目规则
 
-## Repository Guidelines
+本文件是项目级提示词。当前用户明确指令优先；实际代码、测试和配置输出优于文档。
 
-### Project Structure & Module Organization
-本仓库是用于成本核算工作簿的 Rust CLI 主实现仓库，保留 Python 作为迁移期 oracle/legacy 路径：
-- `rust/`: Cargo workspace；crates 位于 `rust/crates/costing-cli`（package/binary 名为 `costing-calculate`）、`rust/crates/costing-core`、`rust/crates/costing-xlsx` 和 `rust/crates/costing-oracle-tests`
-- `src/analytics/`: 分析与异常检测（`contracts.py`、`fact_builder.py`、`qty_enricher.py`、`table_rendering.py`、`anomaly.py`、`scoring.py`、`summary.py`、`quality.py`、`errors.py`）
-- `src/etl/`: ETL 主逻辑（`costing_etl.py` 主流程，`pipeline.py` 阶段编排，`stages/` 读取/清洗/拆分）
-- `src/excel/`: Excel 写出与样式（`styles.py`、`fast_writer.py`、`workbook_writer.py`）
-- `src/config/`: 路径与目录配置（`settings.py`）
-- `tests/`: 单元测试（`test_costing_etl.py`、`test_pq_analysis.py`、`test_pq_analysis_v3.py`、`test_etl_pipeline.py`、`test_summary.py`、`test_weighted_zscore.py`）
-- `tests/contracts/`: workbook / error_log / CLI 契约测试
-- `tests/architecture/`: 模块依赖边界测试
-- `data/raw/{gb,sk}/`: 原始 Excel 输入
-- `data/processed/{gb,sk}/`: 处理后输出
-- `docs/field_definitions/`: 字段映射参考
-- `docs/plans/`: 新计划、目标状态和待批准方案；计划不是当前事实
-- `docs/changes/`: 已实施变更、验证证据和发布记录
-- `docs/decisions/`: 重要、长期有效或需要解释取舍的决策记录
-- `docs/superpowers/`: 历史 Superpowers 计划与设计的只读档案；禁止新增、修改、移动或删除，不得作为当前待办
-- 历史 `scripts/` 已移除；新增业务功能默认在 `rust/` 实现，`src/` 仅用于 Python oracle/legacy/regression 或退场前必要修复
-- 当前执行口径以实际代码与测试、本文件、根 `README.md` 和 `docs/README.md` 为准；计划、变更记录、决策记录和历史档案均不得覆盖当前事实
+## 项目边界
 
-### 文档治理
+- Rust 是唯一正式业务实现。新增或修复业务能力默认写入 `rust/`。
+- Python 只用于工作簿比较、合成输入和发布验收，不得重新建立第二套业务管线或生产入口。
+- 不新增生产依赖，除非用户明确批准。
+- `data/raw/` 中的 ERP 输入、`data/processed/` 输出和本地验收产物都视为敏感数据，不得提交。
 
-- `docs/superpowers/` 只保留历史 Superpowers 计划与设计，视为只读档案；禁止新增、修改、移动或删除，只有用户明确要求变更档案本身时才可例外。
-- 新计划、目标状态和待批准方案统一写入 `docs/plans/`，并明确状态；计划不能证明功能已经实现。
-- 已实际落地的实现、验证证据、性能实验结论和发布说明统一写入 `docs/changes/`。
-- 重要且需要长期解释的架构、依赖、安全、兼容性、业务口径、发布或文档治理决策统一写入 `docs/decisions/`。
-- 计划或决策落地后，必须把最终口径同步到实际代码与测试、根 `README.md`、本文件、`docs/README.md`，以及相关配置/schema、契约或主题事实文档；过程文档不得覆盖当前事实。
-- 文档迁移或重命名时，同步更新所有引用、自动化脚本和契约测试；至少检查旧路径残留、当前层 Markdown 相对链接、`git diff --check` 和 UTF-8/CRLF。
+## Rust 模块与依赖
 
-### Build / Test / Dev Commands
-- `cargo build --release --manifest-path rust/Cargo.toml`: 构建 Rust CLI 主实现
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb`: 从仓库根目录执行 GB Rust 管线
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk`: 从仓库根目录执行 SK Rust 管线
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark`: GB Rust 预检模式；默认不落 workbook 或外部摘要，显式 `--summary-output` 时只原子写出 Manifest
-- `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark`: SK Rust 预检模式；默认不落 workbook 或外部摘要，显式 `--summary-output` 时只原子写出 Manifest
-- 正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径
-- 省略 `--input` 时扫描 `data/raw/<pipeline>/` 下的 `<pipeline>-*.xlsx`：恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`
-- 非 `--check-only` 模式省略 `--output` 时，自动写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
-- 以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义路径时显式指定：
-  - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx`
-  - `cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx`
-- Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件
-- `--summary-output <path>` 显式请求版本化 `RunManifestV1`；默认不计算文件 SHA-256 或创建 sidecar，summary 已存在时在读取 workbook 前失败
-- workbook 与 Manifest 均使用同目录 `.costing-publish-*` 临时成品、flush/sync 和禁止覆盖发布；`--redact-paths` 对目录内路径相对化、目录外路径仅保留 basename
-- 仓库根 `rust-toolchain.toml` 精确锁定 Rust `1.96.0`；从仓库根执行的 Cargo/CI/Release 命令必须受该文件约束
-- `.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0 -OutputDirectory dist`：从干净 commit 构建自包含 Windows ZIP、包内 `SHA256SUMS` 和 ZIP `.sha256`
-- `tools/release/smoke_package_windows.ps1`：解压并校验固定包布局/哈希，在不含 Rust/Python 的 child `PATH` 中执行 help、version-json、配置校验、synthetic GB/SK check-only 和正常 workbook + Manifest smoke
-- `cargo test --manifest-path rust/Cargo.toml`: 运行 Rust 测试
-- `cargo fmt --manifest-path rust/Cargo.toml --all --check`: Rust 格式检查
-- `uv sync --extra dev`: 创建/更新项目 `.venv` 并安装 Python oracle/regression 依赖
-- `uv run python main.py gb`: 执行 GB Python legacy/oracle/regression 管线
-- `uv run python main.py sk`: 执行 SK Python legacy/oracle/regression 管线
-- `uv run python main.py gb --check-only --benchmark`: GB Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `uv run python main.py sk --check-only --benchmark`: SK Python 预检模式，只跑分析与性能计时，不落 workbook 或任何外部摘要文件
-- `uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression`: 运行 Python oracle/regression 测试(默认排除 slow/benchmark,含 meta)
-- `uv run python -m pytest tests -q -m "not slow and not benchmark and not meta"`: 仅跑单元+契约+架构(最快路径)
-- `uv run python -m pytest tests -q -m "slow"`: 仅跑真实数据端到端正确性(需 `data/raw` 样本)
-- `uv run python -m pytest tests -q -m "benchmark"`: 仅跑正式性能基准 N=5(需 `data/raw` 样本)
-- `uv run python -m pytest tests -q -m ""`: 跑全部测试(含 slow/benchmark/meta)
-- `uv run python -m ruff check src tests tools`: Python 代码检查
-- `uv run python -m ruff format src tests tools --check`: Python 代码格式化检查
+- `rust/crates/costing-cli`：参数、配置、路径、运行编排、控制台 JSON 和 `RunManifestV1`。
+- `rust/crates/costing-core`：全部内存业务计算；公开入口是 `process_workbook`，必要领域类型和错误类型除外。
+- `rust/crates/costing-xlsx`：Excel 读取、标准/low-memory 写出和原子发布。
+- `rust/crates/costing-oracle-tests`：独立运行契约验证。
+- 依赖方向固定为：CLI 可依赖 core/xlsx；xlsx 可依赖 core 模型；core 禁止依赖 CLI、路径发现、环境变量或 Excel 实现。
+- 保持 `application::execute(RunRequest) -> RunOutcome` 稳定。CLI 不得重新逐个编排 core 内部步骤。
+- 不为整理而新增 crate、空 trait、转发层或重复模型；优先深模块和小接口。
 
-### Rust 性能与内存约束
+详细说明见 `docs/architecture.md`。
 
-- `rust/Cargo.toml` 的 release profile 固定 `codegen-units = 1`；正式性能比较不得使用 dev profile。
-- `costing-calculate` 默认启用 `low-memory` feature；单张 Sheet 的 `rows × columns` 达到 `5,000,000` slots 时进入 low-memory，小 workbook 继续使用标准 writer。
-- low-memory 临时目录必须位于最终输出目录，禁止回退到系统 `%TEMP%`；成功、失败和清理失败都必须保留可审计结果。
-- `rust_xlsxwriter` 必须使用 `rust/Cargo.toml` 中精确 revision 的受控 fork；升级 revision 时必须先在 fork 中通过 lib tests 和 `constant_memory` feature check。
-- 当前性能验收口径与 2026-07-12 N=5 快照见 `docs/performance/README.md` 和 `docs/rust_rewrite_validation.md`；历史 Phase 0A JSON 只作为冻结基线，不是待执行计划。
+## 兼容边界
 
-如缺少测试依赖，优先安装 editable extras：
-- `uv sync --extra dev`
+除明确批准的业务变更外，必须保持：
 
-### Coding Style & Naming
-- 以 `pyproject.toml` 为准，保持与当前 Python 版本兼容（当前项目约束为 3.11+）。
-- Ruff 关键配置：行宽 120、单引号、规则 `E,F,I,B,C4,W,UP,S,T10`（按项目忽略项生效）。
-- 命名规范：函数/变量 `snake_case`，类 `PascalCase`，常量 `UPPER_SNAKE_CASE`。
-- ETL 步骤应显式可追踪，避免隐式副作用。
+- CLI 参数、默认输入发现、默认输出命名、禁止覆盖、同路径拒绝和 check-only 行为；
+- 成功/失败 JSON、错误码和 `retryable`；
+- 三张 Sheet 的名称、顺序、字段顺序、值、样式和勾稽；
+- GB/SK 独立成本项、产品白名单顺序、异常阈值和 Decimal 语义；
+- `RunManifestV1` 字段、路径脱敏、SHA-256 和原子发布；
+- `5,000,000` cell slots 的 low-memory 触发条件与输出结果。
 
-### Testing Guidelines
-- 测试框架：`pytest`
-- 命名规范：`tests/test_*.py`，测试函数 `test_*`
-- 重点覆盖：
-  - 列标准化与自动重命名
-  - 汇总行过滤
-  - 文件处理成功/失败路径
-  - `成本计算单数量聚合维度` 的金额补强、单位成本与勾稽字段
-  - `成本分析工单维度` 的 Modified Z-score 分级与白名单过滤
-- 优先用小型 DataFrame fixture，避免依赖大体量真实 Excel。
+业务或 workbook 变更前必须先读 `docs/contracts/workbook.md` 和 `tests/contracts/baselines/`。
 
-### Commit / PR Guidelines
-- 默认使用 Conventional Commits：
-  - `feat(etl): add sk file matcher`
-  - `fix(utils): handle empty period cell`
-  - `test(etl): cover missing material column`
-- PR 建议包含：
-  - 问题与方案摘要
-  - 关联任务/Issue（如有）
-  - 测试与 lint 结果
-  - 输入/输出影响示例（行数、输出文件名）
+## 高频业务不变量
 
-### Security & Data Handling
-- ERP 导出数据视为敏感信息，不提交涉密原始文件。
-- 密钥与环境特定路径不得硬编码进源码。
+- Sheet 顺序固定：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`；不得新增产品维度 Sheet。
+- `集成车间`行不得向下填充供应商编码和供应商名称。
+- 产品池按“产品编码 + 产品名称”精确匹配，并保持配置顺序。
+- 金额使用 Decimal 语义；缺失的本期完工金额在分析中按 0，并记录 `MISSING_AMOUNT`。
+- 数量聚合只保留完工数量大于 0 且总完工成本非空的工单。
+- `委外加工费`是 GB/SK 独立成本项；`软件费用`只在 SK 作为独立成本项。二者不属于制造费用，但参与各自管线总成本勾稽。
+- 制造费用明细勾稽不包含独立成本项。
+- 异常池按同产品、同生产类型、同成本指标构建；只有大于 0 的单位成本参与对数与 Modified Z-score。
+- 异常阈值固定：`|score| <= 2.5` 正常，`2.5 < |score| <= 3.5` 关注，`|score| > 3.5` 高度可疑。
+- 独立成本项不参与异常等级和主要来源判断。
 
-### 当前业务规则（GB / SK 分析输出）
-- 成本核算 Rust CLI 默认按顺序输出以下 3 张 Sheet：`成本计算单总表`、`成本计算单数量聚合维度`、`成本分析工单维度`。
-- `成本分析产品维度` 不属于 Rust 新系统输出契约；Python legacy helper 只作为退场前历史代码存在。
-- Python retirement 需单独批准；当前保留 Python 路径仅用于 oracle、回归和迁移校验。
-- 每次只落盘一个处理后 workbook：无月过滤时为 `*_处理后.xlsx`，有月过滤时为 `*_处理后_<月份后缀>.xlsx`；不再自动生成 `*_处理后_error_log.csv` 或旧式 `*_处理后_summary.json`，仅在显式 `--summary-output` 时写版本化 Manifest。
-- 质量校验结果、运行时 `error_log_count`（不单独落盘）和阶段耗时默认输出到控制台；`--check-only` 默认不写外部文件，显式 `--summary-output` 时只写 Manifest、不写 workbook。
-- 成本中心名称为`集成车间`时，`供应商编码`与`供应商名称`禁止向下填充（其余字段按既有规则填充）。
-- 产品白名单池按 `产品编码 + 产品名称` 双字段精确匹配，影响分析维度 Sheet，不过滤 `成本计算单总表` 和 `成本计算单数量聚合维度`。
-- 分析页产品展示顺序必须与代码中的白名单顺序一致（不是按编码/名称字典序）。
-- `成本计算单总表`sheet保留工单级成本记录；`本期完工金额`为空时，后续分析按`0`参与汇总，并继续写入`error_log`的`MISSING_AMOUNT`。
-- `成本计算单数量聚合维度`sheet保留现有行粒度，仅保留`本期完工数量 > 0`且`本期完工金额`非空的工单；输出三大类金额、制造费用细项金额、独立成本项金额、单位成本、勾稽状态与异常原因说明。
-- `成本计算单数量聚合维度`sheet中的`制造费用明细项合计是否等于制造费用合计`仅校验制造费用明细，不包含独立成本项；`gb`下独立成本项为`委外加工费`，`sk`下独立成本项为`委外加工费`和`软件费用`。
-- `成本计算单数量聚合维度`sheet中的总成本勾稽口径按管线区分：
-  - `gb`：`直接材料 + 直接人工 + 制造费用 + 委外加工费 = 总完工成本`
-  - `sk`：`直接材料 + 直接人工 + 制造费用 + 委外加工费 + 软件费用 = 总完工成本`
-- `成本分析工单维度`sheet：
-  - 一行定义为`月份 + 产品编码 + 工单编号 + 工单行`
-  - 异常分析按`产品`在整个统计期间内建总体，月份仅作标签与汇总字段
-  - 仅对大于 0 的单位成本计算对数与 Modified Z-score
-  - 异常阈值：`|score| <= 2.5`为正常，`2.5 < |score| <= 3.5`为关注，`|score| > 3.5`为高度可疑
-  - 独立成本项只展示金额和单位成本，不输出`log`、`Modified Z-score`和异常标记，也不参与`异常等级`与`异常主要来源`判定；`gb`下仅`委外加工费`适用，`sk`下`委外加工费`和`软件费用`均适用
-  - 保留`异常等级`、`异常主要来源`、`复核原因`，并使用单列`异常明细解释`展示所有达到`关注`或`高度可疑`的异常项；不再输出`异常池样本数`、`异常池中心log值`、`异常池原始MAD`、`异常池有效MAD`、`相对中位偏离`五个旧解释列
-  - `异常明细解释`中的`有效工单数`是同一产品、同一生产类型异常池、同一成本指标下实际参与该项 Modified Z-score 计算的有效工单行数，不是完工数量合计
-- 质量校验结果默认输出到控制台摘要（不再生成同名 `.log` 文件），至少包含行数勾稽、空值率、工单主键唯一性和分析覆盖率。
-- `委外加工费`不归属`制造费用`，也不因为独立成本项身份写入`error_log`；它只在`成本计算单数量聚合维度`和`成本分析工单维度`中展示，并参与总完工成本勾稽。
-- `软件费用`仅在`sk`管线按独立成本项处理：不归属`制造费用`，也不因为独立成本项身份写入`error_log`；它只在`成本计算单数量聚合维度`和`成本分析工单维度`中展示，并参与`sk`口径下的总完工成本勾稽。
-- `error_log`至少保留`MISSING_AMOUNT`、`TOTAL_COST_MISMATCH`、`MOH_BREAKDOWN_MISMATCH`、`DUPLICATE_WORK_ORDER_KEY`、`NON_POSITIVE_UNIT_COST`等可审计异常。
-- `成本分析产品维度`sheet不属于 Rust 新系统输出契约；Python 产品维度 legacy/helper 逻辑保留按产品分块的紧凑布局，不再输出`四、按单个产品异常值分析`标题；不再执行 IQR 检测；列宽固定为`15`，并去除该 sheet 的条件格式数据条与异常值红底红字高亮。
+完整字段、错误码和 Manifest 口径以 `docs/contracts/workbook.md` 为当前事实。
 
-涉及架构分析、跨文件修改、核心业务逻辑、调用链判断时，必须优先使用 codebase-memory-mcp：
-1. list_projects 确认项目索引；
-2. search_graph 搜核心符号；
-3. 需要理解调用关系时用 trace_path；
-4. MCP 不可用或索引过期时，明确标注 degraded，再降级为 rg/read_file。
+## 文档治理
+
+- `docs/superpowers/` 只读：禁止新增、修改、移动或删除。
+- 新计划写入 `docs/plans/`，并明确 `Proposed / In Progress / Completed / Superseded`。
+- 已经发生的变更和验证写入 `docs/changes/`。
+- 重要取舍写入 `docs/decisions/`。
+- 每次实施完成后，把最终口径同步到代码、测试、根 README、AGENTS、`docs/README.md`、配置/schema 和当前契约文档；过程文档不能代替当前事实。
+- 其他文档只链接权威事实，不复制整段业务规则。
+
+## 开发与验证
+
+正式 Rust 命令统一使用仓库根 `rust-toolchain.toml` 和 release profile：
+
+```powershell
+cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
+cargo fmt --manifest-path rust/Cargo.toml --all --check
+cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
+```
+
+Python 验证工具环境：
+
+```powershell
+uv sync --frozen --extra dev
+uv run python -m ruff check tests tools
+uv run python -m ruff format tests tools --check
+uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp .pytest-tmp/python-validation
+uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate.exe
+```
+
+跨版本真实 workbook：
+
+```powershell
+uv run python -m tools.validation.compare_releases `
+  --baseline-binary <baseline.exe> `
+  --candidate-binary <candidate.exe> `
+  --pipeline gb `
+  --input <workbook.xlsx> `
+  --output-dir <empty-directory> `
+  --report <report.json>
+```
+
+数值容差固定为单元格 `1e-9`、列累计 `1e-8`，不得放宽。
+
+## 性能与发布
+
+- release profile 固定 `codegen-units = 1`。
+- 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统 `%TEMP%`。
+- `rust_xlsxwriter` 使用 `rust/Cargo.toml` 中精确 revision 的受控 fork。
+- 性能门禁见 `docs/performance/README.md`。只有测出瓶颈才优化；优化实验使用至少 8 对交错配对并记录到 `docs/changes/`。
+- Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。
+- `RunManifestV1` schema 仍是 V1；应用版本升级不得顺带改 schema。
+- 推送正式标签、GitHub Release 或其他外部资产前必须获得明确确认。
+
+## 工作方式
+
+- 先用 `rg` / `rg --files` 定位，再读最小相关内容。
+- 保留用户现有改动；不做无关重构、全局格式化或兼容层。
+- 文本修改用 `apply_patch`；保持 UTF-8 和现有 CRLF/LF。
+- 每改必验；不能运行的门禁必须说明原因和风险。
+- 禁止未经授权的 `reset --hard`、`checkout --`、`clean`、强推、递归删除或范围外写入。
+- 涉及架构、跨文件、核心业务或调用链时，优先使用 Codebase Memory：先 `list_projects`，再 `search_graph`，需要时 `trace_path`。工具不可用或索引过期时必须标明 state、root、所需 action 和错误，再降级到 Git、Cargo、`rg` 和直接读取。

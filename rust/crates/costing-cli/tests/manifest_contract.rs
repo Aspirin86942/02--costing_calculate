@@ -63,7 +63,7 @@ fn check_only_summary_is_atomic_and_keeps_stdout_run_summary_compatible() {
     assert_eq!(manifest["status"], "succeeded");
     assert_eq!(manifest["request_id"], stdout["request_id"]);
     assert_eq!(manifest["application"]["name"], "costing-calculate");
-    assert_eq!(manifest["application"]["version"], "0.2.0");
+    assert_eq!(manifest["application"]["version"], "0.3.0");
     assert_eq!(manifest["execution"]["pipeline"], "gb");
     assert_eq!(manifest["execution"]["mode"], "check-only");
     assert_eq!(manifest["execution"]["low_memory_writer"], false);

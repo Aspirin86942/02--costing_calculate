@@ -13,6 +13,7 @@
 
 ## 当前文件
 
+- [`2026-07-27-v0.3.0-project-cleanup.md`](2026-07-27-v0.3.0-project-cleanup.md)：v0.3.0 Rust 收敛、Python 退役与文档/发布整理计划。
 - [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：待独立批准的 Python oracle/legacy 退场计划。
 - [`PRD-costing-calculate-v0.2.md`](PRD-costing-calculate-v0.2.md)：v0.2.0 已完成目标的历史 PRD。
 - [`optimization-assessment.md`](optimization-assessment.md)：优化机会和实验方法评估快照。

@@ -23,3 +23,5 @@
 - [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md) 与 [`releases/v0.2.0.md`](releases/v0.2.0.md)：版本发布说明。
 - [`2026-07-27-documentation-reorganization.md`](2026-07-27-documentation-reorganization.md)：本次文档目录整理记录。
 - [`2026-07-27-v0.3.0-cleanup-baseline.md`](2026-07-27-v0.3.0-cleanup-baseline.md)：v0.3.0 全项目整理前冻结基线。
+- [`2026-07-27-v0.3.0-rust-architecture.md`](2026-07-27-v0.3.0-rust-architecture.md)：Rust 深模块接口与依赖边界整理。
+- [`2026-07-27-v0.3.0-python-retirement.md`](2026-07-27-v0.3.0-python-retirement.md)：Python 业务实现退役与验证工具收敛。

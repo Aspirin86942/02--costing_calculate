@@ -37,6 +37,9 @@ Rust 深模块整理后，基线与候选分别处理真实 GB、SK workbook：
 - [`changes/2026-07-27-v0.3.0-cleanup-baseline.md`](changes/2026-07-27-v0.3.0-cleanup-baseline.md)
 - [`changes/2026-07-27-v0.3.0-rust-architecture.md`](changes/2026-07-27-v0.3.0-rust-architecture.md)
 - [`changes/2026-07-27-v0.3.0-python-retirement.md`](changes/2026-07-27-v0.3.0-python-retirement.md)
+- [`changes/2026-07-27-v0.3.0-rc-validation.md`](changes/2026-07-27-v0.3.0-rc-validation.md)
+
+`v0.3.0-rc.1` 已通过真实 GB/SK normal、单月过滤、check-only、N=5 性能/内存和 Windows 隔离包验收；标签当前仅存在于本地，尚未推送。
 
 ## 持续验证
 

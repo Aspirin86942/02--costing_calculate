@@ -16,12 +16,9 @@ REQUIRED_CI_COMMANDS = (
     ('cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings'),
     'cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features',
     'uv sync --frozen --extra dev',
-    'uv run python -m ruff check src tests tools',
-    'uv run python -m ruff format src tests tools --check',
-    (
-        'uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" '
-        '--basetemp "${{ runner.temp }}/costing-pytest"'
-    ),
+    'uv run python -m ruff check tests tools',
+    'uv run python -m ruff format tests tools --check',
+    ('uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp "${{ runner.temp }}/costing-pytest"'),
 )
 
 

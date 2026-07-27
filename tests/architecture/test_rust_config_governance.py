@@ -5,8 +5,6 @@ import re
 import tomllib
 from pathlib import Path
 
-from src.config.pipelines import GB_PRODUCT_ORDER, SK_PRODUCT_ORDER
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUST_ROOT = PROJECT_ROOT / 'rust'
 CORE_ROOT = RUST_ROOT / 'crates' / 'costing-core'
@@ -15,16 +13,21 @@ DEFAULT_CONFIG = CLI_ROOT / 'config' / 'costing.default.toml'
 CONFIG_SCHEMA = CLI_ROOT / 'config' / 'costing.schema.json'
 
 
-def test_default_rust_config_matches_the_python_oracle_product_order() -> None:
+def test_default_rust_config_contains_complete_ordered_pipeline_rules() -> None:
     config = tomllib.loads(DEFAULT_CONFIG.read_text(encoding='utf-8'))
 
     assert config['schema_version'] == 1
-    assert [(item['code'], item['name']) for item in config['pipelines']['gb']['product_order']] == list(
-        GB_PRODUCT_ORDER
-    )
-    assert [(item['code'], item['name']) for item in config['pipelines']['sk']['product_order']] == list(
-        SK_PRODUCT_ORDER
-    )
+    for pipeline_name in ('gb', 'sk'):
+        product_order = config['pipelines'][pipeline_name]['product_order']
+        product_keys = [(item['code'], item['name']) for item in product_order]
+        display_orders = [item['display_order'] for item in product_order]
+
+        assert product_order
+        assert len(product_keys) == len(set(product_keys))
+        assert all(code.strip() and name.strip() for code, name in product_keys)
+        assert display_orders == sorted(display_orders)
+        assert len(display_orders) == len(set(display_orders))
+
     assert config['pipelines']['gb']['standalone_cost_items'] == ['委外加工费']
     assert config['pipelines']['sk']['standalone_cost_items'] == ['委外加工费', '软件费用']
 

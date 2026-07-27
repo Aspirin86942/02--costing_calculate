@@ -77,13 +77,13 @@ jobs:
         run: cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
 
       - name: Lint Python
-        run: uv run python -m ruff check src tests tools
+        run: uv run python -m ruff check tests tools
 
       - name: Check Python formatting
-        run: uv run python -m ruff format src tests tools --check
+        run: uv run python -m ruff format tests tools --check
 
       - name: Test public Python suites
-        run: uv run python -m pytest tests -q -m "not slow and not benchmark and not meta" --basetemp "${{ runner.temp }}/costing-pytest"
+        run: uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp "${{ runner.temp }}/costing-pytest"
 
       - name: Build release binary
         env:

@@ -1,59 +1,35 @@
 # Contract Baselines
 
-本目录用于冻结“当前代码真实输出”的 contract baseline。
+本目录保存 Rust 正式实现的冻结契约数据。
 
 ## 规则
 
 - 纯重构不得修改 baseline。
-- 只有业务口径明确变化时，才允许更新 baseline，并且必须在变更说明里写清差异。
-- README 不是 contract 真值；baseline 只能来自当前代码真实输出。
+- 只有明确批准的业务口径变化才允许更新 baseline。
+- 更新时必须同时说明变更前行为、变更后行为、业务原因及受影响的 Sheet 和字段。
+- baseline 不由 Python 业务实现生成；代码、Rust 契约测试和实际 CLI 输出共同校验这些文件。
 
 ## 当前基线
 
 - `baselines/workbook_semantics.json`
-  - 该基线冻结默认 3 张 workbook Sheet 的顺序、列序、freeze panes、auto filter、number format、column width 和工单异常高亮位置。
+  - 冻结默认三张 Sheet 的顺序、列序、冻结窗格、筛选范围、数字格式、列宽和异常高亮位置。
 - `baselines/error_log_contract.json`
-  - 冻结运行时 `error_log` 数据契约；当前 CLI 不再写出 CSV，但内存汇总与质量计数仍依赖该契约。
+  - 冻结运行时 `error_log` 数据契约；CLI 不单独写出 CSV，但运行汇总与质量计数仍依赖该契约。
 
-## 生成方式
+## 跨版本验证
 
-运行：
-
-```bash
-uv run python -m tests.contracts.generate_baselines
-```
-
-该命令会使用当前代码路径生成 workbook 语义快照，而不是比对二进制文件。
-
-## Rust oracle
-
-`tests/test_full_rust_cli_oracle.py` 使用当前 Python service 路径生成 oracle workbook，再调用 Rust CLI 生成同一输入的 workbook，并通过 `tests/rust_oracle/workbook_compare.py` 比对 sheet 顺序、行列形状、freeze panes、auto filter、列宽、数字格式、表头/数据区有效样式、条件格式范围和单元格值。
-
-在 linked worktree 没有 `data/raw` 样本时，可通过环境变量指定本机样本。PowerShell 示例：
+使用统一验证命令，让基线 binary 和候选 binary 处理同一份输入：
 
 ```powershell
-$env:COSTING_GB_SAMPLE='D:\path\to\gb.xlsx'
-$env:COSTING_SK_SAMPLE='D:\path\to\sk.xlsx'
-uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
+uv run python -m tools.validation.compare_releases `
+  --baseline-binary <baseline.exe> `
+  --candidate-binary <candidate.exe> `
+  --pipeline gb `
+  --input <workbook.xlsx> `
+  --output-dir <empty-directory> `
+  --report <report.json>
 ```
 
-Bash 示例：
+验证器会比较 Sheet 顺序、行列、单元格类型和值、样式、数字格式、条件格式和 OOXML 包结构；数值容差固定为单元格 `1e-9`、列累计 `1e-8`。报告不包含单元格值或敏感路径。
 
-```bash
-COSTING_GB_SAMPLE=... COSTING_SK_SAMPLE=... uv run python -m pytest tests/test_full_rust_cli_oracle.py -q --basetemp .pytest-tmp/rust-oracle
-```
-
-## Rust Oracle Parity
-
-Rust rewrite 必须通过 Python oracle 比对后，才能证明与 Python legacy/oracle 路径一致；Python retirement 仍需单独批准。
-
-2026-07-10 的 GB/SK 自动化验证与性能证据记录在 [`docs/rust_rewrite_validation.md`](../../docs/rust_rewrite_validation.md)；该结果不等于 Python 退场审批。
-
-Required checks:
-
-- `tests/test_full_rust_cli_oracle.py`
-- `tests/test_full_rust_cli_benchmark.py`
-
-验证器会拒绝任何包含 `成本分析产品维度` 的 Rust workbook。
-
-样本缺失导致的 `skip` 只表示环境未提供证据，不等于 GB/SK oracle 或 benchmark 已通过；完整切换证据要求两个管线都实际执行。
+缺少真实样本不等于通过。正式验收必须让 GB、SK 两条管线都实际执行，并把脱敏结果写入 `docs/changes/`。

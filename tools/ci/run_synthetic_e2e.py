@@ -14,8 +14,8 @@ from openpyxl import load_workbook
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tests.rust_oracle.benchmark_protocol import PipelineName  # noqa: E402
-from tests.rust_oracle.sanitized_fixture import build_raw_fixture  # noqa: E402
+from tools.validation.synthetic_inputs import build_raw_fixture  # noqa: E402
+from tools.validation.types import PipelineName  # noqa: E402
 
 WORKBOOK_BASELINE = PROJECT_ROOT / 'tests' / 'contracts' / 'baselines' / 'workbook_semantics.json'
 PIPELINES: tuple[PipelineName, ...] = ('gb', 'sk')

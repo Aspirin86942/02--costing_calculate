@@ -12,7 +12,7 @@ fn version_json_reports_deterministic_build_identity_without_a_pipeline() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("parse version JSON");
     assert_eq!(value["name"], "costing-calculate");
-    assert_eq!(value["version"], "0.2.0");
+    assert_eq!(value["version"], "0.3.0");
     assert_eq!(value["config_schema_version"], 1);
     assert_eq!(value["run_manifest_schema_version"], 1);
     assert!(value["target"]
@@ -30,7 +30,7 @@ fn version_json_reports_deterministic_build_identity_without_a_pipeline() {
 }
 
 #[test]
-fn standard_version_flag_reports_v020() {
+fn standard_version_flag_reports_v030() {
     let output = Command::new(env!("CARGO_BIN_EXE_costing-calculate"))
         .arg("--version")
         .output()
@@ -40,6 +40,6 @@ fn standard_version_flag_reports_v020() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout).expect("version output is UTF-8"),
-        "costing-calculate 0.2.0\n"
+        "costing-calculate 0.3.0\n"
     );
 }

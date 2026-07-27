@@ -6,8 +6,10 @@ import argparse
 import json
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_KEYS = {
     'name',
     'version',
@@ -18,6 +20,9 @@ EXPECTED_KEYS = {
     'config_schema_version',
     'run_manifest_schema_version',
 }
+EXPECTED_APPLICATION_VERSION = tomllib.loads((PROJECT_ROOT / 'rust' / 'Cargo.toml').read_text(encoding='utf-8'))[
+    'workspace'
+]['package']['version']
 
 
 def _parse_args() -> argparse.Namespace:
@@ -61,7 +66,7 @@ def verify_identity(
 
     expected = {
         'name': 'costing-calculate',
-        'version': '0.2.0',
+        'version': EXPECTED_APPLICATION_VERSION,
         'git_commit': expected_commit,
         'build_timestamp': expected_timestamp,
         'rustc_version': rustc_version,

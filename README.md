@@ -1,283 +1,146 @@
-# 成本计算 ETL 工具
+# Costing Calculate
 
-金蝶 ERP 成本计算单数据处理工具。
-
-当前操作命令以本文件和 [`AGENTS.md`](AGENTS.md) 为准；验证与性能口径见 [`docs/README.md`](docs/README.md)。历史 Superpowers 计划与设计保存在只读档案中，不作为当前实现入口。
-
-## 功能
-- 清洗原始 Excel 文件（去除表头、扁平化双层表头）
-- 默认输出 3 张业务工作表，覆盖成本总表、数量聚合和工单维度异常
-- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时在控制台展示
-- 提供 `--check-only` 预检模式和 `--benchmark` 性能入口，便于先跑链路再决定是否落盘
-- 提供版本化 TOML 配置、严格 schema 校验、有效配置来源和 SHA-256 语义指纹
-- 可按需原子写出版本化 `RunManifestV1`，并支持路径脱敏
-- 字段名提取和标准化
+Costing Calculate 是 GB / SK 成本核算工作簿处理工具。正式实现是 Rust CLI；发布包是自包含 Windows ZIP，运行时不需要安装 Rust 或 Python。
 
 ## 安装
-Rust CLI 使用仓库根 `rust-toolchain.toml` 精确锁定的 Rust 1.96.0 toolchain。
 
-仅在运行 Python oracle/regression 时安装其开发依赖：
-```bash
-uv sync --extra dev
-```
+### 使用 Windows 发布包
 
-Python oracle/regression 的开发、测试命令使用项目 `.venv`，由 `uv` 管理；除排查解释器问题外，不使用裸 `python` 或 `pip`。
-
-### Windows Release 包
-
-正式分发物是自包含 Windows x86_64 ZIP，不要求安装 Rust 或 Python。包内同时携带
-默认配置、配置 schema、Manifest schema、运行示例、CHANGELOG 和
-`SHA256SUMS`。从干净 Git commit 构建正式版本：
+1. 下载同一版本的 ZIP 和 `.zip.sha256`。
+2. 校验 ZIP：
 
 ```powershell
-.\tools\release\package_windows.ps1 -ReleaseLabel v0.2.0 -OutputDirectory dist
+$expected = (Get-Content .\costing-calculate-v0.3.0-windows-x86_64.zip.sha256).Split()[0]
+$actual = (Get-FileHash .\costing-calculate-v0.3.0-windows-x86_64.zip -Algorithm SHA256).Hash
+$expected -eq $actual
 ```
 
-打包脚本使用当前 commit 时间作为确定性 `SOURCE_DATE_EPOCH`，并校验 executable
-中的 commit、Rust 1.96.0、target 和构建时间。ZIP 旁生成 `.zip.sha256`；脚本拒绝
-覆盖已有目录或归档。GitHub Release workflow 会先复用完整 CI，再在隔离后的 child
-`PATH` 中执行 `--help`、`--version-json`、配置校验、synthetic GB/SK check-only
-以及正常 workbook + Manifest smoke。
-
-## 使用
-Rust CLI 是当前默认/主入口：
+3. 解压后保留整个目录，不要混用不同版本的可执行文件、配置、schema 和校验文件。
+4. 查看版本与帮助：
 
 ```powershell
-cargo build --release --manifest-path rust/Cargo.toml
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --benchmark
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --check-only --benchmark
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- --version-json
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --validate-config
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --print-effective-config
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --check-only --summary-output data/processed/gb/gb-check-summary.json
+.\costing-calculate.exe --version-json
+.\costing-calculate.exe --help
 ```
 
-上述正式 Rust build/run 命令统一使用 release profile；dev profile 仅适合开发调试，不作为真实数据性能比较口径。
+### 从源码构建
 
-从仓库根目录运行并省略 `--input` 时，CLI 会使用有效配置中的安全 basename glob 扫描 `data/raw/<pipeline>/`；内置默认值仍为 `<pipeline>-*.xlsx`。恰好 1 个时自动使用，0 个时报 `FILE_NOT_FOUND`，多个时报 `INVALID_INPUT` 并要求显式指定 `--input`。
-
-以下命令是路径模板，执行前需将 `<file>` 替换为真实文件名；多文件或需要自定义输入、输出路径时，仍可显式指定：
+仓库根目录的 `rust-toolchain.toml` 固定 Rust `1.96.0`：
 
 ```powershell
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --input data/raw/gb/<file>.xlsx --output data/processed/gb/<file>_处理后.xlsx
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --input data/raw/sk/<file>.xlsx --output data/processed/sk/<file>_处理后.xlsx
+cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
 ```
 
-### 配置治理
+生成文件位于 `rust\target\release\costing-calculate.exe`。
 
-不传 `--config` 时，可执行文件使用内置的完整
-[`costing.default.toml`](rust/crates/costing-cli/config/costing.default.toml)。
-外部配置必须完整声明 GB 和 SK，整体替换外部可维护面，不做隐式深层合并：
+## 运行
+
+处理 GB：
 
 ```powershell
-# 只校验配置；不读取 workbook
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --config costing.toml --validate-config
-
-# 展示实际生效的字段、embedded-default/external/sealed 来源和 SHA-256
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk --config costing.toml --print-effective-config
-
-# 正常运行
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb --config costing.toml
+.\costing-calculate.exe gb --input C:\data\gb-input.xlsx --output C:\data\gb-result.xlsx
 ```
 
-未知字段、非 UTF-8、缺失管线、重复产品编码/顺序、危险输入 glob
-或越权修改独立成本项都会在读取 workbook 前失败。产品展示规则和安全
-输入模式可由外部维护；GB/SK 独立成本项集合与顺序仍是 sealed 契约。
-JSON Schema 见
-[`costing.schema.json`](rust/crates/costing-cli/config/costing.schema.json)。
-`effective_sha256` 对类型化语义值计算，因此 TOML 注释、空白和键顺序不
-改变它；外部配置另返回原始字节的 `source_sha256`，且诊断输出不暴露
-配置绝对路径。
-
-### 运行 Manifest 与原子发布
-
-不传 `--summary-output` 时，CLI 不计算输入/输出文件 SHA-256、不创建 sidecar，
-stdout/stderr、退出码和现有 `RunSummary` 字段保持不变。显式传入时，CLI 额外
-原子写出版本化 `RunManifestV1`：
+处理 SK：
 
 ```powershell
-# 正常运行：写 workbook 和审计 Manifest
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- sk `
-  --input data/raw/sk/<file>.xlsx `
-  --output data/processed/sk/<file>_处理后.xlsx `
-  --summary-output data/processed/sk/<file>_summary.json
-
-# 预检：只写审计 Manifest，不写 workbook
-cargo run --release --manifest-path rust/Cargo.toml -p costing-calculate -- gb `
-  --check-only `
-  --summary-output data/processed/gb/gb-check-summary.json
+.\costing-calculate.exe sk --input C:\data\sk-input.xlsx --output C:\data\sk-result.xlsx
 ```
 
-Manifest 关联 `request_id`、构建身份、输入文件和最终 workbook SHA-256、有效配置
-哈希、质量指标、计数及阶段耗时。运行失败且 summary 路径有效时写失败变体；
-若 workbook 已发布而 Manifest 写出失败，命令返回非零但保留有效 workbook，
-stderr 明确 `final_output_valid=true` 并给出 workbook 路径和哈希。
-显式请求 Manifest 时，输入只读取一次，Calamine 解析与 `input.sha256` 使用同一份
-不可变字节快照，避免运行期间源路径被替换后产生审计错配。
+只检查、不写 workbook：
 
-workbook 与 Manifest 都先在最终目录写入唯一 `.costing-publish-*` 临时成品，
-flush/sync 后以禁止覆盖方式发布；最终路径已存在时在读取大 workbook 前拒绝。
-可捕获的 I/O 中断沿稳定 writer stage 返回并尽力清理 `.costing-publish-*` 与
-`.costing-tmp-*`；断电或强制终止仍可能留下诊断临时文件，但不会把半成品发布到
-最终路径。
-`--redact-paths` 会把当前目录内路径变为相对路径、目录外路径缩减为 basename，
-同时保留哈希。Schema 与固定示例见
-[`run-manifest.schema.json`](rust/crates/costing-cli/config/run-manifest.schema.json)、
-[`run-manifest.success.golden.json`](rust/crates/costing-cli/config/run-manifest.success.golden.json)
-和
-[`run-manifest.failure.golden.json`](rust/crates/costing-cli/config/run-manifest.failure.golden.json)。
-
-Python CLI 仅作为 legacy/oracle/regression 路径保留，用于迁移校验与回归；Python retirement 仍需单独批准：
-
-```bash
-# GB legacy/oracle/regression
-uv run python main.py gb
-
-# SK legacy/oracle/regression
-uv run python main.py sk
-
-# 预检 + benchmark（不写 workbook 或任何外部摘要文件）
-uv run python main.py gb --check-only --benchmark
-uv run python main.py sk --check-only --benchmark
+```powershell
+.\costing-calculate.exe gb --input C:\data\gb-input.xlsx --check-only --benchmark
 ```
 
-Rust 默认 workbook 仍然只包含以下 3 张 Sheet：
+按月份过滤：
 
-- `成本计算单总表`
-- `成本计算单数量聚合维度`
-- `成本分析工单维度`
-
-`成本分析产品维度` 不属于 Rust 新系统输出契约。
-
-## 性能与内存
-
-- 正式构建统一使用 release profile；`rust/Cargo.toml` 固定 `codegen-units = 1`，以运行性能优先于完整 release 重编译速度。
-- CLI 默认启用自适应 low-memory writer。单张 Sheet 达到 `5,000,000` 个 `行数 × 列数` slots 时进入 low-memory，小 workbook 保持标准 writer。
-- low-memory 临时目录创建在最终输出目录内，名称以 `.costing-tmp-` 开头；成功或失败均显式清理，不使用系统 `%TEMP%`。
-- 大 workbook 使用受控 `rust_xlsxwriter` fork 和固定 ZIP 压缩等级，fork revision 由 `rust/Cargo.toml` 精确锁定。
-- 2026-07-12 同机 N=5 验收中，SK normal-mode wall-clock 中位数为 `19.883s`，Peak Working Set 中位数为 `1.361 GiB`；GB 中位数为 `2.475s`。这些是本机验证快照，不是跨机器 SLA。详见 [`docs/rust_rewrite_validation.md`](docs/rust_rewrite_validation.md)。
-
-## 输出说明
-Rust CLI 无论自动生成还是显式指定输出路径，均拒绝覆盖已有输出文件，并禁止输入、输出指向同一文件。
-
-每个处理后的工作簿默认按顺序输出以下 3 张 Sheet：
-- `成本计算单总表`
-- `成本计算单数量聚合维度`
-- `成本分析工单维度`
-
-- 非 `--check-only` 模式省略 `--output` 时，默认写入 `data/processed/<pipeline>/<输入stem>_处理后.xlsx`；月过滤会在 `.xlsx` 前追加与 Python 一致的 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM` 后缀
-- 显式传入 `--output` 时使用指定路径
-- 不再自动落盘 `*_处理后_error_log.csv` 或旧式 `*_处理后_summary.json`；仅在显式 `--summary-output` 时写版本化 Manifest
-- 质量摘要、运行时 `error_log_count`（不单独落盘）和阶段耗时仅输出到控制台
-- `--check-only` 默认只做预检与控制台摘要；显式 `--summary-output` 时只额外写 Manifest，仍不写 workbook
-
-## 分析输出口径
-- `成本计算单总表` 保留成本计算单明细，`本期完工金额`为空时后续分析按 `0` 参与汇总，并继续写入 `error_log` 的 `MISSING_AMOUNT`
-- `成本计算单数量聚合维度` 新增三大类/制造费用细项金额、独立成本项金额、单位成本和校验字段，作为工单分析底表
-- 成本项目展示口径：
-  - `直接材料`、`直接人工`、`制造费用*` 作为三大类成本列展示
-  - `委外加工费` -> 独立成本项，仅在数量聚合、工单分析与总成本勾稽中展示
-  - `软件费用` -> 仅 `sk` 管线按独立成本项处理，仅在数量聚合、工单分析与总成本勾稽中展示
-- 总成本勾稽口径按管线区分：
-  - `gb`：`直接材料 + 直接人工 + 制造费用 + 委外加工费 = 总完工成本`
-  - `sk`：`直接材料 + 直接人工 + 制造费用 + 委外加工费 + 软件费用 = 总完工成本`
-- 工单维度异常分析页：`成本分析工单维度`
-  - 粒度：`月份 + 产品编码 + 工单编号 + 工单行`
-  - 总体：按产品在整个统计期间内建总体，月份仅作为标签与汇总字段
-  - 规则：仅对大于 0 的单位成本计算对数与 Modified Z-score，阈值为 `2.5/3.5`
-  - `委外加工费` 与 `软件费用`（仅 `sk`）只展示金额和单位成本，不输出 `log`、`Modified Z-score` 和异常标记，也不参与异常等级和异常主要来源判定
-  - 解释字段：`异常明细解释`，仅列出达到 `关注` 或 `高度可疑` 的成本项；每项包含当前值、当前log、基准值、基准log、log偏离、相对偏离、score、有效工单数、原始MAD、有效MAD。`有效工单数` 是同一产品、同一生产类型异常池、同一成本指标下实际参与该项评分的有效工单行数，不是完工数量合计。
-
-## Excel 样式
-- 3 张默认平铺表使用浅蓝表头、表头细边框和固定列宽
-- 默认冻结 `A2`，真实契约以 `tests/contracts/` baseline 为准
-- 开启筛选
-- 数字格式：
-  - 金额：`#,##0.00`
-  - 数量：`#,##0.00`
-  - 单价：`#,##0.00`
-- 不使用合并单元格
-
-## 目录结构
-- `rust/` - 当前主实现的 Cargo workspace
-  - `crates/costing-cli` - `costing-calculate` CLI 编排与错误输出
-  - `crates/costing-core` - GB/SK ETL、Decimal 成本计算、质量审计与异常分析
-  - `crates/costing-xlsx` - 原始工作簿读取和 3-sheet workbook 写出
-  - `crates/costing-oracle-tests` - Rust 运行时契约比较支持
-- `src/analytics/` - 分析与异常检测模块
-  - `contracts.py` - 共享数据结构
-  - `fact_builder.py` - fact 构建与 Decimal 工具
-  - `qty_enricher.py` - 数量页补强与报表产物编排
-  - `table_rendering.py` - 产品维度 legacy/helper 渲染逻辑（不属于默认 workbook 输出）
-  - `anomaly.py` / `scoring.py` / `summary.py` / `quality.py` / `errors.py` - 工单异常、评分工具、质量摘要、error_log 契约
-- `src/etl/` - ETL 处理模块
-  - `costing_etl.py` - 单个工作簿 ETL 主流程
-  - `runner.py` - 管线调度、输入匹配与质量日志输出
-  - `pipeline.py` - ETL 阶段编排
-  - `stages/` - 读取、列识别、清洗、拆分
-  - `utils.py` - 工具函数
-- `main.py` - Python legacy/oracle/regression 入口
-- `src/excel/` - Excel 写出与样式模块
-  - `styles.py` / `fast_writer.py` / `workbook_writer.py`
-- `src/services/` - CLI 应用服务层与结果对象
-- `src/config/` - 配置管理
-- `data/raw/` - 原始数据
-  - `gb/` - GB 系列原始成本计算单
-  - `sk/` - SK 系列原始成本计算单
-- `data/processed/` - 处理结果
-  - `gb/` - GB 系列处理结果
-  - `sk/` - SK 系列处理结果
-- `tests/` - 单元测试
-- `tests/contracts/` - workbook / error_log / CLI 契约测试
-- `tests/architecture/` - 模块依赖与导入边界测试
-- `docs/plans/` - 尚未实施或用于追溯目标状态的计划
-- `docs/changes/` - 已实施变更、验证证据和发布记录
-- `docs/decisions/` - 重要且需要长期保留的决策记录
-- `docs/superpowers/` - 只读历史计划与设计档案；禁止新增，不作为待办
-- `docs/performance/` - 当前性能口径与冻结基线
-- `docs/field_definitions/` - 字段定义文件
-
-## 测试
-```bash
-# Rust CLI checks
-cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo test --manifest-path rust/Cargo.toml
-
-# Python oracle/regression 依赖
-uv sync --extra dev
-
-# 先确认解释器来自项目 .venv
-uv run python -c "import sys; print(sys.executable)"
-
-# Python oracle/regression
-uv run python -m pytest tests -q --basetemp .pytest-tmp/python-regression
-
-# Python lint
-uv run python -m ruff check src tests tools
-
-# Python format check
-uv run python -m ruff format src tests tools --check
+```powershell
+.\costing-calculate.exe sk `
+  --input C:\data\sk-input.xlsx `
+  --output C:\data\sk-result.xlsx `
+  --month-start 2026-01 `
+  --month-end 2026-06
 ```
 
-## Contract Baseline
-- contract 真值来自 `tests/contracts/baselines/`，不来自 README。
-- 纯重构不得修改 baseline；只有业务口径明确变化时才允许更新，并必须说明差异。
+同时写出可审计 Manifest：
 
-## 数据目录说明
-- `data/raw/gb/` - GB 系列原始成本计算单
-- `data/raw/sk/` - SK 系列原始成本计算单
-- `data/processed/gb/` - GB 系列处理结果
-- `data/processed/sk/` - SK 系列处理结果
-- `docs/field_definitions/` - 字段定义文件 (gb 金蝶字段.txt/html)
+```powershell
+.\costing-calculate.exe gb `
+  --input C:\data\gb-input.xlsx `
+  --output C:\data\gb-result.xlsx `
+  --summary-output C:\data\gb-run-manifest.json `
+  --redact-paths
+```
 
-## 已移除脚本
-以下历史脚本已从仓库移除，功能已由 `src/` 内模块接管：
-- `Costing_Calculate.py` - 原始清洗脚本
-- `Costing_Calculating_V2.0.py` - V2.0 拆分脚本（已重构到 src/etl/costing_etl.py）
-- `抓取所有字段脚本.py` - 字段提取脚本
-- `src/excel/sheet_writers.py` - legacy 写出实现，已删除，统一使用 `src/excel/fast_writer.py`
+校验或查看配置，不读取 workbook：
 
-## 已移除
-- `Costing_Allocation.py` - 成本分摊脚本（已废弃）
+```powershell
+.\costing-calculate.exe gb --config .\config\costing.default.toml --validate-config
+.\costing-calculate.exe gb --config .\config\costing.default.toml --print-effective-config
+```
+
+## 默认输入与输出
+
+省略 `--input` 时，程序扫描：
+
+- GB：`data/raw/gb/gb-*.xlsx`
+- SK：`data/raw/sk/sk-*.xlsx`
+
+恰好一个匹配文件时自动使用；没有文件时报 `FILE_NOT_FOUND`；多个文件时报 `INVALID_INPUT`，此时必须显式传入 `--input`。
+
+非 `--check-only` 模式省略 `--output` 时，结果写到：
+
+- GB：`data/processed/gb/<输入名>_处理后.xlsx`
+- SK：`data/processed/sk/<输入名>_处理后.xlsx`
+
+月份过滤会在 `.xlsx` 前加入 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM`。程序不会覆盖已有 workbook 或 Manifest，也拒绝输入和输出指向同一文件。
+
+## 输出内容
+
+正常运行只生成一个处理后 workbook，固定包含三张 Sheet：
+
+1. `成本计算单总表`
+2. `成本计算单数量聚合维度`
+3. `成本分析工单维度`
+
+质量摘要、异常数量和阶段耗时写到控制台 JSON。只有显式使用 `--summary-output` 时才写 `RunManifestV1`；schema 版本仍为 V1。
+
+完整业务口径见 [`docs/contracts/workbook.md`](docs/contracts/workbook.md)。
+
+## 常见错误
+
+| 错误码 | 含义 | 处理方式 |
+|---|---|---|
+| `FILE_NOT_FOUND` | 输入文件不存在或默认目录没有匹配文件 | 检查路径，或显式传入 `--input` |
+| `INVALID_INPUT` | 参数、月份、默认文件数量或输入输出关系不合法 | 查看错误中的 `message` 后修正参数 |
+| `INVALID_CONFIG` | 配置不符合 schema 或修改了封闭字段 | 先运行 `--validate-config` |
+| `FILE_NOT_READABLE` | workbook 损坏、被占用或无读取权限 | 关闭占用程序并检查文件 |
+| `OUTPUT_EXISTS` | workbook 或 Manifest 已存在 | 换新路径；程序不会覆盖 |
+| `OUTPUT_NOT_WRITABLE` | 输出目录不可写 | 检查目录权限和剩余空间 |
+
+失败 JSON 会包含稳定的错误码、`message` 和 `retryable`。不要依靠错误文本做自动化分支，优先使用错误码。
+
+## 发布包
+
+维护者从干净提交构建 Windows ZIP：
+
+```powershell
+.\tools\release\package_windows.ps1 -ReleaseLabel v0.3.0-rc.1 -OutputDirectory dist
+```
+
+验收包：
+
+```powershell
+.\tools\release\smoke_package_windows.ps1 `
+  -ArchivePath .\dist\costing-calculate-v0.3.0-rc.1-windows-x86_64.zip `
+  -ChecksumPath .\dist\costing-calculate-v0.3.0-rc.1-windows-x86_64.zip.sha256 `
+  -GbInput <gb-synthetic.xlsx> `
+  -SkInput <sk-synthetic.xlsx> `
+  -ExpectedReleaseLabel v0.3.0-rc.1 `
+  -ExpectedCommit <full-git-sha>
+```
+
+该 smoke 会在 child `PATH` 中移除 Rust 和 Python，再验证哈希、固定目录、help、version、配置、GB/SK check-only、正式 workbook 和 Manifest。
+
+开发、架构、验证与文档导航见 [`docs/README.md`](docs/README.md)。

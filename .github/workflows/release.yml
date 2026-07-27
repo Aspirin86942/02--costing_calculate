@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_label:
-        description: Existing tag to package, for example v0.2.0-rc.1
+        description: Existing tag to package, for example v0.3.0-rc.1
         required: true
         type: string
       publish:
@@ -40,11 +40,28 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event_name == 'push' && github.ref || inputs.release_label }}
 
+      - name: Install exact Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
+          rustc --version --verbose
+
       - name: Resolve immutable release identity
         id: identity
         shell: pwsh
         run: |
-          if ($env:RELEASE_LABEL -notmatch '^v0\.2\.0(?:-rc\.[0-9]+)?$') {
+          $metadata = (& cargo metadata --format-version 1 --no-deps --manifest-path rust/Cargo.toml) |
+            ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to read Cargo workspace metadata.'
+          }
+          $cliPackages = @($metadata.packages | Where-Object { $_.name -eq 'costing-calculate' })
+          if ($cliPackages.Count -ne 1) {
+            throw "Expected exactly one costing-calculate package, found $($cliPackages.Count)."
+          }
+          $workspaceVersion = [string]$cliPackages[0].version
+          $releasePattern = "^v$([regex]::Escape($workspaceVersion))(?:-rc\.[1-9][0-9]*)?$"
+          if ($env:RELEASE_LABEL -notmatch $releasePattern) {
             throw "Unsupported release label: $env:RELEASE_LABEL"
           }
           $commit = (& git rev-parse HEAD).Trim().ToLowerInvariant()
@@ -56,12 +73,6 @@ jobs:
           "source_commit=$commit" >> $env:GITHUB_OUTPUT
           "source_date_epoch=$epoch" >> $env:GITHUB_OUTPUT
           "package_name=costing-calculate-$env:RELEASE_LABEL-windows-x86_64" >> $env:GITHUB_OUTPUT
-
-      - name: Install exact Rust toolchain
-        shell: pwsh
-        run: |
-          rustup toolchain install 1.96.0 --profile minimal --component rustfmt --component clippy
-          rustc --version --verbose
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

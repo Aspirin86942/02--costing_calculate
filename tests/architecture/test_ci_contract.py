@@ -18,6 +18,7 @@ REQUIRED_CI_COMMANDS = (
     'uv sync --frozen --extra dev',
     'uv run python -m ruff check tests tools',
     'uv run python -m ruff format tests tools --check',
+    'uv run python tools/validation/check_markdown_links.py',
     ('uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp "${{ runner.temp }}/costing-pytest"'),
 )
 

@@ -9,6 +9,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SkInput,
     [Parameter(Mandatory = $true)]
+    [ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?$')]
     [string]$ExpectedReleaseLabel,
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9a-f]{40}$')]

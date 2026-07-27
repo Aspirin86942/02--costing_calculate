@@ -14,8 +14,8 @@ RELEASE_ASSETS = (
     PROJECT_ROOT / 'CHANGELOG.md',
 )
 RELEASE_NOTES = (
-    PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.2.0-rc.1.md',
-    PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.2.0.md',
+    PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.3.0-rc.1.md',
+    PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.3.0.md',
 )
 
 
@@ -43,6 +43,8 @@ def test_release_workflow_is_pinned_and_calls_ci_before_packaging() -> None:
     assert 'uses: ./.github/workflows/ci.yml' in workflow
     assert 'needs: quality' in workflow
     assert "ref: ${{ github.event_name == 'push' && github.ref || inputs.release_label }}" in workflow
+    assert 'cargo metadata --format-version 1 --no-deps --manifest-path rust/Cargo.toml' in workflow
+    assert '$releasePattern = "^v$([regex]::Escape($workspaceVersion))' in workflow
     assert 'git rev-parse "$env:RELEASE_LABEL^{commit}"' in workflow
     assert '$tagCommit -ne $commit' in workflow
     assert 'tools/release/package_windows.ps1' in workflow
@@ -80,6 +82,8 @@ def test_packaging_scripts_and_release_assets_cover_the_frozen_layout() -> None:
     assert 'cargo build --release --locked' in package_script
     assert 'SOURCE_DATE_EPOCH' in package_script
     assert 'COSTING_GIT_COMMIT' in package_script
+    assert r'(?:-rc\.[1-9][0-9]*)?' in package_script
+    assert r'(?:-rc\.[1-9][0-9]*)?' in smoke_script
     assert '--version-json' in smoke_script
     assert '--check-only' in smoke_script
     assert '--summary-output' in smoke_script

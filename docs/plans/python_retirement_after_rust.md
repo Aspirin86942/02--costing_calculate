@@ -1,29 +1,15 @@
-# Python Retirement After Rust Validation
+# Python 退役计划
 
-> Status: Proposed. Python retirement still requires a separate explicit approval; this plan does not authorize deletion.
+- 状态：Completed
+- 完成日期：2026-07-27
+- 批准来源：v0.3.0 全项目整理计划
 
-The Rust CLI was validated for GB and SK on 2026-07-10; see [`../rust_rewrite_validation.md`](../rust_rewrite_validation.md) for the recorded snapshot and evidence limits. This document lists Python code that remains in place until a separate retirement change is reviewed and approved; validation alone is not deletion approval.
+Rust GB/SK 正式路径通过冻结基线、真实 workbook 和契约验证后，Python 业务实现已在独立阶段退役。验证能力先提取为独立工具，随后才删除旧入口、业务实现、只保护旧实现的测试和 Phase 0/meta 脚手架。
 
-## Keep Until Retirement Is Approved
+最终边界：
 
-- `main.py`
-- `src/etl/`
-- `src/analytics/`
-- `src/excel/`
-- `src/services/costing_service.py`
-- `tests/contracts/`
-- `tests/rust_oracle/`
+- Rust 是唯一正式业务实现。
+- Python 只保留工作簿比较、合成 GB/SK 输入和发布验收工具。
+- 当前分支不保留第二套业务实现；退役代码通过 Git 基线标签恢复。
 
-## Product Dimension Retirement
-
-Rust does not implement `成本分析产品维度`.
-
-In a separately approved retirement change, remove the Python legacy product-dimension helpers:
-
-- `src/analytics/table_rendering.py` product anomaly section helpers
-- `src/excel/product_anomaly_writer.py`
-- Tests that only protect the retired product-dimension sheet
-
-## Removal Rule
-
-Do not delete any Python oracle code in the same commit that validates Rust. Deletion requires a separate review after Rust validation evidence is attached.
+实际文件范围、验证结果和恢复边界见 [`../changes/2026-07-27-v0.3.0-python-retirement.md`](../changes/2026-07-27-v0.3.0-python-retirement.md)。

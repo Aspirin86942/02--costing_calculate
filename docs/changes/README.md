@@ -22,3 +22,4 @@
 - [`2026-07-25-github-main-protection.md`](2026-07-25-github-main-protection.md)：远端主分支保护证据。
 - [`releases/v0.2.0-rc.1.md`](releases/v0.2.0-rc.1.md) 与 [`releases/v0.2.0.md`](releases/v0.2.0.md)：版本发布说明。
 - [`2026-07-27-documentation-reorganization.md`](2026-07-27-documentation-reorganization.md)：本次文档目录整理记录。
+- [`2026-07-27-v0.3.0-cleanup-baseline.md`](2026-07-27-v0.3.0-cleanup-baseline.md)：v0.3.0 全项目整理前冻结基线。

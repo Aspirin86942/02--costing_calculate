@@ -32,3 +32,21 @@ def test_costing_core_has_no_cli_config_environment_or_path_discovery_dependency
     assert 'toml' not in cargo_toml
     assert 'std::env' not in rust_sources
     assert 'Command::parse' not in rust_sources
+
+
+def test_cli_uses_the_deep_core_interface_instead_of_pipeline_internals() -> None:
+    run_source = (CLI_SRC / 'run.rs').read_text(encoding='utf-8')
+    core_lib = (CORE_ROOT / 'src' / 'lib.rs').read_text(encoding='utf-8')
+
+    assert 'process_workbook' in run_source
+    for internal_call in (
+        'costing_core::normalize',
+        'costing_core::split',
+        'costing_core::fact',
+        'costing_core::anomaly',
+        'costing_core::presentation',
+    ):
+        assert internal_call not in run_source
+    for private_module in ('anomaly', 'fact', 'normalize', 'presentation', 'quality', 'scoring', 'split'):
+        assert f'mod {private_module};' in core_lib
+        assert f'pub mod {private_module};' not in core_lib

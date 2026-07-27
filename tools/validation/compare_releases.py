@@ -21,6 +21,8 @@ def compare_releases(
     pipeline: PipelineName,
     input_path: Path,
     output_dir: Path,
+    month_start: str | None = None,
+    month_end: str | None = None,
 ) -> dict[str, Any]:
     baseline_binary = _require_file(baseline_binary, 'baseline binary')
     candidate_binary = _require_file(candidate_binary, 'candidate binary')
@@ -32,8 +34,22 @@ def compare_releases(
         if output.exists():
             raise FileExistsError(f'validation output already exists: {output.name}')
 
-    baseline_summary = _run_binary(baseline_binary, pipeline, input_path, baseline_output)
-    candidate_summary = _run_binary(candidate_binary, pipeline, input_path, candidate_output)
+    baseline_summary = _run_binary(
+        baseline_binary,
+        pipeline,
+        input_path,
+        baseline_output,
+        month_start=month_start,
+        month_end=month_end,
+    )
+    candidate_summary = _run_binary(
+        candidate_binary,
+        pipeline,
+        input_path,
+        candidate_output,
+        month_start=month_start,
+        month_end=month_end,
+    )
     if workbook_payloads_identical(baseline_output, candidate_output):
         comparison_mode = 'package-fast-path'
         mismatches: list[dict[str, str | None]] = []
@@ -53,6 +69,7 @@ def compare_releases(
         'schema_version': 1,
         'status': 'passed' if not mismatches else 'failed',
         'pipeline': pipeline,
+        'filter': {'month_start': month_start, 'month_end': month_end},
         'comparison_mode': comparison_mode,
         'mismatch_count': len(mismatches),
         'mismatches': mismatches,
@@ -73,17 +90,12 @@ def _run_binary(
     pipeline: PipelineName,
     input_path: Path,
     output_path: Path,
+    *,
+    month_start: str | None,
+    month_end: str | None,
 ) -> dict[str, Any]:
     result = subprocess.run(  # noqa: S603 - both binaries are explicit, verified local files.
-        [
-            str(binary),
-            pipeline,
-            '--input',
-            str(input_path),
-            '--output',
-            str(output_path),
-            '--redact-paths',
-        ],
+        _binary_arguments(binary, pipeline, input_path, output_path, month_start=month_start, month_end=month_end),
         cwd=PROJECT_ROOT,
         check=False,
         capture_output=True,
@@ -96,6 +108,31 @@ def _run_binary(
     if payload.get('status') != 'succeeded' or payload.get('pipeline') != pipeline:
         raise RuntimeError(f'{binary.name} returned an unexpected run summary')
     return payload
+
+
+def _binary_arguments(
+    binary: Path,
+    pipeline: PipelineName,
+    input_path: Path,
+    output_path: Path,
+    *,
+    month_start: str | None,
+    month_end: str | None,
+) -> list[str]:
+    arguments = [
+        str(binary),
+        pipeline,
+        '--input',
+        str(input_path),
+        '--output',
+        str(output_path),
+        '--redact-paths',
+    ]
+    if month_start is not None:
+        arguments.extend(('--month-start', month_start))
+    if month_end is not None:
+        arguments.extend(('--month-end', month_end))
+    return arguments
 
 
 def _safe_summary(summary: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +156,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--pipeline', choices=('gb', 'sk'), required=True)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--month-start')
+    parser.add_argument('--month-end')
     parser.add_argument('--report', type=Path)
     return parser.parse_args()
 
@@ -132,6 +171,8 @@ def main() -> int:
             pipeline=args.pipeline,
             input_path=args.input,
             output_dir=args.output_dir,
+            month_start=args.month_start,
+            month_end=args.month_end,
         )
         rendered = json.dumps(report, ensure_ascii=False, indent=2)
         if args.report is not None:

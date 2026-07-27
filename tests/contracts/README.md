@@ -30,6 +30,8 @@ uv run python -m tools.validation.compare_releases `
   --report <report.json>
 ```
 
+需要比较月份过滤时，追加 `--month-start YYYY-MM` 和/或 `--month-end YYYY-MM`。
+
 验证器会比较 Sheet 顺序、行列、单元格类型和值、样式、数字格式、条件格式和 OOXML 包结构；数值容差固定为单元格 `1e-9`、列累计 `1e-8`。报告不包含单元格值或敏感路径。
 
 缺少真实样本不等于通过。正式验收必须让 GB、SK 两条管线都实际执行，并把脱敏结果写入 `docs/changes/`。

@@ -40,6 +40,7 @@
 - Rust 架构：[`changes/2026-07-27-v0.3.0-rust-architecture.md`](changes/2026-07-27-v0.3.0-rust-architecture.md)
 - Python 退役：[`changes/2026-07-27-v0.3.0-python-retirement.md`](changes/2026-07-27-v0.3.0-python-retirement.md)
 - 版本与治理：[`changes/2026-07-27-v0.3.0-governance.md`](changes/2026-07-27-v0.3.0-governance.md)
+- RC 验收：[`changes/2026-07-27-v0.3.0-rc-validation.md`](changes/2026-07-27-v0.3.0-rc-validation.md)
 - 决策：[`decisions/2026-07-27-rust-deep-module-seams.md`](decisions/2026-07-27-rust-deep-module-seams.md)、[`decisions/2026-07-27-python-validation-only.md`](decisions/2026-07-27-python-validation-only.md)
 
 ## 权威顺序

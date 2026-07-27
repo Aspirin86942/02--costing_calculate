@@ -26,4 +26,5 @@
 - [`2026-07-27-v0.3.0-rust-architecture.md`](2026-07-27-v0.3.0-rust-architecture.md)：Rust 深模块接口与依赖边界整理。
 - [`2026-07-27-v0.3.0-python-retirement.md`](2026-07-27-v0.3.0-python-retirement.md)：Python 业务实现退役与验证工具收敛。
 - [`2026-07-27-v0.3.0-governance.md`](2026-07-27-v0.3.0-governance.md)：版本、当前事实文档、项目提示词、CI 和发布流程统一。
+- [`2026-07-27-v0.3.0-rc-validation.md`](2026-07-27-v0.3.0-rc-validation.md)：真实 GB/SK、N=5 性能和 Windows RC 包最终验收。
 - [`releases/v0.3.0-rc.1.md`](releases/v0.3.0-rc.1.md) 与 [`releases/v0.3.0.md`](releases/v0.3.0.md)：v0.3.0 发布候选和正式版说明。

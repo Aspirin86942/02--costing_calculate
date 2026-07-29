@@ -28,18 +28,27 @@ fn row(
     let mut values = BTreeMap::from([
         (
             "月份".to_string(),
-            CellValue::Text("2025年01期".to_string()),
+            CellValue::Text("2025年01期".to_string().into()),
         ),
-        ("产品编码".to_string(), CellValue::Text("P1".to_string())),
-        ("产品名称".to_string(), CellValue::Text("产品".to_string())),
+        (
+            "产品编码".to_string(),
+            CellValue::Text("P1".to_string().into()),
+        ),
+        (
+            "产品名称".to_string(),
+            CellValue::Text("产品".to_string().into()),
+        ),
         (
             "工单编号".to_string(),
-            CellValue::Text(order_no.to_string()),
+            CellValue::Text(order_no.to_string().into()),
         ),
-        ("工单行号".to_string(), CellValue::Text("1".to_string())),
+        (
+            "工单行号".to_string(),
+            CellValue::Text("1".to_string().into()),
+        ),
         (
             "单据类型".to_string(),
-            CellValue::Text(doc_type.to_string()),
+            CellValue::Text(doc_type.to_string().into()),
         ),
         (
             "completed_qty".to_string(),
@@ -134,7 +143,7 @@ fn decimal_value(row: &NamedTestRow, key: &str) -> Decimal {
 
 fn text_value(row: &NamedTestRow, key: &str) -> String {
     match row.get(key) {
-        Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.clone(),
+        Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.to_string(),
         Some(CellValue::Decimal(value)) => value.normalize().to_string(),
         _ => String::new(),
     }
@@ -154,11 +163,11 @@ fn decimal_row(
     let mut values = row(order_no, 1, doc_type, &[]);
     values.insert(
         "产品编码".to_string(),
-        CellValue::Text(product_code.to_string()),
+        CellValue::Text(product_code.to_string().into()),
     );
     values.insert(
         "产品名称".to_string(),
-        CellValue::Text(product_name.to_string()),
+        CellValue::Text(product_name.to_string().into()),
     );
     values.insert("completed_qty".to_string(), CellValue::Decimal(qty));
     values.insert(
@@ -210,8 +219,8 @@ fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
             100,
             "汇报入库-普通生产",
             &[
-                ("产品编码", CellValue::Text("P1".to_string())),
-                ("产品名称", CellValue::Text("产品一".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string().into())),
+                ("产品名称", CellValue::Text("产品一".to_string().into())),
             ],
         ),
         row(
@@ -219,8 +228,8 @@ fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
             100,
             "汇报入库-普通生产",
             &[
-                ("产品编码", CellValue::Text("P1".to_string())),
-                ("产品名称", CellValue::Text("名称不匹配".to_string())),
+                ("产品编码", CellValue::Text("P1".to_string().into())),
+                ("产品名称", CellValue::Text("名称不匹配".to_string().into())),
             ],
         ),
         row(
@@ -228,8 +237,8 @@ fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
             100,
             "汇报入库-普通生产",
             &[
-                ("产品编码", CellValue::Text("P2".to_string())),
-                ("产品名称", CellValue::Text("产品二".to_string())),
+                ("产品编码", CellValue::Text("P2".to_string().into())),
+                ("产品名称", CellValue::Text("产品二".to_string().into())),
             ],
         ),
         row(
@@ -237,8 +246,8 @@ fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
             100,
             "汇报入库-普通生产",
             &[
-                ("产品编码", CellValue::Text("P3".to_string())),
-                ("产品名称", CellValue::Text("产品三".to_string())),
+                ("产品编码", CellValue::Text("P3".to_string().into())),
+                ("产品名称", CellValue::Text("产品三".to_string().into())),
             ],
         ),
     ];
@@ -249,11 +258,11 @@ fn analysis_sheet_filters_exact_product_pairs_and_keeps_whitelist_order() {
     assert_eq!(sheet.rows.len(), 2);
     assert_eq!(
         sheet.rows[0][product_code_idx],
-        CellValue::Text("P2".to_string())
+        CellValue::Text("P2".to_string().into())
     );
     assert_eq!(
         sheet.rows[1][product_code_idx],
-        CellValue::Text("P1".to_string())
+        CellValue::Text("P1".to_string().into())
     );
 }
 
@@ -265,8 +274,8 @@ fn analysis_sheet_sorts_each_product_by_month_order_and_numeric_order_line() {
             100,
             "汇报入库-普通生产",
             &[
-                ("月份", CellValue::Text("2025年02期".to_string())),
-                ("工单行号", CellValue::Text("1".to_string())),
+                ("月份", CellValue::Text("2025年02期".to_string().into())),
+                ("工单行号", CellValue::Text("1".to_string().into())),
             ],
         ),
         row(
@@ -274,8 +283,8 @@ fn analysis_sheet_sorts_each_product_by_month_order_and_numeric_order_line() {
             100,
             "汇报入库-普通生产",
             &[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("工单行号", CellValue::Text("10".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                ("工单行号", CellValue::Text("10".to_string().into())),
             ],
         ),
         row(
@@ -283,8 +292,8 @@ fn analysis_sheet_sorts_each_product_by_month_order_and_numeric_order_line() {
             100,
             "汇报入库-普通生产",
             &[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("工单行号", CellValue::Text("2".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                ("工单行号", CellValue::Text("2".to_string().into())),
             ],
         ),
     ];
@@ -307,19 +316,19 @@ fn analysis_sheet_sorts_each_product_by_month_order_and_numeric_order_line() {
             .collect::<Vec<_>>(),
         vec![
             (
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("WO-A".to_string()),
-                CellValue::Text("2".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("WO-A".to_string().into()),
+                CellValue::Text("2".to_string().into()),
             ),
             (
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("WO-A".to_string()),
-                CellValue::Text("10".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("WO-A".to_string().into()),
+                CellValue::Text("10".to_string().into()),
             ),
             (
-                CellValue::Text("2025年02期".to_string()),
-                CellValue::Text("WO-B".to_string()),
-                CellValue::Text("1".to_string()),
+                CellValue::Text("2025年02期".to_string().into()),
+                CellValue::Text("WO-B".to_string().into()),
+                CellValue::Text("1".to_string().into()),
             ),
         ]
     );
@@ -346,15 +355,15 @@ fn grades_attention_and_suspicious_by_product_scope() {
 
     assert_eq!(
         sheet.rows[5][level_idx],
-        CellValue::Text("关注".to_string())
+        CellValue::Text("关注".to_string().into())
     );
     assert_eq!(
         sheet.rows[6][level_idx],
-        CellValue::Text("高度可疑".to_string())
+        CellValue::Text("高度可疑".to_string().into())
     );
     assert_eq!(
         sheet.rows[6][source_idx],
-        CellValue::Text("总成本异常".to_string())
+        CellValue::Text("总成本异常".to_string().into())
     );
     let CellValue::Text(detail) = &sheet.rows[6][detail_idx] else {
         panic!("detail explanation should be text");
@@ -380,14 +389,17 @@ fn unknown_doc_type_is_not_analyzable() {
 
     assert_eq!(
         sheet.rows[0][can_analyze_idx],
-        CellValue::Text("否".to_string())
+        CellValue::Text("否".to_string().into())
     );
-    assert_eq!(sheet.rows[0][level_idx], CellValue::Text(String::new()));
+    assert_eq!(
+        sheet.rows[0][level_idx],
+        CellValue::Text(String::new().into())
+    );
     let CellValue::Text(reason) = &sheet.rows[0][reason_idx] else {
         panic!("reason should be text");
     };
     assert_eq!(
-        reason,
+        reason.as_ref(),
         "单据类型未归类，不参与正常生产/返工生产异常池;直接人工单位完工成本小于等于0或为空;制造费用单位完工成本小于等于0或为空;制造费用_其他单位完工成本小于等于0或为空;制造费用_人工单位完工成本小于等于0或为空;制造费用_机物料及低耗单位完工成本小于等于0或为空;制造费用_折旧单位完工成本小于等于0或为空;制造费用_水电费单位完工成本小于等于0或为空"
     );
 }
@@ -454,7 +466,7 @@ fn work_order_sheet_maps_typed_amounts_and_standalone_by_unique_indices() {
 
     assert_eq!(sheet.rows.len(), 1);
     let expected = [
-        ("工单编号", CellValue::Text("WO-KEEP".to_string())),
+        ("工单编号", CellValue::Text("WO-KEEP".to_string().into())),
         ("总完工成本", CellValue::Decimal(Decimal::new(90, 0))),
         (
             "直接材料合计完工金额",
@@ -566,15 +578,15 @@ fn scores_normal_and_rework_in_separate_pools() {
 
     assert_eq!(
         sheet.rows[2][level_idx],
-        CellValue::Text("高度可疑".to_string())
+        CellValue::Text("高度可疑".to_string().into())
     );
     assert_eq!(
         sheet.rows[5][level_idx],
-        CellValue::Text("高度可疑".to_string())
+        CellValue::Text("高度可疑".to_string().into())
     );
     assert_eq!(
         sheet.rows[5][scope_idx],
-        CellValue::Text("返工生产".to_string())
+        CellValue::Text("返工生产".to_string().into())
     );
 }
 
@@ -659,16 +671,19 @@ fn near_zero_mad_uses_minimum_dispersion() {
 
     assert_eq!(
         sheet.rows[2][level_idx],
-        CellValue::Text("正常".to_string())
+        CellValue::Text("正常".to_string().into())
     );
-    assert_eq!(sheet.rows[2][detail_idx], CellValue::Text(String::new()));
+    assert_eq!(
+        sheet.rows[2][detail_idx],
+        CellValue::Text(String::new().into())
+    );
     assert_eq!(
         sheet.rows[3][level_idx],
-        CellValue::Text("高度可疑".to_string())
+        CellValue::Text("高度可疑".to_string().into())
     );
     assert_eq!(
         sheet.rows[4][level_idx],
-        CellValue::Text("高度可疑".to_string())
+        CellValue::Text("高度可疑".to_string().into())
     );
     let CellValue::Text(detail) = &sheet.rows[3][detail_idx] else {
         panic!("detail explanation should be text");

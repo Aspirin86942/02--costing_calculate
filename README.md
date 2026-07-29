@@ -108,6 +108,13 @@ cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calcul
 
 完整业务口径见 [`docs/contracts/workbook.md`](docs/contracts/workbook.md)。
 
+## 性能与内存
+
+当前实现对安全整数使用 reader 快路径，并以 `Arc<str>` 保存内部文本 cell，
+降低大工作簿处理时的重复 clone 成本和峰值内存；不启用文本驻留池。
+这些优化不改变 workbook、CLI 或 Manifest 契约。当前门禁、复测命令和实测结果见
+[`docs/performance/README.md`](docs/performance/README.md)。
+
 ## 常见错误
 
 | 错误码 | 含义 | 处理方式 |

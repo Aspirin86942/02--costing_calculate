@@ -97,6 +97,8 @@ uv run python -m tools.validation.compare_releases `
 
 - release profile 固定 `codegen-units = 1`。
 - 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统 `%TEMP%`。
+- `CellValue::Text` / `DateLike` 使用 `Arc<str>`，但不建立全局或按列文本驻留池。
+- reader 的整数快路径只接受有限、无小数且安全落在 `i64` 范围内的值；其余值必须保留原字符串解析回退。
 - `rust_xlsxwriter` 使用 `rust/Cargo.toml` 中精确 revision 的受控 fork。
 - 性能门禁见 `docs/performance/README.md`。只有测出瓶颈才优化；优化实验使用至少 8 对交错配对并记录到 `docs/changes/`。
 - Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。

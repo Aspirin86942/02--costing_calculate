@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use crate::error::{CostingError, ErrorCode, ErrorDetails};
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, IndexedTable};
@@ -9,9 +10,36 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", content = "value")]
 pub enum CellValue {
     Blank,
-    Text(String),
+    Text(Arc<str>),
     Decimal(Decimal),
-    DateLike(String),
+    DateLike(Arc<str>),
+}
+
+#[cfg(test)]
+mod cell_value_serialization_tests {
+    use rust_decimal::Decimal;
+
+    use super::CellValue;
+
+    #[test]
+    fn arc_text_representation_preserves_cell_value_json_golden() {
+        let values = [
+            CellValue::Blank,
+            CellValue::Text(" 原始文本 ".into()),
+            CellValue::Decimal(Decimal::new(120, 2)),
+            CellValue::DateLike("2025-01-02 00:00:00".into()),
+        ];
+
+        assert_eq!(
+            serde_json::to_value(values).unwrap(),
+            serde_json::json!([
+                {"kind": "Blank"},
+                {"kind": "Text", "value": " 原始文本 "},
+                {"kind": "Decimal", "value": "1.20"},
+                {"kind": "DateLike", "value": "2025-01-02 00:00:00"}
+            ])
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

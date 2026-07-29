@@ -53,6 +53,18 @@ normalize -> split -> fact -> presentation
 
 质量指标和异常分析在 fact / presentation 阶段内完成。CLI 不应知道这些内部步骤，也不得逐个调用它们。
 
+## 性能相关内部表示
+
+- `CellValue::Text` 和 `CellValue::DateLike` 使用 `Arc<str>`；clone cell 时共享文本分配，
+  但 reader 不建立全局或按列驻留池。
+- xlsx reader 对有限且可安全表示为 `i64` 的整数浮点值直接构造 `Decimal`；
+  其他值保留原有字符串格式化和解析回退。
+- 这些是 core/xlsx 内部实现，不改变 workbook、CLI、错误码、Sheet 或
+  `RunManifestV1` 契约。
+
+取舍与回滚边界见
+[`decisions/2026-07-29-cell-value-arc-text.md`](decisions/2026-07-29-cell-value-arc-text.md)。
+
 ## 模块边界
 
 ### costing-cli

@@ -180,17 +180,17 @@ fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: 
         )));
     }
 
-    cells.push(CellValue::Text(yes_no(row.moh_matches).to_string()));
-    cells.push(CellValue::Text(yes_no(row.total_matches).to_string()));
+    cells.push(CellValue::Text(yes_no(row.moh_matches).into()));
+    cells.push(CellValue::Text(yes_no(row.total_matches).into()));
     cells.push(CellValue::Text(
         if row.check_reason.is_empty() {
             "通过"
         } else {
             "需复核"
         }
-        .to_string(),
+        .into(),
     ));
-    cells.push(CellValue::Text(row.check_reason.clone()));
+    cells.push(CellValue::Text(row.check_reason.clone().into()));
 }
 
 fn safe_divide(
@@ -386,7 +386,7 @@ mod tests {
 
     fn test_text(row: &NamedTestRow, key: &str) -> String {
         match row.get(key) {
-            Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.clone(),
+            Some(CellValue::Text(value)) | Some(CellValue::DateLike(value)) => value.to_string(),
             Some(CellValue::Decimal(value)) => value.normalize().to_string(),
             _ => String::new(),
         }
@@ -394,7 +394,7 @@ mod tests {
 
     fn test_bool(row: &NamedTestRow, key: &str, default: bool) -> bool {
         match row.get(key) {
-            Some(CellValue::Text(value)) => value == "true" || value == "是",
+            Some(CellValue::Text(value)) => value.as_ref() == "true" || value.as_ref() == "是",
             _ => default,
         }
     }
@@ -413,17 +413,23 @@ mod tests {
                 "本期完工数量".to_string(),
             ],
             vec![row(&[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("成本中心名称", CellValue::Text("成型车间".to_string())),
-                ("成本项目名称", CellValue::Text("直接材料".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                (
+                    "成本中心名称",
+                    CellValue::Text("成型车间".to_string().into()),
+                ),
+                (
+                    "成本项目名称",
+                    CellValue::Text("直接材料".to_string().into()),
+                ),
                 ("本期完工金额", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
             vec![row(&[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("产品编码", CellValue::Text("P1".to_string())),
-                ("产品名称", CellValue::Text("产品".to_string())),
-                ("工单编号", CellValue::Text("WO1".to_string())),
-                ("工单行号", CellValue::Text("1".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                ("产品编码", CellValue::Text("P1".to_string().into())),
+                ("产品名称", CellValue::Text("产品".to_string().into())),
+                ("工单编号", CellValue::Text("WO1".to_string().into())),
+                ("工单行号", CellValue::Text("1".to_string().into())),
                 ("completed_qty", CellValue::Decimal(Decimal::new(10, 0))),
                 (
                     "completed_amount_total",
@@ -432,12 +438,15 @@ mod tests {
                 ("dm_amount", CellValue::Decimal(Decimal::new(100, 0))),
             ])],
             vec![row(&[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("产品编码", CellValue::Text("P1".to_string())),
-                ("产品名称", CellValue::Text("产品".to_string())),
-                ("工单编号", CellValue::Text("WO1".to_string())),
-                ("工单行号", CellValue::Text("1".to_string())),
-                ("单据类型", CellValue::Text("汇报入库-普通生产".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                ("产品编码", CellValue::Text("P1".to_string().into())),
+                ("产品名称", CellValue::Text("产品".to_string().into())),
+                ("工单编号", CellValue::Text("WO1".to_string().into())),
+                ("工单行号", CellValue::Text("1".to_string().into())),
+                (
+                    "单据类型",
+                    CellValue::Text("汇报入库-普通生产".to_string().into()),
+                ),
                 ("completed_qty", CellValue::Decimal(Decimal::new(10, 0))),
                 (
                     "completed_amount_total",
@@ -527,20 +536,29 @@ mod tests {
             ("moh_utilities_amount", CellValue::Decimal(Decimal::ZERO)),
             ("outsource_amount", CellValue::Decimal(Decimal::new(6, 0))),
             ("software_amount", CellValue::Decimal(Decimal::new(7, 0))),
-            ("moh_matches", CellValue::Text("否".to_string())),
-            ("total_matches", CellValue::Text("否".to_string())),
-            ("check_reason", CellValue::Text(check_reason.to_string())),
+            ("moh_matches", CellValue::Text("否".to_string().into())),
+            ("total_matches", CellValue::Text("否".to_string().into())),
+            (
+                "check_reason",
+                CellValue::Text(check_reason.to_string().into()),
+            ),
         ];
         let make_qty = |order: &str, source_qty: &str, completed_qty: Decimal| {
             let mut values = row(&[
-                ("月份", CellValue::Text("2025年01期".to_string())),
-                ("产品编码", CellValue::Text("P1".to_string())),
-                ("产品名称", CellValue::Text("产品".to_string())),
-                ("工单编号", CellValue::Text(order.to_string())),
-                ("工单行号", CellValue::Text("1".to_string())),
-                ("本期完工数量", CellValue::Text(source_qty.to_string())),
-                ("本期完工金额", CellValue::Text("99.00".to_string())),
-                ("单据类型", CellValue::Text("汇报入库-普通生产".to_string())),
+                ("月份", CellValue::Text("2025年01期".to_string().into())),
+                ("产品编码", CellValue::Text("P1".to_string().into())),
+                ("产品名称", CellValue::Text("产品".to_string().into())),
+                ("工单编号", CellValue::Text(order.to_string().into())),
+                ("工单行号", CellValue::Text("1".to_string().into())),
+                (
+                    "本期完工数量",
+                    CellValue::Text(source_qty.to_string().into()),
+                ),
+                ("本期完工金额", CellValue::Text("99.00".to_string().into())),
+                (
+                    "单据类型",
+                    CellValue::Text("汇报入库-普通生产".to_string().into()),
+                ),
                 ("completed_qty", CellValue::Decimal(completed_qty)),
             ]);
             values.extend(
@@ -735,10 +753,10 @@ mod tests {
                 expected_cells.push(CellValue::Decimal(Decimal::new(35, 1)));
             }
             expected_cells.extend([
-                CellValue::Text("否".to_string()),
-                CellValue::Text("否".to_string()),
-                CellValue::Text("需复核".to_string()),
-                CellValue::Text(reason.to_string()),
+                CellValue::Text("否".to_string().into()),
+                CellValue::Text("否".to_string().into()),
+                CellValue::Text("需复核".to_string().into()),
+                CellValue::Text(reason.to_string().into()),
             ]);
             assert_eq!(sheet.rows[0][amount_start..], expected_cells);
             assert!(sheet
@@ -756,8 +774,8 @@ mod tests {
                 .iter()
                 .position(|column| column == "本期完工金额")
                 .unwrap();
-            assert_eq!(sheet.rows[0][source_qty], CellValue::Text("2.00".to_string()));
-            assert_eq!(sheet.rows[0][source_total], CellValue::Text("99.00".to_string()));
+            assert_eq!(sheet.rows[0][source_qty], CellValue::Text("2.00".to_string().into()));
+            assert_eq!(sheet.rows[0][source_total], CellValue::Text("99.00".to_string().into()));
             let amount_count = 8 + config.standalone_cost_items.len();
             let unit_start = amount_start + amount_count;
             assert!(sheet.rows[1][unit_start..unit_start + amount_count]

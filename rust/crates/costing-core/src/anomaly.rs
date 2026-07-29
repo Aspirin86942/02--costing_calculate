@@ -568,7 +568,7 @@ fn map_work_order_value(
         "规格型号" => value_any(schema, row.source, &["spec", "规格型号"])?,
         "工单编号" => value_any(schema, row.source, &["order_no", "工单编号"])?,
         "工单行" => value_any(schema, row.source, &["order_line", "工单行号"])?,
-        "生产类型" => CellValue::Text(row.production_scope.clone()),
+        "生产类型" => CellValue::Text(row.production_scope.clone().into()),
         "基本单位" => value_any(schema, row.source, &["unit", "基本单位"])?,
         "本期完工数量" => decimal_value(row, "completed_qty"),
         "总完工成本" => decimal_value(row, "completed_amount_total"),
@@ -594,12 +594,12 @@ fn map_work_order_value(
         "制造费用_折旧单位完工成本" => decimal_value(row, "moh_depreciation_unit_cost"),
         "制造费用_水电费单位完工成本" => decimal_value(row, "moh_utilities_unit_cost"),
         "是否可参与分析" => {
-            CellValue::Text(if row.can_analyze { "是" } else { "否" }.to_string())
+            CellValue::Text(if row.can_analyze { "是" } else { "否" }.into())
         }
-        "异常等级" => CellValue::Text(row.anomaly_level.clone()),
-        "异常主要来源" => CellValue::Text(row.anomaly_source.clone()),
-        "异常明细解释" => CellValue::Text(row.detail_explanation.clone()),
-        "复核原因" => CellValue::Text(row.reasons.join(";")),
+        "异常等级" => CellValue::Text(row.anomaly_level.clone().into()),
+        "异常主要来源" => CellValue::Text(row.anomaly_source.clone().into()),
+        "异常明细解释" => CellValue::Text(row.detail_explanation.clone().into()),
+        "复核原因" => CellValue::Text(row.reasons.join(";").into()),
         other => standalone_display_value(row, other, config),
     })
 }
@@ -707,7 +707,7 @@ fn text_any(
 fn cell_to_text(value: &CellValue) -> String {
     match value {
         CellValue::Blank => String::new(),
-        CellValue::Text(value) | CellValue::DateLike(value) => value.clone(),
+        CellValue::Text(value) | CellValue::DateLike(value) => value.to_string(),
         CellValue::Decimal(value) => value.normalize().to_string(),
     }
 }

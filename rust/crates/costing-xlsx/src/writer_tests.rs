@@ -62,7 +62,7 @@ fn sheet(sheet_name: &str) -> SheetModel {
         sheet_name: sheet_name.to_string(),
         columns: vec!["月份".to_string(), "本期完工金额".to_string()],
         rows: vec![vec![
-            CellValue::Text("2025年01期".to_string()),
+            CellValue::Text("2025年01期".to_string().into()),
             CellValue::Decimal(Decimal::new(125, 1)),
         ]],
         column_types: BTreeMap::from([

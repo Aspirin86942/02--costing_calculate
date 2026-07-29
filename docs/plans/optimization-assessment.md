@@ -1,6 +1,10 @@
 # 优化评估报告 — 2026-07-17
 
-> 状态：Assessment Snapshot。本文保留当时的候选与实验方法，不表示候选已采用；当前性能口径见 [`../performance/README.md`](../performance/README.md)，实际实验结果见 [`../changes/`](../changes/)。
+> 状态：Partially Superseded Assessment Snapshot。本文保留 2026-07-17 当时的候选、
+> 估算和实验方法，不表示候选已采用。2026-07-28 已按新计划重新冻结基线并完成多候选
+> 实测，部分估算和建议已被结果取代；当前性能口径见
+> [`../performance/README.md`](../performance/README.md)，本轮结果见
+> [`../changes/2026-07-28-sk-performance-experiments.md`](../changes/2026-07-28-sk-performance-experiments.md)。
 
 ## 目录
 
@@ -71,7 +75,7 @@
 | xl/worksheets/sheet2.xml（数量聚合） | 23,085,142 | 2,721,246 | 88.2% |
 | xl/worksheets/sheet3–7 | 各 14k–163k | 各 2k–24k | — |
 
-Rust 输出是 DEFLATE 压缩（已通过 zip 文件验证，所有 entry 均为 Defl:N 方法），当前 `set_compression_level(5)`（`costing-xlsx/src/writer.rs:158`），对应的 `rust_xlsxwriter` fork 通过 `miniz_oxide`/`flate2`/`zlib-rs` 提供压缩——已确认压缩生效。`xlsx_save` 阶段约 5s 几乎全是 deflate CPU。
+Rust 输出是 DEFLATE 压缩（已通过 zip 文件验证，所有 entry 均为 Defl:N 方法），当前 `set_compression_level(5)`。受控 `rust_xlsxwriter` fork 的 writer 路径使用 `zip 7.2.0` 的 `deflate-flate2-zlib-rs` feature，经 `flate2` 使用 `zlib-rs`；当前 feature tree 的 writer 路径不包含 `miniz_oxide`。`xlsx_save` 阶段主要是 deflate CPU。
 
 ### 1.4 冷热差距
 
@@ -537,6 +541,11 @@ done
 ---
 
 ## 建议落地路线
+
+> 2026-07-28 更新：下列路线是历史建议，已经全部进入新计划的实测筛选，
+> 不再作为当前待办。最终采纳 reader 整数快路径与 T3-A `Arc<str>`；
+> 压缩级别、Thin LTO、forward-fill 和有界文本驻留均未进入最终候选。
+> 正式核心模型采纳和组合分支复验已于 2026-07-29 完成。
 
 ```
 本轮（开 worktree）：

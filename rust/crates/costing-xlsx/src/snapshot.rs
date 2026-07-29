@@ -63,9 +63,9 @@ mod tests {
             ],
             rows: vec![
                 vec![
-                    CellValue::Text("A".to_string()),
+                    CellValue::Text("A".to_string().into()),
                     CellValue::Blank,
-                    CellValue::DateLike("2025-01-02 00:00:00".to_string()),
+                    CellValue::DateLike("2025-01-02 00:00:00".to_string().into()),
                 ],
                 vec![
                     CellValue::Blank,

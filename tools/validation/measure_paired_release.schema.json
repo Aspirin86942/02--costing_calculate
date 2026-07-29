@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://costing-calculate.local/schemas/measure-paired-release-v1.json",
+  "title": "Costing Calculate Paired Release Measurement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "measurement_only",
+    "pipeline",
+    "mode",
+    "pair_count",
+    "ordering",
+    "started_utc",
+    "finished_utc",
+    "artifacts",
+    "environment",
+    "samples",
+    "summary",
+    "invalid_reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "valid",
+        "invalid"
+      ]
+    },
+    "measurement_only": {
+      "const": true
+    },
+    "pipeline": {
+      "enum": [
+        "gb",
+        "sk"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "normal",
+        "check-only"
+      ]
+    },
+    "pair_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    },
+    "ordering": {
+      "type": "object",
+      "required": [
+        "warmup_order",
+        "odd_pairs",
+        "even_pairs"
+      ],
+      "properties": {
+        "warmup_order": {
+          "$ref": "#/$defs/baselineFirst"
+        },
+        "odd_pairs": {
+          "$ref": "#/$defs/baselineFirst"
+        },
+        "even_pairs": {
+          "$ref": "#/$defs/candidateFirst"
+        }
+      }
+    },
+    "started_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finished_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "artifacts": {
+      "type": "object"
+    },
+    "environment": {
+      "type": "object"
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pairRecord"
+      }
+    },
+    "summary": {
+      "type": "object"
+    },
+    "invalid_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "baselineFirst": {
+      "const": [
+        "baseline",
+        "candidate"
+      ]
+    },
+    "candidateFirst": {
+      "const": [
+        "candidate",
+        "baseline"
+      ]
+    },
+    "runRecord": {
+      "type": "object",
+      "required": [
+        "role",
+        "run_alias",
+        "external_wall_seconds",
+        "peak_working_set_bytes",
+        "output_size_bytes",
+        "output_sha256",
+        "stage_timings",
+        "summary",
+        "temporary_residue_count"
+      ]
+    },
+    "pairRecord": {
+      "type": "object",
+      "required": [
+        "pair_number",
+        "execution_order",
+        "baseline",
+        "candidate",
+        "relative_deltas"
+      ],
+      "properties": {
+        "pair_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "execution_order": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/baselineFirst"
+            },
+            {
+              "$ref": "#/$defs/candidateFirst"
+            }
+          ]
+        },
+        "baseline": {
+          "$ref": "#/$defs/runRecord"
+        },
+        "candidate": {
+          "$ref": "#/$defs/runRecord"
+        },
+        "relative_deltas": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

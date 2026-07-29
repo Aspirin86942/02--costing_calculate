@@ -15,3 +15,4 @@
 - [`2026-07-27-documentation-lifecycle.md`](2026-07-27-documentation-lifecycle.md)：文档分层、只读档案和事实同步规则。
 - [`2026-07-27-python-validation-only.md`](2026-07-27-python-validation-only.md)：退役 Python 业务实现，仅保留验证工具。
 - [`2026-07-27-rust-deep-module-seams.md`](2026-07-27-rust-deep-module-seams.md)：Rust 四 crate 的深模块接口与依赖方向。
+- [`2026-07-29-cell-value-arc-text.md`](2026-07-29-cell-value-arc-text.md)：reader 整数快路径、`Arc<str>` 文本表示和不采用驻留池的取舍。

@@ -4,6 +4,27 @@ All notable changes to Costing Calculate are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Convert safe integral workbook floats directly to `Decimal` while retaining
+  the previous string conversion for all other values.
+- Store internal text and date-like cells as `Arc<str>` so table projections
+  share text allocations; no text interning pool is enabled.
+
+### Performance
+
+- On the controlled real-SK eight-pair comparison, the adopted stack reduced
+  median wall time by `6.1896%` and Peak Working Set by `24.9597%`, winning
+  all eight pairs for both metrics.
+- Reject `zmij`, ZIP Level 4, Thin LTO, forward-fill changes, and bounded
+  column interning after their frozen experiment gates were not met.
+
+### Compatibility
+
+- Full and single-month GB/SK workbooks remain on the package fast path with
+  zero mismatches; CLI, three-Sheet output, errors, Decimal semantics, and
+  `RunManifestV1` remain unchanged.
+
 ## 0.3.0-rc.1 - 2026-07-27
 
 ### Added

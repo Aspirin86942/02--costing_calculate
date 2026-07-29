@@ -19,23 +19,26 @@ fn row(values: &[(&str, CellValue)]) -> NamedTestRow {
 
 fn detail_row(cost_item: &str, amount: CellValue) -> NamedTestRow {
     row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text(cost_item.to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text(cost_item.to_string().into()),
+        ),
         ("本期完工金额", amount),
     ])
 }
 
 fn qty_row(completed_qty: Decimal, completed_total: Decimal) -> NamedTestRow {
     row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(completed_qty)),
         ("本期完工金额", CellValue::Decimal(completed_total)),
     ])
@@ -45,7 +48,7 @@ fn detail_row_for(work_order: &str, cost_item: &str, amount: CellValue) -> Named
     let mut row = detail_row(cost_item, amount);
     row.insert(
         "工单编号".to_string(),
-        CellValue::Text(work_order.to_string()),
+        CellValue::Text(work_order.to_string().into()),
     );
     row
 }
@@ -54,7 +57,7 @@ fn qty_row_for(work_order: &str, completed_qty: Decimal, completed_total: Decima
     let mut row = qty_row(completed_qty, completed_total);
     row.insert(
         "工单编号".to_string(),
-        CellValue::Text(work_order.to_string()),
+        CellValue::Text(work_order.to_string().into()),
     );
     row
 }
@@ -283,11 +286,11 @@ fn typed_amounts_keep_missing_amount_issue_before_qty_issues() {
 #[test]
 fn qty_without_detail_uses_zero_for_every_typed_amount() {
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
         ("本期完工金额", CellValue::Decimal(Decimal::ZERO)),
     ])];
@@ -311,30 +314,36 @@ fn qty_without_detail_uses_zero_for_every_typed_amount() {
 fn gb_typed_fact_includes_outsource_total_match() {
     let detail = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
-            ("成本项目名称", CellValue::Text("直接材料".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
+            (
+                "成本项目名称",
+                CellValue::Text("直接材料".to_string().into()),
+            ),
             ("本期完工金额", CellValue::Decimal(Decimal::new(100, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
-            ("成本项目名称", CellValue::Text("委外加工费".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
+            (
+                "成本项目名称",
+                CellValue::Text("委外加工费".to_string().into()),
+            ),
             ("本期完工金额", CellValue::Decimal(Decimal::new(5, 0))),
         ]),
     ];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(10, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(105, 0))),
     ])];
@@ -350,20 +359,23 @@ fn gb_typed_fact_includes_outsource_total_match() {
 #[test]
 fn work_order_keys_trim_text_and_normalize_integer_suffixes_before_joining() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text(" 2025年01期 ".to_string())),
-        ("产品编码", CellValue::Text(" P1 ".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text(" WO1 ".to_string())),
-        ("工单行号", CellValue::Text(" 1.0 ".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text(" 2025年01期 ".to_string().into())),
+        ("产品编码", CellValue::Text(" P1 ".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text(" WO1 ".to_string().into())),
+        ("工单行号", CellValue::Text(" 1.0 ".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
@@ -391,21 +403,27 @@ fn overflowing_unit_costs_are_omitted_without_panicking() {
     let amount = Decimal::new(9_999_999_999, 0);
     let tiny_qty = Decimal::new(1, 28);
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(amount)),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("单据类型", CellValue::Text("汇报入库-普通生产".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "单据类型",
+            CellValue::Text("汇报入库-普通生产".to_string().into()),
+        ),
         ("本期完工数量", CellValue::Decimal(tiny_qty)),
         ("本期完工金额", CellValue::Decimal(amount)),
     ])];
@@ -436,20 +454,23 @@ fn overflowing_unit_costs_are_omitted_without_panicking() {
 #[test]
 fn sk_typed_fact_includes_software_fee() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("软件费用".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("软件费用".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
     ])];
@@ -464,30 +485,33 @@ fn sk_typed_fact_includes_software_fee() {
 #[test]
 fn fact_bundle_records_missing_amount_and_duplicate_work_order_key() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Blank),
     ])];
     let qty = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(0, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(0, 0))),
         ]),
@@ -512,20 +536,23 @@ fn fact_bundle_records_missing_amount_and_duplicate_work_order_key() {
 #[test]
 fn fact_bundle_records_non_positive_unit_cost_audit_issues() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
@@ -573,30 +600,36 @@ fn fact_bundle_records_non_positive_unit_cost_audit_issues() {
 fn typed_fact_marks_moh_and_total_mismatch() {
     let detail = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
-            ("成本项目名称", CellValue::Text("制造费用".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
+            (
+                "成本项目名称",
+                CellValue::Text("制造费用".to_string().into()),
+            ),
             ("本期完工金额", CellValue::Decimal(Decimal::new(20, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
-            ("成本项目名称", CellValue::Text("制造费用-人工".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
+            (
+                "成本项目名称",
+                CellValue::Text("制造费用-人工".to_string().into()),
+            ),
             ("本期完工金额", CellValue::Decimal(Decimal::new(5, 0))),
         ]),
     ];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(99, 0))),
     ])];
@@ -632,39 +665,42 @@ fn typed_fact_marks_moh_and_total_mismatch() {
 #[test]
 fn filters_invalid_qty_rows_before_fact_output() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
     let qty = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO-ZERO".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO-ZERO".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(0, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO-MISSING".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO-MISSING".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Blank),
         ]),
@@ -676,27 +712,30 @@ fn filters_invalid_qty_rows_before_fact_output() {
     assert_eq!(bundle.work_order_row_count(), 1);
     assert_eq!(
         source_value(&bundle.schema, &bundle.qty_rows[0], "工单编号"),
-        Some(&CellValue::Text("WO1".to_string()))
+        Some(&CellValue::Text("WO1".to_string().into()))
     );
 }
 
 #[test]
 fn gb_software_fee_is_unmapped_not_standalone() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("软件费用".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("软件费用".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(7, 0))),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(0, 0))),
     ])];
@@ -718,30 +757,33 @@ fn gb_software_fee_is_unmapped_not_standalone() {
 #[test]
 fn qty_fact_keeps_duplicates_but_unique_indices_keep_first() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
     let qty = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(2, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(20, 0))),
         ]),
@@ -776,19 +818,22 @@ fn qty_fact_keeps_duplicates_but_unique_indices_keep_first() {
 #[test]
 fn missing_required_columns_returns_error() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
     ])];
     let qty = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
@@ -834,39 +879,42 @@ fn empty_rows_still_validate_required_schema_columns() {
 #[test]
 fn fact_bundle_keeps_qty_filter_audit_counts() {
     let detail = vec![row(&[
-        ("月份", CellValue::Text("2025年01期".to_string())),
-        ("产品编码", CellValue::Text("P1".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text("WO1".to_string())),
-        ("工单行号", CellValue::Text("1".to_string())),
-        ("成本项目名称", CellValue::Text("直接材料".to_string())),
+        ("月份", CellValue::Text("2025年01期".to_string().into())),
+        ("产品编码", CellValue::Text("P1".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text("WO1".to_string().into())),
+        ("工单行号", CellValue::Text("1".to_string().into())),
+        (
+            "成本项目名称",
+            CellValue::Text("直接材料".to_string().into()),
+        ),
         ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
     ])];
     let qty = vec![
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO1".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO1".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::new(1, 0))),
             ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO-ZERO".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO-ZERO".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::ZERO)),
             ("本期完工金额", CellValue::Decimal(Decimal::new(10, 0))),
         ]),
         row(&[
-            ("月份", CellValue::Text("2025年01期".to_string())),
-            ("产品编码", CellValue::Text("P1".to_string())),
-            ("产品名称", CellValue::Text("产品".to_string())),
-            ("工单编号", CellValue::Text("WO-MISSING".to_string())),
-            ("工单行号", CellValue::Text("1".to_string())),
+            ("月份", CellValue::Text("2025年01期".to_string().into())),
+            ("产品编码", CellValue::Text("P1".to_string().into())),
+            ("产品名称", CellValue::Text("产品".to_string().into())),
+            ("工单编号", CellValue::Text("WO-MISSING".to_string().into())),
+            ("工单行号", CellValue::Text("1".to_string().into())),
             ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
             ("本期完工金额", CellValue::Blank),
         ]),
@@ -887,11 +935,11 @@ fn fact_bundle_keeps_qty_filter_audit_counts() {
 #[test]
 fn prepared_qty_row_caches_normalized_work_order_key() {
     let qty = vec![row(&[
-        ("月份", CellValue::Text(" 2025年01期 ".to_string())),
-        ("产品编码", CellValue::Text(" P1 ".to_string())),
-        ("产品名称", CellValue::Text("产品".to_string())),
-        ("工单编号", CellValue::Text(" WO1 ".to_string())),
-        ("工单行号", CellValue::Text("1.0".to_string())),
+        ("月份", CellValue::Text(" 2025年01期 ".to_string().into())),
+        ("产品编码", CellValue::Text(" P1 ".to_string().into())),
+        ("产品名称", CellValue::Text("产品".to_string().into())),
+        ("工单编号", CellValue::Text(" WO1 ".to_string().into())),
+        ("工单行号", CellValue::Text("1.0".to_string().into())),
         ("本期完工数量", CellValue::Decimal(Decimal::ONE)),
         ("本期完工金额", CellValue::Decimal(Decimal::ONE)),
     ])];

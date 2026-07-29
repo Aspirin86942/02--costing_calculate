@@ -414,13 +414,13 @@ mod tests {
     fn from_raw_pads_short_rows_with_blank() {
         let table = IndexedTable::from_raw(
             vec!["产品编码".to_string(), "产品名称".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
 
         assert_eq!(
             table.rows()[0].cells,
-            vec![CellValue::Text("A".to_string()), CellValue::Blank]
+            vec![CellValue::Text("A".to_string().into()), CellValue::Blank]
         );
     }
 
@@ -429,15 +429,15 @@ mod tests {
         let table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
             vec![vec![
-                CellValue::Text("A".to_string()),
-                CellValue::Text("ignored".to_string()),
+                CellValue::Text("A".to_string().into()),
+                CellValue::Text("ignored".to_string().into()),
             ]],
         )
         .unwrap();
 
         assert_eq!(
             table.rows()[0].cells,
-            vec![CellValue::Text("A".to_string())]
+            vec![CellValue::Text("A".to_string().into())]
         );
     }
 
@@ -450,9 +450,9 @@ mod tests {
                 "产品编码".to_string(),
             ],
             vec![vec![
-                CellValue::Text("first".to_string()),
-                CellValue::Text("name".to_string()),
-                CellValue::Text("last".to_string()),
+                CellValue::Text("first".to_string().into()),
+                CellValue::Text("name".to_string().into()),
+                CellValue::Text("last".to_string().into()),
             ]],
         )
         .unwrap();
@@ -461,7 +461,7 @@ mod tests {
         assert_eq!(id.slot, 2);
         assert_eq!(
             table.rows()[0].get(id).unwrap(),
-            &CellValue::Text("last".to_string())
+            &CellValue::Text("last".to_string().into())
         );
         assert_eq!(
             table
@@ -478,12 +478,12 @@ mod tests {
     fn foreign_schema_column_id_returns_internal_error_even_when_slot_exists() {
         let left = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
         let right = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("B".to_string())]],
+            vec![vec![CellValue::Text("B".to_string().into())]],
         )
         .unwrap();
         let foreign = left.schema().require("产品编码").unwrap();
@@ -497,7 +497,7 @@ mod tests {
     fn invalid_column_id_returns_internal_error_without_panicking() {
         let table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
         let invalid = ColumnId {
@@ -514,12 +514,12 @@ mod tests {
     fn logically_equal_tables_ignore_schema_id_in_equality_and_serialization() {
         let left = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
         let right = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
 
@@ -557,14 +557,14 @@ mod tests {
     fn take_moves_value_and_leaves_blank() {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("A".to_string())]],
+            vec![vec![CellValue::Text("A".to_string().into())]],
         )
         .unwrap();
         let id = table.schema().require("产品编码").unwrap();
 
         let taken = table.rows[0].take(id).unwrap();
 
-        assert_eq!(taken, CellValue::Text("A".to_string()));
+        assert_eq!(taken, CellValue::Text("A".to_string().into()));
         assert_eq!(table.rows[0].get(id).unwrap(), &CellValue::Blank);
     }
 
@@ -573,8 +573,8 @@ mod tests {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string(), "产品名称".to_string()],
             vec![vec![
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("产品一".to_string()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("产品一".to_string().into()),
             ]],
         )
         .unwrap();
@@ -585,7 +585,7 @@ mod tests {
             .ensure_or_reuse_derived_column(
                 "月份",
                 DerivedColumnPosition::End,
-                vec![CellValue::Text("2026-07".to_string())],
+                vec![CellValue::Text("2026-07".to_string().into())],
             )
             .unwrap();
 
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(derived.slot, 2);
         assert_eq!(
             table.rows()[0].get(product_code).unwrap(),
-            &CellValue::Text("P1".to_string())
+            &CellValue::Text("P1".to_string().into())
         );
     }
 
@@ -604,12 +604,12 @@ mod tests {
             vec!["期间".to_string(), "产品编码".to_string()],
             vec![
                 vec![
-                    CellValue::Text("2026-07".to_string()),
-                    CellValue::Text("P1".to_string()),
+                    CellValue::Text("2026-07".to_string().into()),
+                    CellValue::Text("P1".to_string().into()),
                 ],
                 vec![
-                    CellValue::Text("2026-08".to_string()),
-                    CellValue::Text("P2".to_string()),
+                    CellValue::Text("2026-08".to_string().into()),
+                    CellValue::Text("P2".to_string().into()),
                 ],
             ],
         )
@@ -620,8 +620,8 @@ mod tests {
                 "月份",
                 DerivedColumnPosition::AfterFirstSourceName("期间"),
                 vec![
-                    CellValue::Text("2026-07".to_string()),
-                    CellValue::Text("2026-08".to_string()),
+                    CellValue::Text("2026-07".to_string().into()),
+                    CellValue::Text("2026-08".to_string().into()),
                 ],
             )
             .unwrap();
@@ -646,7 +646,7 @@ mod tests {
         );
         assert_eq!(
             table.rows()[1].get(month).unwrap(),
-            &CellValue::Text("2026-08".to_string())
+            &CellValue::Text("2026-08".to_string().into())
         );
     }
 
@@ -654,7 +654,7 @@ mod tests {
     fn ensure_derived_column_rejects_wrong_value_count_without_mutation() {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("P1".to_string())]],
+            vec![vec![CellValue::Text("P1".to_string().into())]],
         )
         .unwrap();
         let before = table.clone();
@@ -676,9 +676,9 @@ mod tests {
                 "月份".to_string(),
             ],
             vec![vec![
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("first".to_string()),
-                CellValue::Text("last".to_string()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("first".to_string().into()),
+                CellValue::Text("last".to_string().into()),
             ]],
         )
         .unwrap();
@@ -690,7 +690,7 @@ mod tests {
             .ensure_or_reuse_derived_column(
                 "月份",
                 DerivedColumnPosition::AfterFirstSourceName("产品编码"),
-                vec![CellValue::Text("2026-07".to_string())],
+                vec![CellValue::Text("2026-07".to_string().into())],
             )
             .unwrap();
 
@@ -703,9 +703,9 @@ mod tests {
         assert_eq!(
             table.rows()[0].cells,
             vec![
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("first".to_string()),
-                CellValue::Text("2026-07".to_string()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("first".to_string().into()),
+                CellValue::Text("2026-07".to_string().into()),
             ]
         );
     }
@@ -716,12 +716,12 @@ mod tests {
             vec!["产品编码".to_string(), "产品名称".to_string()],
             vec![
                 vec![
-                    CellValue::Text("P1".to_string()),
-                    CellValue::Text("产品一".to_string()),
+                    CellValue::Text("P1".to_string().into()),
+                    CellValue::Text("产品一".to_string().into()),
                 ],
                 vec![
-                    CellValue::Text("P2".to_string()),
-                    CellValue::Text("产品二".to_string()),
+                    CellValue::Text("P2".to_string().into()),
+                    CellValue::Text("产品二".to_string().into()),
                 ],
             ],
         )
@@ -745,8 +745,8 @@ mod tests {
                 "月份",
                 DerivedColumnPosition::End,
                 vec![
-                    CellValue::Text("2026-07".to_string()),
-                    CellValue::Text("2026-08".to_string()),
+                    CellValue::Text("2026-07".to_string().into()),
+                    CellValue::Text("2026-08".to_string().into()),
                 ],
             )
             .unwrap_err();
@@ -780,8 +780,8 @@ mod tests {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
             vec![
-                vec![CellValue::Text("P1".to_string())],
-                vec![CellValue::Text("P2".to_string())],
+                vec![CellValue::Text("P1".to_string().into())],
+                vec![CellValue::Text("P2".to_string().into())],
             ],
         )
         .unwrap();
@@ -794,7 +794,7 @@ mod tests {
 
         table
             .try_update_rows(|row| {
-                row.replace(product_code, CellValue::Text("updated".to_string()))?;
+                row.replace(product_code, CellValue::Text("updated".to_string().into()))?;
                 Ok(())
             })
             .unwrap();
@@ -809,11 +809,11 @@ mod tests {
         );
         assert_eq!(
             table.rows()[0].get(product_code).unwrap(),
-            &CellValue::Text("updated".to_string())
+            &CellValue::Text("updated".to_string().into())
         );
         assert_eq!(
             table.rows()[1].get(product_code).unwrap(),
-            &CellValue::Text("updated".to_string())
+            &CellValue::Text("updated".to_string().into())
         );
     }
 
@@ -822,8 +822,8 @@ mod tests {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
             vec![
-                vec![CellValue::Text("P1".to_string())],
-                vec![CellValue::Text("P2".to_string())],
+                vec![CellValue::Text("P1".to_string().into())],
+                vec![CellValue::Text("P2".to_string().into())],
             ],
         )
         .unwrap();
@@ -853,7 +853,7 @@ mod tests {
     fn projection_plan_clones_duplicate_ids_until_last_occurrence() {
         let table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("P1".to_string())]],
+            vec![vec![CellValue::Text("P1".to_string().into())]],
         )
         .unwrap();
         let id = table.schema().require("产品编码").unwrap();
@@ -865,8 +865,8 @@ mod tests {
         assert_eq!(
             projected,
             vec![
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("P1".to_string()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("P1".to_string().into()),
             ]
         );
     }
@@ -877,7 +877,7 @@ mod tests {
         let plan = ProjectionPlan::new(table.schema(), &[]).unwrap();
         let foreign_table = IndexedTable::from_raw(
             vec!["产品编码".to_string()],
-            vec![vec![CellValue::Text("P1".to_string())]],
+            vec![vec![CellValue::Text("P1".to_string().into())]],
         )
         .unwrap();
         let (_, _, mut foreign_rows) = foreign_table.into_parts();
@@ -892,8 +892,8 @@ mod tests {
         let mut table = IndexedTable::from_raw(
             vec!["产品编码".to_string(), "产品名称".to_string()],
             vec![vec![
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("产品一".to_string()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("产品一".to_string().into()),
             ]],
         )
         .unwrap();

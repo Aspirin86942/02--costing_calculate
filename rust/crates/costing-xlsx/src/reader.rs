@@ -119,16 +119,16 @@ fn normalize_data_cell(cell: Data) -> CellValue {
             if value.trim().is_empty() {
                 CellValue::Blank
             } else {
-                CellValue::Text(value)
+                CellValue::Text(value.into())
             }
         }
         Data::Float(value) => float_cell_value(value),
         Data::Int(value) => CellValue::Decimal(Decimal::from(value)),
-        Data::Bool(value) => CellValue::Text(value.to_string()),
-        Data::DateTime(value) => CellValue::DateLike(value.to_string()),
-        Data::DateTimeIso(value) => CellValue::DateLike(value),
-        Data::DurationIso(value) => CellValue::Text(value),
-        Data::Error(value) => CellValue::Text(format!("{value:?}")),
+        Data::Bool(value) => CellValue::Text(value.to_string().into()),
+        Data::DateTime(value) => CellValue::DateLike(value.to_string().into()),
+        Data::DateTimeIso(value) => CellValue::DateLike(value.into()),
+        Data::DurationIso(value) => CellValue::Text(value.into()),
+        Data::Error(value) => CellValue::Text(format!("{value:?}").into()),
     }
 }
 
@@ -141,14 +141,34 @@ fn float_text(value: f64) -> String {
 }
 
 fn float_cell_value(value: f64) -> CellValue {
+    if let Some(decimal) = integer_decimal_fast_path(value) {
+        return CellValue::Decimal(decimal);
+    }
+    float_cell_value_via_text(value)
+}
+
+fn integer_decimal_fast_path(value: f64) -> Option<Decimal> {
+    // i64::MAX as f64 rounds to 2^63, so the upper bound must stay exclusive.
+    if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value < i64::MAX as f64
+    {
+        Some(Decimal::from(value as i64))
+    } else {
+        None
+    }
+}
+
+fn float_cell_value_via_text(value: f64) -> CellValue {
     if !value.is_finite() {
-        return CellValue::Text(value.to_string());
+        return CellValue::Text(value.to_string().into());
     }
     let text = float_text(value);
     Decimal::from_str_exact(&text)
         .or_else(|_| Decimal::from_scientific(&text))
         .map(CellValue::Decimal)
-        .unwrap_or(CellValue::Text(text))
+        .unwrap_or(CellValue::Text(text.into()))
 }
 
 #[cfg(test)]
@@ -217,13 +237,86 @@ mod tests {
         assert_eq!(raw.sheet_name, "成本计算单");
         assert_eq!(raw.header_rows[0], vec!["年期", "产品编码", "日期"]);
         assert_eq!(raw.header_rows[1], vec!["", "", ""]);
-        assert_eq!(raw.rows[0][0], CellValue::Text("首行".to_string()));
+        assert_eq!(raw.rows[0][0], CellValue::Text("首行".to_string().into()));
         assert_eq!(raw.rows[0][1], CellValue::Decimal(Decimal::new(1, 1)));
         assert!(matches!(raw.rows[0][2], CellValue::DateLike(ref text) if !text.is_empty()));
-        assert_eq!(raw.rows[1][0], CellValue::Text("次行".to_string()));
+        assert_eq!(raw.rows[1][0], CellValue::Text("次行".to_string().into()));
         assert_eq!(raw.rows[1][1], CellValue::Decimal(Decimal::new(1234, 2)));
         assert_eq!(raw.rows[1][2], CellValue::Blank);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn integer_decimal_fast_path_accepts_only_safe_i64_values() {
+        let below_i64_min = f64::from_bits((i64::MIN as f64).to_bits() + 1);
+        let largest_f64_below_i64_max = f64::from_bits((i64::MAX as f64).to_bits() - 1);
+
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            9_007_199_254_740_991.0,
+            9_007_199_254_740_992.0,
+            9_007_199_254_740_994.0,
+            i64::MIN as f64,
+            largest_f64_below_i64_max,
+        ] {
+            assert!(
+                integer_decimal_fast_path(value).is_some(),
+                "expected fast path for {value:?}"
+            );
+        }
+        for value in [
+            0.1,
+            12.34,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            below_i64_min,
+            i64::MAX as f64,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(
+                integer_decimal_fast_path(value).is_none(),
+                "unexpected fast path for {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn integer_fast_path_matches_the_retained_text_conversion() {
+        let below_i64_min = f64::from_bits((i64::MIN as f64).to_bits() + 1);
+        let largest_f64_below_i64_max = f64::from_bits((i64::MAX as f64).to_bits() - 1);
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            9_007_199_254_740_991.0,
+            9_007_199_254_740_992.0,
+            9_007_199_254_740_994.0,
+            i64::MIN as f64,
+            largest_f64_below_i64_max,
+            below_i64_min,
+            i64::MAX as f64,
+            0.1,
+            12.34,
+            1.0e-20,
+            1.0e20,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(
+                float_cell_value(value),
+                float_cell_value_via_text(value),
+                "conversion changed for {value:?}"
+            );
+        }
     }
 
     #[test]
@@ -283,7 +376,10 @@ mod tests {
         assert_eq!(raw.header_rows[0][0], "年期");
         assert_eq!(raw.header_rows[1][2], "产品编码");
         assert_eq!(raw.rows.len(), 1);
-        assert_eq!(raw.rows[0][0], CellValue::Text("2025年07期".to_string()));
+        assert_eq!(
+            raw.rows[0][0],
+            CellValue::Text("2025年07期".to_string().into())
+        );
         let _ = std::fs::remove_file(path);
     }
 
@@ -310,7 +406,7 @@ mod tests {
 
         assert_eq!(
             raw.rows[0][1],
-            CellValue::Text(" PCBA_BMS_SMPS电源小板".to_string())
+            CellValue::Text(" PCBA_BMS_SMPS电源小板".to_string().into())
         );
         let _ = std::fs::remove_file(path);
     }

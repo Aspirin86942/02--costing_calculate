@@ -698,10 +698,15 @@ fn write_data_rows(
                 CellValue::Text(value) | CellValue::DateLike(value) => {
                     match behavior {
                         ColumnBehavior::Text => worksheet
-                            .write_string(excel_row, excel_col, value)
+                            .write_string(excel_row, excel_col, value.as_ref())
                             .map_err(CostingXlsxError::Writer)?,
                         ColumnBehavior::Numeric(_) => worksheet
-                            .write_string_with_format(excel_row, excel_col, value, text_format)
+                            .write_string_with_format(
+                                excel_row,
+                                excel_col,
+                                value.as_ref(),
+                                text_format,
+                            )
                             .map_err(CostingXlsxError::Writer)?,
                     };
                 }

@@ -621,7 +621,7 @@ fn safe_divide(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
 fn cell_to_text(value: &CellValue) -> String {
     match value {
         CellValue::Blank => String::new(),
-        CellValue::Text(value) | CellValue::DateLike(value) => value.clone(),
+        CellValue::Text(value) | CellValue::DateLike(value) => value.to_string(),
         CellValue::Decimal(value) => value.normalize().to_string(),
     }
 }

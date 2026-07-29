@@ -43,6 +43,13 @@
 - RC 验收：[`changes/2026-07-27-v0.3.0-rc-validation.md`](changes/2026-07-27-v0.3.0-rc-validation.md)
 - 决策：[`decisions/2026-07-27-rust-deep-module-seams.md`](decisions/2026-07-27-rust-deep-module-seams.md)、[`decisions/2026-07-27-python-validation-only.md`](decisions/2026-07-27-python-validation-only.md)
 
+## 2026-07-29 性能优化
+
+- 计划：[`plans/2026-07-28-sk-performance-optimization.md`](plans/2026-07-28-sk-performance-optimization.md)
+- 实验与最终验证：[`changes/2026-07-28-sk-performance-experiments.md`](changes/2026-07-28-sk-performance-experiments.md)
+- 决策：[`decisions/2026-07-29-cell-value-arc-text.md`](decisions/2026-07-29-cell-value-arc-text.md)
+- 当前性能口径：[`performance/README.md`](performance/README.md)
+
 ## 权威顺序
 
 1. 当前代码、配置/schema、契约 baseline 和测试结果。

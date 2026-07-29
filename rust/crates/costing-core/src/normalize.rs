@@ -282,11 +282,11 @@ fn format_period_value(value: &CellValue) -> CellValue {
         if let Some(period_key) = normalize_period_key_from_text(&text) {
             let year = &period_key[0..4];
             let month = &period_key[5..7];
-            return CellValue::Text(format!("{year}年{month}期"));
+            return CellValue::Text(format!("{year}年{month}期").into());
         }
     }
 
-    CellValue::Text(text)
+    CellValue::Text(text.into())
 }
 
 fn month_in_range(
@@ -433,11 +433,11 @@ mod tests {
     #[test]
     fn cell_text_str_borrows_only_trimmed_text_values() {
         assert_eq!(
-            cell_text_str(&CellValue::Text("  集成车间  ".to_string())),
+            cell_text_str(&CellValue::Text("  集成车间  ".to_string().into())),
             Some("集成车间")
         );
         assert_eq!(
-            cell_text_str(&CellValue::DateLike(" 2025年01期 ".to_string())),
+            cell_text_str(&CellValue::DateLike(" 2025年01期 ".to_string().into())),
             Some("2025年01期")
         );
         assert_eq!(cell_text_str(&CellValue::Blank), None);
@@ -473,15 +473,15 @@ mod tests {
             ],
             rows: vec![
                 vec![
-                    CellValue::Text("2025年01期".to_string()),
-                    CellValue::Text("普通车间".to_string()),
-                    CellValue::Text("P1".to_string()),
-                    CellValue::Text("WO-1".to_string()),
-                    CellValue::Text("V001".to_string()),
+                    CellValue::Text("2025年01期".to_string().into()),
+                    CellValue::Text("普通车间".to_string().into()),
+                    CellValue::Text("P1".to_string().into()),
+                    CellValue::Text("WO-1".to_string().into()),
+                    CellValue::Text("V001".to_string().into()),
                 ],
                 vec![
                     CellValue::Blank,
-                    CellValue::Text("集成车间".to_string()),
+                    CellValue::Text("集成车间".to_string().into()),
                     CellValue::Blank,
                     CellValue::Blank,
                     CellValue::Blank,
@@ -496,7 +496,7 @@ mod tests {
         let normalized = normalize_workbook(raw_with_vendor_rows(), &config, None).unwrap();
         assert_eq!(
             value(&normalized, 1, "产品编码"),
-            CellValue::Text("P1".to_string())
+            CellValue::Text("P1".to_string().into())
         );
         assert_eq!(value(&normalized, 1, "供应商编码"), CellValue::Blank);
     }
@@ -524,24 +524,24 @@ mod tests {
             ],
             rows: vec![
                 vec![
-                    CellValue::Text("2025年01期".to_string()),
-                    CellValue::Text("普通车间".to_string()),
-                    CellValue::Text("P1".to_string()),
-                    CellValue::Text("WO-1".to_string()),
-                    CellValue::Text("V001".to_string()),
+                    CellValue::Text("2025年01期".to_string().into()),
+                    CellValue::Text("普通车间".to_string().into()),
+                    CellValue::Text("P1".to_string().into()),
+                    CellValue::Text("WO-1".to_string().into()),
+                    CellValue::Text("V001".to_string().into()),
                 ],
                 vec![
                     CellValue::Blank,
-                    CellValue::Text("集成车间".to_string()),
-                    CellValue::Text("P2".to_string()),
-                    CellValue::Text("WO-2".to_string()),
-                    CellValue::Text("V999".to_string()),
+                    CellValue::Text("集成车间".to_string().into()),
+                    CellValue::Text("P2".to_string().into()),
+                    CellValue::Text("WO-2".to_string().into()),
+                    CellValue::Text("V999".to_string().into()),
                 ],
                 vec![
                     CellValue::Blank,
-                    CellValue::Text("普通车间".to_string()),
-                    CellValue::Text("P3".to_string()),
-                    CellValue::Text("WO-3".to_string()),
+                    CellValue::Text("普通车间".to_string().into()),
+                    CellValue::Text("P3".to_string().into()),
+                    CellValue::Text("WO-3".to_string().into()),
                     CellValue::Blank,
                 ],
             ],
@@ -550,7 +550,7 @@ mod tests {
         let normalized = normalize_workbook(raw, &config, None).unwrap();
         assert_eq!(
             value(&normalized, 2, "供应商编码"),
-            CellValue::Text("V001".to_string())
+            CellValue::Text("V001".to_string().into())
         );
     }
 
@@ -559,8 +559,8 @@ mod tests {
         let config = PipelineRules::for_name(PipelineName::Gb);
         let mut raw = raw_with_vendor_rows();
         raw.rows.push(vec![
-            CellValue::Text("合计".to_string()),
-            CellValue::Text("普通车间".to_string()),
+            CellValue::Text("合计".to_string().into()),
+            CellValue::Text("普通车间".to_string().into()),
             CellValue::Blank,
             CellValue::Blank,
             CellValue::Blank,
@@ -602,10 +602,10 @@ mod tests {
                 ],
             ],
             rows: vec![vec![
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("MAT-1".to_string()),
-                CellValue::Text("制造费用".to_string()),
-                CellValue::Text("WO-1".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("MAT-1".to_string().into()),
+                CellValue::Text("制造费用".to_string().into()),
+                CellValue::Text("WO-1".to_string().into()),
             ]],
         };
 
@@ -615,11 +615,11 @@ mod tests {
         assert!(normalized.table.schema().optional("成本项目名称").is_some());
         assert_eq!(
             value(&normalized, 0, "子项物料编码"),
-            CellValue::Text("MAT-1".to_string())
+            CellValue::Text("MAT-1".to_string().into())
         );
         assert_eq!(
             value(&normalized, 0, "成本项目名称"),
-            CellValue::Text("制造费用".to_string())
+            CellValue::Text("制造费用".to_string().into())
         );
     }
 
@@ -633,8 +633,8 @@ mod tests {
                 vec!["".to_string(), "".to_string()],
             ],
             rows: vec![vec![
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("WO-1".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("WO-1".to_string().into()),
             ]],
         };
 
@@ -676,7 +676,7 @@ mod tests {
         let month = schema.require("月份").unwrap();
         assert_eq!(
             rows[0].get(month).unwrap(),
-            &CellValue::Text("2025年01期".to_string())
+            &CellValue::Text("2025年01期".to_string().into())
         );
     }
 
@@ -690,8 +690,8 @@ mod tests {
                 vec!["".to_string(), "".to_string()],
             ],
             rows: vec![vec![
-                CellValue::Text("2025年7期".to_string()),
-                CellValue::Text("WO-1".to_string()),
+                CellValue::Text("2025年7期".to_string().into()),
+                CellValue::Text("WO-1".to_string().into()),
             ]],
         };
 
@@ -699,7 +699,7 @@ mod tests {
 
         assert_eq!(
             value(&normalized, 0, "月份"),
-            CellValue::Text("2025年07期".to_string())
+            CellValue::Text("2025年07期".to_string().into())
         );
     }
 
@@ -714,12 +714,12 @@ mod tests {
             ],
             rows: vec![
                 vec![
-                    CellValue::Text("2025年01期".to_string()),
-                    CellValue::Text("WO-1".to_string()),
+                    CellValue::Text("2025年01期".to_string().into()),
+                    CellValue::Text("WO-1".to_string().into()),
                 ],
                 vec![
-                    CellValue::Text("2025年02期".to_string()),
-                    CellValue::Text("WO-2".to_string()),
+                    CellValue::Text("2025年02期".to_string().into()),
+                    CellValue::Text("WO-2".to_string().into()),
                 ],
             ],
         };
@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(normalized.row_count(), 1);
         assert_eq!(
             value(&normalized, 0, "工单编号"),
-            CellValue::Text("WO-2".to_string())
+            CellValue::Text("WO-2".to_string().into())
         );
     }
 
@@ -760,7 +760,7 @@ mod tests {
             raw_table(
                 &["成本项目名称"],
                 vec![
-                    vec![CellValue::Text("直接人工".to_string())],
+                    vec![CellValue::Text("直接人工".to_string().into())],
                     vec![CellValue::Blank],
                 ],
             ),
@@ -773,7 +773,7 @@ mod tests {
 
         assert_eq!(
             rows[1].get(filled).unwrap(),
-            &CellValue::Text("直接人工".to_string())
+            &CellValue::Text("直接人工".to_string().into())
         );
     }
 
@@ -783,8 +783,8 @@ mod tests {
             raw_table(
                 &["物料编码", "物料编码"],
                 vec![vec![
-                    CellValue::Text("FIRST".to_string()),
-                    CellValue::Text("LAST".to_string()),
+                    CellValue::Text("FIRST".to_string().into()),
+                    CellValue::Text("LAST".to_string().into()),
                 ]],
             ),
             &PipelineRules::for_name(PipelineName::Gb),
@@ -796,7 +796,7 @@ mod tests {
 
         assert_eq!(
             rows[0].get(material).unwrap(),
-            &CellValue::Text("LAST".to_string())
+            &CellValue::Text("LAST".to_string().into())
         );
     }
 
@@ -806,9 +806,9 @@ mod tests {
             raw_table(
                 &["年期", "月份", "月份"],
                 vec![vec![
-                    CellValue::Text("2025年07期".to_string()),
-                    CellValue::Text("first".to_string()),
-                    CellValue::Text("last".to_string()),
+                    CellValue::Text("2025年07期".to_string().into()),
+                    CellValue::Text("first".to_string().into()),
+                    CellValue::Text("last".to_string().into()),
                 ]],
             ),
             &PipelineRules::for_name(PipelineName::Gb),
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(schema.len(), 4);
         assert_eq!(
             rows[0].get(month).unwrap(),
-            &CellValue::Text("2025年07期".to_string())
+            &CellValue::Text("2025年07期".to_string().into())
         );
     }
 
@@ -835,7 +835,7 @@ mod tests {
         let frame = normalize_workbook(
             raw_table(
                 &["月份"],
-                vec![vec![CellValue::Text("manual-month".to_string())]],
+                vec![vec![CellValue::Text("manual-month".to_string().into())]],
             ),
             &PipelineRules::for_name(PipelineName::Gb),
             None,
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(schema.name(display[0]).unwrap(), MONTH_COLUMN);
         assert_eq!(
             rows[0].get(month).unwrap(),
-            &CellValue::Text("manual-month".to_string())
+            &CellValue::Text("manual-month".to_string().into())
         );
     }
 
@@ -858,9 +858,9 @@ mod tests {
             raw_table(
                 &["年期", "年期", "成本中心名称"],
                 vec![vec![
-                    CellValue::Text("2025年01期".to_string()),
-                    CellValue::Text("2025年02期".to_string()),
-                    CellValue::Text("车间".to_string()),
+                    CellValue::Text("2025年01期".to_string().into()),
+                    CellValue::Text("2025年02期".to_string().into()),
+                    CellValue::Text("车间".to_string().into()),
                 ]],
             ),
             &PipelineRules::for_name(PipelineName::Gb),
@@ -877,7 +877,7 @@ mod tests {
         assert_eq!(display_names[..3], ["年期", "月份", "年期"]);
         assert_eq!(
             rows[0].get(month).unwrap(),
-            &CellValue::Text("2025年02期".to_string())
+            &CellValue::Text("2025年02期".to_string().into())
         );
         assert_eq!(schema.len(), 5);
     }
@@ -892,9 +892,9 @@ mod tests {
                     FILLED_COST_ITEM_COLUMN,
                 ],
                 vec![vec![
-                    CellValue::Text("直接人工".to_string()),
-                    CellValue::Text("first".to_string()),
-                    CellValue::Text("last".to_string()),
+                    CellValue::Text("直接人工".to_string().into()),
+                    CellValue::Text("first".to_string().into()),
+                    CellValue::Text("last".to_string().into()),
                 ]],
             ),
             &PipelineRules::for_name(PipelineName::Gb),
@@ -919,7 +919,7 @@ mod tests {
         assert_eq!(schema.len(), 3);
         assert_eq!(
             rows[0].get(filled).unwrap(),
-            &CellValue::Text("直接人工".to_string())
+            &CellValue::Text("直接人工".to_string().into())
         );
     }
 }

@@ -143,7 +143,7 @@ fn text_any(
 fn cell_to_text(value: &CellValue) -> String {
     match value {
         CellValue::Blank => String::new(),
-        CellValue::Text(value) | CellValue::DateLike(value) => value.clone(),
+        CellValue::Text(value) | CellValue::DateLike(value) => value.to_string(),
         CellValue::Decimal(value) => value.normalize().to_string(),
     }
 }
@@ -189,22 +189,22 @@ mod tests {
         let source_rows = vec![
             vec![CellValue::Blank; columns.len()],
             vec![
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("WO1".to_string()),
-                CellValue::Text("1".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("WO1".to_string().into()),
+                CellValue::Text("1".to_string().into()),
                 CellValue::Decimal(Decimal::ONE),
                 CellValue::Decimal(Decimal::new(100, 0)),
-                CellValue::Text("汇报入库-普通生产".to_string()),
+                CellValue::Text("汇报入库-普通生产".to_string().into()),
             ],
             vec![
-                CellValue::Text("2025年01期".to_string()),
-                CellValue::Text("P1".to_string()),
-                CellValue::Text("WO1".to_string()),
-                CellValue::Text("1".to_string()),
+                CellValue::Text("2025年01期".to_string().into()),
+                CellValue::Text("P1".to_string().into()),
+                CellValue::Text("WO1".to_string().into()),
+                CellValue::Text("1".to_string().into()),
                 CellValue::Decimal(Decimal::ONE),
                 CellValue::Decimal(Decimal::new(100, 0)),
-                CellValue::Text("其他入库".to_string()),
+                CellValue::Text("其他入库".to_string().into()),
             ],
         ];
         let table = IndexedTable::from_raw(columns, source_rows).unwrap();
@@ -292,7 +292,9 @@ mod tests {
         let (schema, display, _) = table.into_parts();
         let foreign = IndexedTable::from_raw(
             vec!["单据类型".to_string()],
-            vec![vec![CellValue::Text("汇报入库-普通生产".to_string())]],
+            vec![vec![CellValue::Text(
+                "汇报入库-普通生产".to_string().into(),
+            )]],
         )
         .unwrap();
         let (_, _, mut foreign_rows) = foreign.into_parts();
@@ -353,11 +355,11 @@ mod tests {
         let table = IndexedTable::from_raw(
             columns,
             vec![
-                vec![CellValue::Text("汇报入库-普通生产".to_string())],
-                vec![CellValue::Text("汇报入库-普通生产".to_string())],
-                vec![CellValue::Text("汇报入库-普通生产".to_string())],
-                vec![CellValue::Text("其他入库".to_string())],
-                vec![CellValue::Text("汇报入库-普通生产".to_string())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string().into())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string().into())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string().into())],
+                vec![CellValue::Text("其他入库".to_string().into())],
+                vec![CellValue::Text("汇报入库-普通生产".to_string().into())],
             ],
         )
         .unwrap();
@@ -402,7 +404,9 @@ mod tests {
     fn quality_reports_zero_non_positive_qty_after_fact_filter() {
         let table = IndexedTable::from_raw(
             vec!["单据类型".to_string()],
-            vec![vec![CellValue::Text("汇报入库-普通生产".to_string())]],
+            vec![vec![CellValue::Text(
+                "汇报入库-普通生产".to_string().into(),
+            )]],
         )
         .unwrap();
         let (schema, display, mut rows) = table.into_parts();

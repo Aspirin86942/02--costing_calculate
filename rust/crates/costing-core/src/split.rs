@@ -115,7 +115,7 @@ mod tests {
         let qty = BTreeMap::from([
             (
                 "工单编号".to_string(),
-                CellValue::Text("WO-QTY".to_string()),
+                CellValue::Text("WO-QTY".to_string().into()),
             ),
             ("成本项目名称".to_string(), CellValue::Blank),
             ("子项物料编码".to_string(), CellValue::Blank),
@@ -123,25 +123,25 @@ mod tests {
         let detail_from_material = BTreeMap::from([
             (
                 "工单编号".to_string(),
-                CellValue::Text("WO-MAT".to_string()),
+                CellValue::Text("WO-MAT".to_string().into()),
             ),
             (
                 "成本项目名称".to_string(),
-                CellValue::Text("直接材料".to_string()),
+                CellValue::Text("直接材料".to_string().into()),
             ),
             (
                 "子项物料编码".to_string(),
-                CellValue::Text("MAT-1".to_string()),
+                CellValue::Text("MAT-1".to_string().into()),
             ),
         ]);
         let detail_from_expense = BTreeMap::from([
             (
                 "工单编号".to_string(),
-                CellValue::Text("WO-EXP".to_string()),
+                CellValue::Text("WO-EXP".to_string().into()),
             ),
             (
                 "成本项目名称".to_string(),
-                CellValue::Text("制造费用".to_string()),
+                CellValue::Text("制造费用".to_string().into()),
             ),
             ("子项物料编码".to_string(), CellValue::Blank),
         ]);
@@ -159,15 +159,18 @@ mod tests {
     #[test]
     fn detail_rows_use_filled_cost_item_when_present() {
         let detail = BTreeMap::from([
-            ("工单编号".to_string(), CellValue::Text("WO-1".to_string())),
+            (
+                "工单编号".to_string(),
+                CellValue::Text("WO-1".to_string().into()),
+            ),
             ("成本项目名称".to_string(), CellValue::Blank),
             (
                 "Filled_成本项目".to_string(),
-                CellValue::Text("直接人工".to_string()),
+                CellValue::Text("直接人工".to_string().into()),
             ),
             (
                 "子项物料编码".to_string(),
-                CellValue::Text("MAT-1".to_string()),
+                CellValue::Text("MAT-1".to_string().into()),
             ),
         ]);
 
@@ -185,7 +188,7 @@ mod tests {
 
         assert_eq!(
             result.detail_rows()[0].get(cost_item).unwrap(),
-            &CellValue::Text("直接人工".to_string())
+            &CellValue::Text("直接人工".to_string().into())
         );
     }
 
@@ -212,7 +215,7 @@ mod tests {
         let qty = BTreeMap::from([
             (
                 "工单编号".to_string(),
-                CellValue::Text("WO-QTY".to_string()),
+                CellValue::Text("WO-QTY".to_string().into()),
             ),
             ("成本项目名称".to_string(), CellValue::Blank),
             ("子项物料编码".to_string(), CellValue::Blank),
@@ -220,19 +223,19 @@ mod tests {
         let detail = BTreeMap::from([
             (
                 "工单编号".to_string(),
-                CellValue::Text("WO-DETAIL".to_string()),
+                CellValue::Text("WO-DETAIL".to_string().into()),
             ),
             (
                 "成本项目名称".to_string(),
-                CellValue::Text("直接材料".to_string()),
+                CellValue::Text("直接材料".to_string().into()),
             ),
             (
                 "子项物料编码".to_string(),
-                CellValue::Text("MAT-1".to_string()),
+                CellValue::Text("MAT-1".to_string().into()),
             ),
             (
                 "Filled_成本项目".to_string(),
-                CellValue::Text("直接材料".to_string()),
+                CellValue::Text("直接材料".to_string().into()),
             ),
         ]);
 
@@ -348,7 +351,7 @@ mod tests {
             BTreeMap::from([
                 (
                     ORDER_NUMBER_COLUMN.to_string(),
-                    CellValue::Text(order.to_string()),
+                    CellValue::Text(order.to_string().into()),
                 ),
                 (COST_ITEM_COLUMN.to_string(), cost_item),
                 (CHILD_MATERIAL_COLUMN.to_string(), material),
@@ -360,13 +363,13 @@ mod tests {
                 row("Q-1", CellValue::Blank, CellValue::Blank),
                 row(
                     "D-1",
-                    CellValue::Text("直接材料".to_string()),
-                    CellValue::Text("M-1".to_string()),
+                    CellValue::Text("直接材料".to_string().into()),
+                    CellValue::Text("M-1".to_string().into()),
                 ),
                 row("Q-2", CellValue::Blank, CellValue::Blank),
                 row(
                     "D-2",
-                    CellValue::Text("制造费用".to_string()),
+                    CellValue::Text("制造费用".to_string().into()),
                     CellValue::Blank,
                 ),
             ],
@@ -388,8 +391,8 @@ mod tests {
                 CHILD_MATERIAL_COLUMN.to_string(),
             ],
             vec![vec![
-                CellValue::Text("OLD".to_string()),
-                CellValue::Text("WO-1".to_string()),
+                CellValue::Text("OLD".to_string().into()),
+                CellValue::Text("WO-1".to_string().into()),
                 CellValue::Blank,
                 CellValue::Blank,
             ]],

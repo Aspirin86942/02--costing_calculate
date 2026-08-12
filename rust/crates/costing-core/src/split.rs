@@ -51,8 +51,7 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
         let expense_mask = no_material
             && cost_item_text
                 .as_deref()
-                .map(|value| value != DIRECT_MATERIAL_NAME)
-                .unwrap_or(false);
+                .is_some_and(|value| value != DIRECT_MATERIAL_NAME);
         let has_order =
             columns.order_number.is_none() || row_text(&row, columns.order_number)?.is_some();
 
@@ -80,10 +79,10 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
 }
 
 fn row_text(row: &IndexedRow, column: Option<ColumnId>) -> Result<Option<String>, CostingError> {
-    column
-        .map(|id| row.get(id).map(cell_text))
-        .transpose()
-        .map(Option::flatten)
+    let Some(id) = column else {
+        return Ok(None);
+    };
+    Ok(cell_text(row.get(id)?))
 }
 
 fn cell_text(value: &CellValue) -> Option<String> {

@@ -40,40 +40,42 @@ pub fn process_workbook(
     mut stage_timings: StageTimings,
 ) -> Result<ProcessedWorkbook, ProcessFailure> {
     let month_filter_requested = month_range.is_some();
-    let normalized = measure(&mut stage_timings, "normalize", || {
-        normalize_workbook(raw, rules, month_range)
-    })
-    .map_err(|source| ProcessFailure {
-        stage: ErrorStage::Normalize,
-        source,
-    })?;
+    let normalized = measure_stage(
+        &mut stage_timings,
+        "normalize",
+        ErrorStage::Normalize,
+        || normalize_workbook(raw, rules, month_range),
+    )?;
     let month_filter_empty_result = month_filter_requested && normalized.is_empty();
-    let split = measure(&mut stage_timings, "split", || {
+    let split = measure_stage(&mut stage_timings, "split", ErrorStage::Split, || {
         split_detail_and_qty(normalized)
-    })
-    .map_err(|source| ProcessFailure {
-        stage: ErrorStage::Split,
-        source,
     })?;
-    let bundle = measure(&mut stage_timings, "fact", || {
+    let bundle = measure_stage(&mut stage_timings, "fact", ErrorStage::BuildFact, || {
         build_fact_bundle(split, rules)
-    })
-    .map_err(|source| ProcessFailure {
-        stage: ErrorStage::BuildFact,
-        source,
     })?;
     let payload_timings = stage_timings.clone();
-    let payload = measure(&mut stage_timings, "presentation", || {
-        build_workbook_payload(bundle, rules, payload_timings, month_filter_empty_result)
-    })
-    .map_err(|source| ProcessFailure {
-        stage: ErrorStage::BuildPresentation,
-        source,
-    })?;
+    let payload = measure_stage(
+        &mut stage_timings,
+        "presentation",
+        ErrorStage::BuildPresentation,
+        || build_workbook_payload(bundle, rules, payload_timings, month_filter_empty_result),
+    )?;
 
     Ok(ProcessedWorkbook {
         payload,
         stage_timings,
+    })
+}
+
+fn measure_stage<T>(
+    timings: &mut StageTimings,
+    stage: &'static str,
+    error_stage: ErrorStage,
+    f: impl FnOnce() -> Result<T, CostingError>,
+) -> Result<T, ProcessFailure> {
+    measure(timings, stage, f).map_err(|source| ProcessFailure {
+        stage: error_stage,
+        source,
     })
 }
 

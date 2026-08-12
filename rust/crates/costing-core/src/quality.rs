@@ -8,7 +8,6 @@ pub fn build_quality_metrics(
     bundle: &FactBundle,
     month_filter_empty_result: bool,
 ) -> Result<Vec<QualityMetric>, CostingError> {
-    let not_applicable_description = "月份过滤后无数据，指标不适用";
     let null_rate_value = if month_filter_empty_result {
         "N/A".to_string()
     } else {
@@ -62,11 +61,7 @@ pub fn build_quality_metrics(
             category: "空值率".to_string(),
             metric: "直接材料金额缺失率".to_string(),
             value: null_rate_value,
-            description: if month_filter_empty_result {
-                not_applicable_description.to_string()
-            } else {
-                "派生金额字段空值率".to_string()
-            },
+            description: quality_description(month_filter_empty_result, "派生金额字段空值率"),
         },
         QualityMetric {
             category: "唯一性检查".to_string(),
@@ -84,13 +79,20 @@ pub fn build_quality_metrics(
             category: "分析覆盖率".to_string(),
             metric: "可参与分析占比".to_string(),
             value: coverage_value,
-            description: if month_filter_empty_result {
-                not_applicable_description.to_string()
-            } else {
-                "按完工数量、总单位成本和单据类型归类估算可分析工单占比".to_string()
-            },
+            description: quality_description(
+                month_filter_empty_result,
+                "按完工数量、总单位成本和单据类型归类估算可分析工单占比",
+            ),
         },
     ])
+}
+
+fn quality_description(month_filter_empty_result: bool, fallback: &str) -> String {
+    if month_filter_empty_result {
+        "月份过滤后无数据，指标不适用".to_string()
+    } else {
+        fallback.to_string()
+    }
 }
 
 fn non_positive_qty_count(rows: &[QtyFactRow]) -> usize {

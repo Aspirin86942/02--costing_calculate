@@ -216,122 +216,33 @@ fn write_workbook_controlled(
 
     #[cfg(feature = "low-memory")]
     if let Some(workspace) = temp_workspace.as_ref() {
-        if let Err(error) = workbook.set_compression_level(5) {
-            drop(workbook);
-            return finish_with_temp_cleanup(
+        let setup_error = |error| {
+            writer_error(
                 context,
-                Err(writer_error(
-                    context,
-                    workspace.path(),
-                    ErrorStage::InitializeLowMemoryTempWriter,
-                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-                )
-                .with_low_memory_writer(needs_low_memory)),
-                temp_workspace,
-                needs_low_memory,
-            );
-        }
-        if let Err(error) = workbook.set_tempdir(workspace.path()) {
+                workspace.path(),
+                ErrorStage::InitializeLowMemoryTempWriter,
+                WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+            )
+            .with_low_memory_writer(needs_low_memory)
+        };
+        if let Err(error) = workbook
+            .set_compression_level(5)
+            .map_err(&setup_error)
+            .and_then(|workbook_ref| {
+                workbook_ref
+                    .set_tempdir(workspace.path())
+                    .map_err(&setup_error)
+            })
+        {
             drop(workbook);
-            return finish_with_temp_cleanup(
-                context,
-                Err(writer_error(
-                    context,
-                    workspace.path(),
-                    ErrorStage::InitializeLowMemoryTempWriter,
-                    WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
-                )
-                .with_low_memory_writer(needs_low_memory)),
-                temp_workspace,
-                needs_low_memory,
-            );
+            return finish_with_temp_cleanup(context, Err(error), temp_workspace, needs_low_memory);
         }
     }
 
     let primary_result = (|| -> Result<WorkbookWriteReport, WriterError> {
         let writer_populate_started = Instant::now();
         for (sheet, use_low_memory) in payload.sheet_models.iter().zip(&sheet_modes) {
-            let worksheet = add_worksheet_for_mode(&mut workbook, *use_low_memory);
-            worksheet
-                .set_name(&sheet.sheet_name)
-                .map_err(CostingXlsxError::Writer)
-                .map_err(|error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        WriterPrimaryError::Xlsx(error),
-                    )
-                })?;
-
-            let header_format = Format::new()
-                .set_bold()
-                .set_background_color(Color::RGB(0xD9E1F2))
-                .set_border(FormatBorder::Thin)
-                .set_align(FormatAlign::Center)
-                .set_align(FormatAlign::VerticalCenter);
-            let text_format = Format::new()
-                .set_align(FormatAlign::Left)
-                .set_align(FormatAlign::VerticalCenter);
-            let column_behaviors = sheet
-                .columns
-                .iter()
-                .map(|column| {
-                    sheet
-                        .number_formats
-                        .get(column)
-                        .map_or(ColumnBehavior::Text, |number_format| {
-                            ColumnBehavior::Numeric(numeric_format(number_format))
-                        })
-                })
-                .collect::<Vec<_>>();
-
-            if *use_low_memory {
-                configure_sheet_metadata(worksheet, sheet).map_err(|error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        primary_from_xlsx_error(error),
-                    )
-                })?;
-            }
-            write_header_row(
-                worksheet,
-                &sheet.columns,
-                &column_behaviors,
-                sheet.fixed_width,
-                &header_format,
-                &text_format,
-            )
-            .map_err(|error| {
-                writer_error(
-                    context,
-                    path,
-                    ErrorStage::PopulateWorkbook,
-                    primary_from_xlsx_error(error),
-                )
-            })?;
-            write_data_rows(worksheet, &sheet.rows, &column_behaviors, &text_format).map_err(
-                |error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        primary_from_xlsx_error(error),
-                    )
-                },
-            )?;
-            if !*use_low_memory {
-                configure_sheet_metadata(worksheet, sheet).map_err(|error| {
-                    writer_error(
-                        context,
-                        path,
-                        ErrorStage::PopulateWorkbook,
-                        primary_from_xlsx_error(error),
-                    )
-                })?;
-            }
+            populate_sheet(context, path, &mut workbook, sheet, *use_low_memory)?;
         }
         let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
 
@@ -480,6 +391,73 @@ fn add_worksheet_for_mode(workbook: &mut Workbook, use_low_memory: bool) -> &mut
 
     let _ = use_low_memory;
     workbook.add_worksheet()
+}
+
+fn populate_error(context: &WriterContext, path: &Path, error: CostingXlsxError) -> WriterError {
+    writer_error(
+        context,
+        path,
+        ErrorStage::PopulateWorkbook,
+        primary_from_xlsx_error(error),
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn populate_sheet(
+    context: &WriterContext,
+    path: &Path,
+    workbook: &mut Workbook,
+    sheet: &SheetModel,
+    use_low_memory: bool,
+) -> Result<(), WriterError> {
+    let worksheet = add_worksheet_for_mode(workbook, use_low_memory);
+    worksheet
+        .set_name(&sheet.sheet_name)
+        .map_err(CostingXlsxError::Writer)
+        .map_err(|error| populate_error(context, path, error))?;
+
+    let header_format = Format::new()
+        .set_bold()
+        .set_background_color(Color::RGB(0xD9E1F2))
+        .set_border(FormatBorder::Thin)
+        .set_align(FormatAlign::Center)
+        .set_align(FormatAlign::VerticalCenter);
+    let text_format = Format::new()
+        .set_align(FormatAlign::Left)
+        .set_align(FormatAlign::VerticalCenter);
+    let column_behaviors = sheet
+        .columns
+        .iter()
+        .map(|column| {
+            sheet
+                .number_formats
+                .get(column)
+                .map_or(ColumnBehavior::Text, |number_format| {
+                    ColumnBehavior::Numeric(numeric_format(number_format))
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if use_low_memory {
+        configure_sheet_metadata(worksheet, sheet)
+            .map_err(|error| populate_error(context, path, error))?;
+    }
+    write_header_row(
+        worksheet,
+        &sheet.columns,
+        &column_behaviors,
+        sheet.fixed_width,
+        &header_format,
+        &text_format,
+    )
+    .map_err(|error| populate_error(context, path, error))?;
+    write_data_rows(worksheet, &sheet.rows, &column_behaviors, &text_format)
+        .map_err(|error| populate_error(context, path, error))?;
+    if !use_low_memory {
+        configure_sheet_metadata(worksheet, sheet)
+            .map_err(|error| populate_error(context, path, error))?;
+    }
+    Ok(())
 }
 
 fn configure_sheet_metadata(
@@ -684,9 +662,6 @@ fn write_data_rows(
     for (row_idx, row) in rows.iter().enumerate() {
         let excel_row = (row_idx + 1) as u32;
         for (col_idx, (value, behavior)) in row.iter().zip(column_behaviors).enumerate() {
-            if matches!(value, CellValue::Blank) {
-                continue;
-            }
             let excel_col = col_idx as u16;
             match value {
                 CellValue::Blank => {}

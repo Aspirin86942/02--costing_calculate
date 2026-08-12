@@ -30,6 +30,26 @@ const QTY_SOFTWARE_UNIT_COST: &str = "软件费用单位完工成本";
 const QTY_MOH_MATCH: &str = "制造费用明细项合计是否等于制造费用合计";
 const QTY_CHECK_STATUS: &str = "数据校验状态";
 const QTY_CHECK_REASON: &str = "异常原因说明";
+const QTY_AMOUNT_COLUMNS: &[&str] = &[
+    QTY_DM_AMOUNT,
+    QTY_DL_AMOUNT,
+    QTY_MOH_AMOUNT,
+    QTY_MOH_OTHER_AMOUNT,
+    QTY_MOH_LABOR_AMOUNT,
+    QTY_MOH_CONSUMABLES_AMOUNT,
+    QTY_MOH_DEPRECIATION_AMOUNT,
+    QTY_MOH_UTILITIES_AMOUNT,
+];
+const QTY_UNIT_COST_COLUMNS: &[&str] = &[
+    QTY_DM_UNIT_COST,
+    QTY_DL_UNIT_COST,
+    QTY_MOH_UNIT_COST,
+    QTY_MOH_OTHER_UNIT_COST,
+    QTY_MOH_LABOR_UNIT_COST,
+    QTY_MOH_CONSUMABLES_UNIT_COST,
+    QTY_MOH_DEPRECIATION_UNIT_COST,
+    QTY_MOH_UTILITIES_UNIT_COST,
+];
 const REQUIRED_DETAIL_COLUMNS: &[&str] = &[
     "产品编码",
     "产品名称",
@@ -154,6 +174,13 @@ struct PreparedQtyRow {
     completed_total: Decimal,
 }
 
+struct PreparedQtyRows {
+    rows: Vec<PreparedQtyRow>,
+    key_counts: HashMap<String, usize>,
+    filtered_invalid_qty_count: usize,
+    filtered_missing_total_amount_count: usize,
+}
+
 #[derive(Debug)]
 struct ReconciliationAudit {
     moh_component_sum: Decimal,
@@ -227,33 +254,12 @@ pub fn build_fact_bundle(
     )?;
 
     let qty_input_row_count = qty_source_rows.len();
-    let mut prepared_rows = Vec::with_capacity(qty_input_row_count);
-    let mut qty_key_counts: HashMap<String, usize> = HashMap::new();
-    let mut filtered_invalid_qty_count = 0usize;
-    let mut filtered_missing_total_amount_count = 0usize;
-    for source in qty_source_rows {
-        let completed_qty = cell_to_decimal(source.get(qty_columns.completed_qty)?);
-        let completed_total = cell_to_decimal(source.get(qty_columns.completed_amount)?);
-        let (completed_qty, completed_total) = match (completed_qty, completed_total) {
-            (Some(qty), Some(total)) if qty > ZERO => (qty, total),
-            (Some(qty), None) if qty > ZERO => {
-                filtered_missing_total_amount_count += 1;
-                continue;
-            }
-            _ => {
-                filtered_invalid_qty_count += 1;
-                continue;
-            }
-        };
-        let work_order_key = work_order_key(&source, &qty_columns.key)?;
-        *qty_key_counts.entry(work_order_key.clone()).or_default() += 1;
-        prepared_rows.push(PreparedQtyRow {
-            source,
-            work_order_key,
-            completed_qty,
-            completed_total,
-        });
-    }
+    let PreparedQtyRows {
+        rows: prepared_rows,
+        key_counts: qty_key_counts,
+        filtered_invalid_qty_count,
+        filtered_missing_total_amount_count,
+    } = prepare_qty_rows(qty_source_rows, &qty_columns)?;
 
     let mut duplicate_work_order_row_count = 0usize;
     for row in &prepared_rows {
@@ -309,6 +315,43 @@ pub fn build_fact_bundle(
     })
 }
 
+fn prepare_qty_rows(
+    qty_source_rows: Vec<IndexedRow>,
+    qty_columns: &QtyFactColumns,
+) -> Result<PreparedQtyRows, CostingError> {
+    let input_row_count = qty_source_rows.len();
+    let mut prepared_rows = Vec::with_capacity(input_row_count);
+    let mut qty_key_counts: HashMap<String, usize> = HashMap::new();
+    let mut filtered_invalid_qty_count = 0usize;
+    let mut filtered_missing_total_amount_count = 0usize;
+    for source in qty_source_rows {
+        let completed_qty = cell_to_decimal(source.get(qty_columns.completed_qty)?);
+        let completed_total = cell_to_decimal(source.get(qty_columns.completed_amount)?);
+        let Some(completed_qty) = completed_qty.filter(|qty| *qty > ZERO) else {
+            filtered_invalid_qty_count += 1;
+            continue;
+        };
+        let Some(completed_total) = completed_total else {
+            filtered_missing_total_amount_count += 1;
+            continue;
+        };
+        let work_order_key = work_order_key(&source, &qty_columns.key)?;
+        *qty_key_counts.entry(work_order_key.clone()).or_default() += 1;
+        prepared_rows.push(PreparedQtyRow {
+            source,
+            work_order_key,
+            completed_qty,
+            completed_total,
+        });
+    }
+    Ok(PreparedQtyRows {
+        rows: prepared_rows,
+        key_counts: qty_key_counts,
+        filtered_invalid_qty_count,
+        filtered_missing_total_amount_count,
+    })
+}
+
 fn aggregate_detail_rows_in_input_order(
     rows: &[IndexedRow],
     columns: &DetailFactColumns,
@@ -335,20 +378,24 @@ fn aggregate_detail_rows_in_input_order(
             }
             continue;
         }
-        if amount.is_none() {
-            error_issues.push(error_issue(
-                key.clone(),
-                "MISSING_AMOUNT",
-                "本期完工金额",
-                cell_to_text(amount_cell),
-                "成本明细金额为空，已按 0 参与汇总",
-                "金额置为 0 后继续计算",
-            ));
-        }
+        let amount = match amount {
+            Some(value) => value,
+            None => {
+                error_issues.push(error_issue(
+                    key.clone(),
+                    "MISSING_AMOUNT",
+                    "本期完工金额",
+                    cell_to_text(amount_cell),
+                    "成本明细金额为空，已按 0 参与汇总",
+                    "金额置为 0 后继续计算",
+                ));
+                ZERO
+            }
+        };
         amounts_by_key
             .entry(key)
             .or_insert_with(|| CostAmounts::new(config.standalone_cost_items.len()))
-            .add(classification, amount.unwrap_or(ZERO));
+            .add(classification, amount);
     }
     Ok(amounts_by_key)
 }
@@ -484,25 +531,15 @@ fn error_issue(
 
 pub fn qty_sheet_columns(source_columns: &[String], config: &PipelineRules) -> Vec<String> {
     let mut columns = qty_sheet_base_columns(source_columns);
-    append_column(&mut columns, QTY_DM_AMOUNT);
-    append_column(&mut columns, QTY_DL_AMOUNT);
-    append_column(&mut columns, QTY_MOH_AMOUNT);
-    append_column(&mut columns, QTY_MOH_OTHER_AMOUNT);
-    append_column(&mut columns, QTY_MOH_LABOR_AMOUNT);
-    append_column(&mut columns, QTY_MOH_CONSUMABLES_AMOUNT);
-    append_column(&mut columns, QTY_MOH_DEPRECIATION_AMOUNT);
-    append_column(&mut columns, QTY_MOH_UTILITIES_AMOUNT);
+    for column in QTY_AMOUNT_COLUMNS {
+        append_column(&mut columns, column);
+    }
     for item in &config.standalone_cost_items {
         append_column(&mut columns, &format!("本期完工{item}合计完工金额"));
     }
-    append_column(&mut columns, QTY_DM_UNIT_COST);
-    append_column(&mut columns, QTY_DL_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_OTHER_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_LABOR_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_CONSUMABLES_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_DEPRECIATION_UNIT_COST);
-    append_column(&mut columns, QTY_MOH_UTILITIES_UNIT_COST);
+    for column in QTY_UNIT_COST_COLUMNS {
+        append_column(&mut columns, column);
+    }
     for item in &config.standalone_cost_items {
         append_column(&mut columns, standalone_unit_cost_column(item));
     }

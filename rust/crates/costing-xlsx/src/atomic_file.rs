@@ -56,24 +56,16 @@ impl AtomicFile {
     /// The method rejects an already existing final path, while `publish`
     /// performs the authoritative no-overwrite check again to close the race.
     pub fn create(final_path: &Path, request_id: &str) -> Result<Self, AtomicFileError> {
-        match final_path.try_exists() {
-            Ok(true) => {
-                return Err(error(
-                    AtomicFileStage::CheckTarget,
-                    final_path,
-                    None,
-                    io::Error::new(io::ErrorKind::AlreadyExists, "final path already exists"),
-                ));
-            }
-            Ok(false) => {}
-            Err(source) => {
-                return Err(error(
-                    AtomicFileStage::CheckTarget,
-                    final_path,
-                    None,
-                    source,
-                ));
-            }
+        if final_path
+            .try_exists()
+            .map_err(|source| error(AtomicFileStage::CheckTarget, final_path, None, source))?
+        {
+            return Err(error(
+                AtomicFileStage::CheckTarget,
+                final_path,
+                None,
+                io::Error::new(io::ErrorKind::AlreadyExists, "final path already exists"),
+            ));
         }
 
         let parent = final_path

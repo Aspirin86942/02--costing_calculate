@@ -23,19 +23,15 @@ pub fn build_reader_snapshot(raw: &RawWorkbook) -> ReaderSnapshot {
 }
 
 pub fn flatten_header_rows(header_rows: &[Vec<String>; 2]) -> Vec<String> {
+    fn header_cell(row: &[String], idx: usize) -> &str {
+        row.get(idx).map(String::as_str).unwrap_or("").trim()
+    }
+
     let width = header_rows[0].len().max(header_rows[1].len());
     (0..width)
         .map(|idx| {
-            let top = header_rows[0]
-                .get(idx)
-                .map(String::as_str)
-                .unwrap_or("")
-                .trim();
-            let bottom = header_rows[1]
-                .get(idx)
-                .map(String::as_str)
-                .unwrap_or("")
-                .trim();
+            let top = header_cell(&header_rows[0], idx);
+            let bottom = header_cell(&header_rows[1], idx);
             match (top.is_empty(), bottom.is_empty()) {
                 (true, true) => format!("column_{idx}"),
                 (false, true) => top.to_string(),

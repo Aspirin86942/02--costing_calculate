@@ -50,13 +50,10 @@ where
         .ok_or_else(|| CostingXlsxError::Message("未找到可识别的成本计算单双层表头".to_string()))?;
     let height = range.height();
     let width = range.width();
-    let header_rows = {
-        let mut rows = range.rows().skip(header_start);
-        [
-            normalize_header_row(rows.next().expect("checked len"), width),
-            normalize_header_row(rows.next().expect("checked len"), width),
-        ]
-    };
+    let header_rows = [
+        normalize_header_row(&range[header_start], width),
+        normalize_header_row(&range[header_start + 1], width),
+    ];
     let data_rows = (header_start + 2..height)
         .map(|row| {
             range[row]
@@ -85,15 +82,14 @@ fn find_header_start(range: &Range<Data>) -> Option<usize> {
 }
 
 fn is_header_pair(top: &[Data], bottom: &[Data]) -> bool {
-    let top_tokens = normalize_header_row(top, top.len());
-    let mut tokens = top_tokens.clone();
+    let mut tokens = normalize_header_row(top, top.len());
+    if !tokens.iter().any(|token| token == HEADER_ANCHOR) {
+        return false;
+    }
     tokens.extend(normalize_header_row(bottom, bottom.len()));
-
-    let has_anchor = top_tokens.iter().any(|token| token == HEADER_ANCHOR);
-    let has_hint = HEADER_HINTS
+    HEADER_HINTS
         .iter()
-        .any(|hint| tokens.iter().any(|token| token == hint));
-    has_anchor && has_hint
+        .any(|hint| tokens.iter().any(|token| token == hint))
 }
 
 fn normalize_header_row(row: &[Data], width: usize) -> Vec<String> {

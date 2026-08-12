@@ -131,7 +131,7 @@ struct MetricAudit {
 struct AnomalyRow<'a> {
     source: &'a QtyFactRow,
     numbers: BTreeMap<String, Decimal>,
-    production_scope: String,
+    production_scope: &'static str,
     can_analyze: bool,
     reasons: Vec<String>,
     audits: BTreeMap<&'static str, MetricAudit>,
@@ -296,7 +296,7 @@ fn build_anomaly_row<'a>(
     let total_unit_cost = numbers.get("total_unit_cost").copied().unwrap_or(ZERO);
     let can_analyze = completed_qty > ZERO
         && total_unit_cost > ZERO
-        && matches!(production_scope.as_str(), NORMAL_SCOPE | REWORK_SCOPE);
+        && matches!(production_scope, NORMAL_SCOPE | REWORK_SCOPE);
 
     Ok(AnomalyRow {
         source: row,
@@ -383,33 +383,30 @@ fn score_rows(rows: &mut [AnomalyRow<'_>], schema: &ColumnSchema) -> Result<(), 
                 .map(|(_, log_decimal, weight)| (*log_decimal, *weight))
                 .collect::<Vec<_>>();
             let Some(center_decimal) = weighted_median(&weighted_values) else {
-                for (index, _, _) in &valid {
-                    push_score_reason(
-                        &mut rows[*index],
-                        *metric,
-                        "异常池中心值缺失，不参与 Modified Z-score",
-                    );
-                }
+                push_group_score_reasons(
+                    rows,
+                    &valid,
+                    *metric,
+                    "异常池中心值缺失，不参与 Modified Z-score",
+                );
                 continue;
             };
             let Some(raw_mad_decimal) = weighted_mad(&weighted_values, center_decimal) else {
-                for (index, _, _) in &valid {
-                    push_score_reason(
-                        &mut rows[*index],
-                        *metric,
-                        "异常池MAD缺失，不参与 Modified Z-score",
-                    );
-                }
+                push_group_score_reasons(
+                    rows,
+                    &valid,
+                    *metric,
+                    "异常池MAD缺失，不参与 Modified Z-score",
+                );
                 continue;
             };
             let Some(effective_mad) = resolve_effective_log_mad(Some(raw_mad_decimal)) else {
-                for (index, _, _) in &valid {
-                    push_score_reason(
-                        &mut rows[*index],
-                        *metric,
-                        "有效MAD缺失，不参与 Modified Z-score",
-                    );
-                }
+                push_group_score_reasons(
+                    rows,
+                    &valid,
+                    *metric,
+                    "有效MAD缺失，不参与 Modified Z-score",
+                );
                 continue;
             };
 
@@ -449,6 +446,17 @@ fn score_rows(rows: &mut [AnomalyRow<'_>], schema: &ColumnSchema) -> Result<(), 
 fn push_score_reason(row: &mut AnomalyRow<'_>, metric: Metric, reason: &str) {
     row.reasons
         .push(format!("{}{}", metric.display_name, reason));
+}
+
+fn push_group_score_reasons(
+    rows: &mut [AnomalyRow<'_>],
+    valid: &[(usize, Decimal, Decimal)],
+    metric: Metric,
+    reason: &str,
+) {
+    for (index, _, _) in valid {
+        push_score_reason(&mut rows[*index], metric, reason);
+    }
 }
 
 fn append_non_positive_reasons(rows: &mut [AnomalyRow<'_>], metric: Metric) {
@@ -560,16 +568,17 @@ fn map_work_order_value(
     column: &str,
     config: &PipelineRules,
 ) -> Result<CellValue, CostingError> {
+    let value = |keys: &[&str]| value_any(schema, row.source, keys);
     Ok(match column {
-        "月份" => value_any(schema, row.source, &["period_display", "月份", "年期"])?,
-        "成本中心" => value_any(schema, row.source, &["cost_center", "成本中心名称"])?,
-        "产品编码" => value_any(schema, row.source, &["product_code", "产品编码"])?,
-        "产品名称" => value_any(schema, row.source, &["product_name", "产品名称"])?,
-        "规格型号" => value_any(schema, row.source, &["spec", "规格型号"])?,
-        "工单编号" => value_any(schema, row.source, &["order_no", "工单编号"])?,
-        "工单行" => value_any(schema, row.source, &["order_line", "工单行号"])?,
-        "生产类型" => CellValue::Text(row.production_scope.clone().into()),
-        "基本单位" => value_any(schema, row.source, &["unit", "基本单位"])?,
+        "月份" => value(&["period_display", "月份", "年期"])?,
+        "成本中心" => value(&["cost_center", "成本中心名称"])?,
+        "产品编码" => value(&["product_code", "产品编码"])?,
+        "产品名称" => value(&["product_name", "产品名称"])?,
+        "规格型号" => value(&["spec", "规格型号"])?,
+        "工单编号" => value(&["order_no", "工单编号"])?,
+        "工单行" => value(&["order_line", "工单行号"])?,
+        "生产类型" => CellValue::Text(row.production_scope.into()),
+        "基本单位" => value(&["unit", "基本单位"])?,
         "本期完工数量" => decimal_value(row, "completed_qty"),
         "总完工成本" => decimal_value(row, "completed_amount_total"),
         "直接材料合计完工金额" => decimal_value(row, "dm_amount"),
@@ -696,12 +705,7 @@ fn text_any(
     row: &QtyFactRow,
     keys: &[&str],
 ) -> Result<String, CostingError> {
-    for key in keys {
-        if let Some(id) = schema.optional(key) {
-            return Ok(cell_to_text(row.source.get(id)?));
-        }
-    }
-    Ok(String::new())
+    Ok(cell_to_text(&value_any(schema, row, keys)?))
 }
 
 fn cell_to_text(value: &CellValue) -> String {
@@ -749,11 +753,11 @@ fn severity_rank_for(value: &str) -> i32 {
     }
 }
 
-fn map_doc_type_to_scope(value: &str) -> String {
+fn map_doc_type_to_scope(value: &str) -> &'static str {
     match value.trim() {
-        "汇报入库-普通生产" | "直接入库-普通生产" => NORMAL_SCOPE.to_string(),
-        "汇报入库-返工生产" => REWORK_SCOPE.to_string(),
-        _ => UNKNOWN_SCOPE.to_string(),
+        "汇报入库-普通生产" | "直接入库-普通生产" => NORMAL_SCOPE,
+        "汇报入库-返工生产" => REWORK_SCOPE,
+        _ => UNKNOWN_SCOPE,
     }
 }
 

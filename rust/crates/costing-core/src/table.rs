@@ -114,17 +114,13 @@ impl IndexedRow {
         Ok(&self.cells[slot])
     }
 
-    pub(crate) fn get_mut(&mut self, id: ColumnId) -> Result<&mut CellValue, CostingError> {
-        let slot = self.validate_id(id)?;
-        Ok(&mut self.cells[slot])
-    }
-
     pub(crate) fn replace(
         &mut self,
         id: ColumnId,
         value: CellValue,
     ) -> Result<CellValue, CostingError> {
-        Ok(std::mem::replace(self.get_mut(id)?, value))
+        let slot = self.validate_id(id)?;
+        Ok(std::mem::replace(&mut self.cells[slot], value))
     }
 
     pub(crate) fn take(&mut self, id: ColumnId) -> Result<CellValue, CostingError> {
@@ -270,10 +266,9 @@ impl IndexedTable {
                     .source_display_order
                     .iter()
                     .position(|source_id| {
-                        matches!(
-                            self.schema.name(*source_id),
-                            Ok(name) if name == source_name
-                        )
+                        self.schema
+                            .name(*source_id)
+                            .is_ok_and(|name| name == source_name)
                     })
                     .map_or(self.source_display_order.len(), |index| index + 1);
                 self.source_display_order.insert(insert_at, id);
@@ -338,9 +333,6 @@ impl ProjectionPlan {
 
     pub(crate) fn project_row(&self, mut row: IndexedRow) -> Result<Vec<CellValue>, CostingError> {
         row.validate_shape(self.expected_schema_id, self.expected_width)?;
-        for step in &self.steps {
-            row.validate_id(step.id)?;
-        }
         self.steps
             .iter()
             .map(|step| match step.mode {
@@ -349,6 +341,16 @@ impl ProjectionPlan {
             })
             .collect()
     }
+}
+
+fn display_slots(
+    schema: &ColumnSchema,
+    display_order: &[ColumnId],
+) -> Result<Vec<usize>, CostingError> {
+    display_order
+        .iter()
+        .map(|id| schema.validate_id(*id))
+        .collect()
 }
 
 impl PartialEq for IndexedTable {
@@ -391,16 +393,6 @@ impl Serialize for IndexedTable {
         }
         .serialize(serializer)
     }
-}
-
-fn display_slots(
-    schema: &ColumnSchema,
-    display_order: &[ColumnId],
-) -> Result<Vec<usize>, CostingError> {
-    display_order
-        .iter()
-        .map(|id| schema.validate_id(*id))
-        .collect()
 }
 
 #[cfg(test)]

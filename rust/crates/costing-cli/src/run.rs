@@ -153,33 +153,19 @@ pub(crate) fn run_with_audit(
         timings.insert("total", started.elapsed().as_secs_f64());
     }
 
-    let detail_rows = required_quality_count(&payload.quality_metrics, "成本明细输入行数")
-        .map_err(|error| {
+    let quality_count = |metric_name: &str| {
+        required_quality_count(&payload.quality_metrics, metric_name).map_err(|error| {
             with_stage_context(
                 error,
                 &request_id,
                 ErrorStage::BuildPresentation,
                 Some(input.clone()),
             )
-        })?;
-    let qty_rows = required_quality_count(&payload.quality_metrics, "产品数量统计输出行数")
-        .map_err(|error| {
-            with_stage_context(
-                error,
-                &request_id,
-                ErrorStage::BuildPresentation,
-                Some(input.clone()),
-            )
-        })?;
-    let work_order_rows = required_quality_count(&payload.quality_metrics, "工单异常分析输出行数")
-        .map_err(|error| {
-            with_stage_context(
-                error,
-                &request_id,
-                ErrorStage::BuildPresentation,
-                Some(input.clone()),
-            )
-        })?;
+        })
+    };
+    let detail_rows = quality_count("成本明细输入行数")?;
+    let qty_rows = quality_count("产品数量统计输出行数")?;
+    let work_order_rows = quality_count("工单异常分析输出行数")?;
     let qty_sheet_rows = payload
         .sheet_models
         .iter()

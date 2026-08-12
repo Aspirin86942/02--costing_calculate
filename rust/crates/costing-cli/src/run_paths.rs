@@ -197,23 +197,7 @@ pub(super) fn validate_cli_request_from(args: &RunRequest, cwd: &Path) -> Result
                 "输入文件与输出文件不能是同一文件",
             ));
         }
-        match output.try_exists() {
-            Ok(true) => {
-                return Err(CostingError::io(
-                    ErrorCode::OutputExists,
-                    format!("输出 workbook 已存在: {}", output.display()),
-                    output.clone(),
-                ));
-            }
-            Ok(false) => {}
-            Err(source) => {
-                return Err(CostingError::io(
-                    ErrorCode::OutputNotWritable,
-                    format!("无法检查输出 workbook 路径 {}: {source}", output.display()),
-                    output.clone(),
-                ));
-            }
-        }
+        reject_if_exists(output, "输出 workbook")?;
     }
     if let Some(summary_output) = args.summary_output.as_ref() {
         if let Some(output) = args.output.as_ref() {
@@ -223,28 +207,25 @@ pub(super) fn validate_cli_request_from(args: &RunRequest, cwd: &Path) -> Result
                 ));
             }
         }
-        match summary_output.try_exists() {
-            Ok(true) => {
-                return Err(CostingError::io(
-                    ErrorCode::OutputExists,
-                    format!("运行 Manifest 已存在: {}", summary_output.display()),
-                    summary_output.clone(),
-                ));
-            }
-            Ok(false) => {}
-            Err(source) => {
-                return Err(CostingError::io(
-                    ErrorCode::OutputNotWritable,
-                    format!(
-                        "无法检查运行 Manifest 路径 {}: {source}",
-                        summary_output.display()
-                    ),
-                    summary_output.clone(),
-                ));
-            }
-        }
+        reject_if_exists(summary_output, "运行 Manifest")?;
     }
     Ok(())
+}
+
+fn reject_if_exists(path: &Path, kind: &str) -> Result<(), CostingError> {
+    match path.try_exists() {
+        Ok(true) => Err(CostingError::io(
+            ErrorCode::OutputExists,
+            format!("{kind} 已存在: {}", path.display()),
+            path.to_path_buf(),
+        )),
+        Ok(false) => Ok(()),
+        Err(source) => Err(CostingError::io(
+            ErrorCode::OutputNotWritable,
+            format!("无法检查{kind} 路径 {}: {source}", path.display()),
+            path.to_path_buf(),
+        )),
+    }
 }
 
 fn paths_resolve_to_same_file(input: &Path, output: &Path, cwd: &Path) -> bool {

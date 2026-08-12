@@ -36,13 +36,13 @@ fn execute_with_publisher(
                 ErrorStage::ResolveCliPaths,
                 None,
             ));
-            return RunOutcome::Failed(failure_from_error(&error));
+            return RunOutcome::Failed(ErrorSummary::from_error(&error));
         }
     };
     let mut audit = RunAudit::new(&request, summary_output.is_some(), cwd.clone());
     if let Some(path) = summary_output.as_deref() {
         if let Err(error) = preflight_summary_output(path, &request_id) {
-            let mut failure = failure_from_error(&error);
+            let mut failure = ErrorSummary::from_error(&error);
             if redact_paths {
                 redact_failure_paths(&mut failure, &cwd);
             }
@@ -53,7 +53,7 @@ fn execute_with_publisher(
         Ok(loaded) => loaded,
         Err(error) => {
             return failed_outcome(
-                failure_from_error(&error),
+                ErrorSummary::from_error(&error),
                 &request_id,
                 summary_output.as_deref(),
                 None,
@@ -72,7 +72,7 @@ fn execute_with_publisher(
                 request.config.clone(),
             ));
             return failed_outcome(
-                failure_from_error(&error),
+                ErrorSummary::from_error(&error),
                 &request_id,
                 summary_output.as_deref(),
                 None,
@@ -96,26 +96,18 @@ fn execute_with_publisher(
             ) {
                 Ok(mut summary) => {
                     if let Some(path) = summary_output.as_deref() {
-                        let manifest = match audit.build_success(
-                            &request_id,
-                            &effective_document,
-                            &summary,
-                            redact_paths,
-                        ) {
-                            Ok(manifest) => manifest,
-                            Err(error) => {
-                                let error = error.with_context(ErrorContext::new(
+                        let publish_result = audit
+                            .build_success(&request_id, &effective_document, &summary, redact_paths)
+                            .map_err(|error| {
+                                error.with_context(ErrorContext::new(
                                     &request_id,
                                     ErrorStage::BuildManifest,
                                     Some(path.to_path_buf()),
-                                ));
-                                let mut failure = failure_from_error(&error);
-                                audit.enrich_failure(&mut failure, redact_paths);
-                                return RunOutcome::Failed(failure);
-                            }
-                        };
-                        if let Err(error) = publisher(path, &request_id, &manifest) {
-                            let mut failure = failure_from_error(&error);
+                                ))
+                            })
+                            .and_then(|manifest| publisher(path, &request_id, &manifest));
+                        if let Err(error) = publish_result {
+                            let mut failure = ErrorSummary::from_error(&error);
                             audit.enrich_failure(&mut failure, redact_paths);
                             return RunOutcome::Failed(failure);
                         }
@@ -152,7 +144,7 @@ fn failed_outcome(
     if let Some(path) = summary_output {
         let manifest = audit.build_failure(request_id, config, &failure, redact_paths);
         if let Err(manifest_error) = publisher(path, request_id, &manifest) {
-            let mut manifest_failure = failure_from_error(&manifest_error);
+            let mut manifest_failure = ErrorSummary::from_error(&manifest_error);
             if redact_paths {
                 redact_failure_paths(&mut manifest_failure, audit.cwd());
             }
@@ -185,10 +177,6 @@ fn failure_from_anyhow(error: &anyhow::Error) -> ErrorSummary {
             request_id: None,
             details: None,
         })
-}
-
-fn failure_from_error(error: &CostingError) -> ErrorSummary {
-    ErrorSummary::from_error(error)
 }
 
 fn new_request_id() -> String {

@@ -47,16 +47,15 @@ struct NormalizeColumns {
 
 impl NormalizeColumns {
     fn resolve(schema: &ColumnSchema) -> Self {
+        let period = schema.optional(PERIOD_COLUMN);
+        let month = schema.optional(MONTH_COLUMN);
+        let cost_center = schema.optional(COST_CENTER_COLUMN);
         Self {
-            period: schema.optional(PERIOD_COLUMN),
-            month: schema.optional(MONTH_COLUMN),
-            cost_center: schema.optional(COST_CENTER_COLUMN),
+            period,
+            month,
+            cost_center,
             cost_item: schema.optional(COST_ITEM_COLUMN),
-            total_row_columns: [
-                schema.optional(PERIOD_COLUMN),
-                schema.optional(MONTH_COLUMN),
-                schema.optional(COST_CENTER_COLUMN),
-            ],
+            total_row_columns: [period, month, cost_center],
             fill_columns: FILL_COLUMNS
                 .iter()
                 .filter_map(|name| {
@@ -127,7 +126,7 @@ pub fn normalize_workbook(
     ))
 }
 
-pub fn flatten_headers(header_rows: &[Vec<String>; 2]) -> Vec<String> {
+fn flatten_headers(header_rows: &[Vec<String>; 2]) -> Vec<String> {
     let width = header_rows[0].len().max(header_rows[1].len());
     (0..width)
         .map(|index| {
@@ -175,25 +174,28 @@ fn normalize_key_column_names(columns: &mut [String]) {
 fn infer_rename_map(columns: &[String]) -> BTreeMap<String, String> {
     let mut rename_map = BTreeMap::new();
 
-    if !columns.iter().any(|column| column == CHILD_MATERIAL_COLUMN) {
-        if let Some(candidate) = columns
-            .iter()
-            .find(|column| column.contains("物料编码") || column.contains("子件"))
-        {
-            rename_map.insert(candidate.clone(), CHILD_MATERIAL_COLUMN.to_string());
-        }
+    if let Some(candidate) = infer_alias(columns, CHILD_MATERIAL_COLUMN, &["物料编码", "子件"])
+    {
+        rename_map.insert(candidate, CHILD_MATERIAL_COLUMN.to_string());
     }
 
-    if !columns.iter().any(|column| column == COST_ITEM_COLUMN) {
-        if let Some(candidate) = columns
-            .iter()
-            .find(|column| column.contains("成本项目") || column.contains("费用项目"))
-        {
-            rename_map.insert(candidate.clone(), COST_ITEM_COLUMN.to_string());
-        }
+    if let Some(candidate) = infer_alias(columns, COST_ITEM_COLUMN, &["成本项目", "费用项目"])
+    {
+        rename_map.insert(candidate, COST_ITEM_COLUMN.to_string());
     }
 
     rename_map
+}
+
+/// 规范列缺失时，按关键字顺序找第一个候选别名列；规范列已存在则返回 None。
+fn infer_alias(columns: &[String], canonical: &str, keywords: &[&str]) -> Option<String> {
+    if columns.iter().any(|column| column == canonical) {
+        return None;
+    }
+    columns
+        .iter()
+        .find(|column| keywords.iter().any(|keyword| column.contains(*keyword)))
+        .cloned()
 }
 
 fn is_total_row(row: &IndexedRow, columns: &NormalizeColumns) -> Result<bool, CostingError> {
@@ -222,21 +224,18 @@ fn forward_fill_with_rules(
                 .transpose()?
                 .unwrap_or(false);
 
-            if is_blank_like(&current) {
-                if column.is_vendor && integrated_row {
-                    continue;
-                }
-                if let Some(previous) = last_values[index].clone() {
-                    row.replace(column.id, previous)?;
-                }
+            // 集成车间行：供应商列不向下填充，也不作为向下填充的种子，避免跨工单串值。
+            if column.is_vendor && integrated_row {
                 continue;
             }
 
-            if column.is_vendor && integrated_row {
-                // 集成车间行不能成为供应商向下填充的种子，避免跨工单串值。
-                continue;
+            if is_blank_like(&current) {
+                if let Some(previous) = last_values[index].clone() {
+                    row.replace(column.id, previous)?;
+                }
+            } else {
+                last_values[index] = Some(current);
             }
-            last_values[index] = Some(current);
         }
         Ok(())
     })
@@ -249,6 +248,24 @@ fn derive_month_values(
     rows.iter()
         .map(|row| row.get(period).map(format_period_value))
         .collect()
+}
+
+fn format_period_value(value: &CellValue) -> CellValue {
+    let text = cell_text(value);
+    if text.is_empty() {
+        return CellValue::Blank;
+    }
+
+    if text.contains('年') && text.contains('期') {
+        if let Some(period_key) = normalize_period_key_from_text(&text) {
+            // period_key 恒为 ASCII "YYYY-MM"，字节切片安全。
+            return CellValue::Text(
+                format!("{}年{}期", &period_key[0..4], &period_key[5..7]).into(),
+            );
+        }
+    }
+
+    CellValue::Text(text.into())
 }
 
 fn derive_filled_cost_item_values(
@@ -272,54 +289,33 @@ fn derive_filled_cost_item_values(
     Ok(values)
 }
 
-fn format_period_value(value: &CellValue) -> CellValue {
-    let text = cell_text(value);
-    if text.is_empty() {
-        return CellValue::Blank;
-    }
-
-    if text.contains('年') && text.contains('期') {
-        if let Some(period_key) = normalize_period_key_from_text(&text) {
-            let year = &period_key[0..4];
-            let month = &period_key[5..7];
-            return CellValue::Text(format!("{year}年{month}期").into());
-        }
-    }
-
-    CellValue::Text(text.into())
-}
-
 fn month_in_range(
     row: &IndexedRow,
     month: Option<ColumnId>,
     period: Option<ColumnId>,
     range: &MonthRange,
 ) -> Result<bool, CostingError> {
-    let normalized = month
-        .map(|id| row.get(id).map(normalize_period_key))
-        .transpose()?
-        .flatten()
-        .or(period
-            .map(|id| row.get(id).map(normalize_period_key))
-            .transpose()?
-            .flatten());
+    let Some(period_key) = period_key_of(row, month)?.or(period_key_of(row, period)?) else {
+        return Ok(false);
+    };
+    Ok(range
+        .start
+        .as_ref()
+        .is_none_or(|start| period_key.as_str() >= start.as_str())
+        && range
+            .end
+            .as_ref()
+            .is_none_or(|end| period_key.as_str() <= end.as_str()))
+}
 
-    Ok(match normalized {
-        None => false,
-        Some(period) => {
-            let after_start = range
-                .start
-                .as_ref()
-                .map(|start| period.as_str() >= start.as_str())
-                .unwrap_or(true);
-            let before_end = range
-                .end
-                .as_ref()
-                .map(|end| period.as_str() <= end.as_str())
-                .unwrap_or(true);
-            after_start && before_end
-        }
-    })
+fn period_key_of(
+    row: &IndexedRow,
+    column: Option<ColumnId>,
+) -> Result<Option<String>, CostingError> {
+    column
+        .map(|id| row.get(id).map(normalize_period_key))
+        .transpose()
+        .map(Option::flatten)
 }
 
 fn normalize_month_range(range: MonthRange) -> Result<MonthRange, CostingError> {
@@ -345,30 +341,28 @@ fn normalize_cli_month(
 
     let trimmed = value.trim();
     let Some((year, month)) = trimmed.split_once('-') else {
-        return Err(CostingError::invalid_input(format!(
-            "{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"
-        )));
+        return Err(invalid_cli_month(field_name, value));
     };
     if year.len() != 4
         || month.len() != 2
         || !year.chars().all(|ch| ch.is_ascii_digit())
         || !month.chars().all(|ch| ch.is_ascii_digit())
     {
-        return Err(CostingError::invalid_input(format!(
-            "{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"
-        )));
+        return Err(invalid_cli_month(field_name, value));
     }
 
-    let month_number: u32 = month.parse().map_err(|_| {
-        CostingError::invalid_input(format!("{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"))
-    })?;
+    let month_number: u32 = month
+        .parse()
+        .map_err(|_| invalid_cli_month(field_name, value))?;
     if !(1..=12).contains(&month_number) {
-        return Err(CostingError::invalid_input(format!(
-            "{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"
-        )));
+        return Err(invalid_cli_month(field_name, value));
     }
 
     Ok(Some(format!("{year}-{month_number:02}")))
+}
+
+fn invalid_cli_month(field_name: &str, value: &str) -> CostingError {
+    CostingError::invalid_input(format!("{field_name} 必须是 YYYY-MM 格式，收到: {value:?}"))
 }
 
 fn normalize_period_key(value: &CellValue) -> Option<String> {

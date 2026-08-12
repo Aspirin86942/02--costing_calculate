@@ -262,11 +262,7 @@ impl RunAudit {
             month_end: request.month_end.clone(),
             config_path: request.config.clone(),
             input_path: request.input.clone(),
-            input_file_name: request
-                .input
-                .as_deref()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().into_owned()),
+            input_file_name: request.input.as_deref().and_then(file_name_of),
             input_size_bytes: None,
             input_sha256: None,
             selected_sheet: None,
@@ -291,9 +287,7 @@ impl RunAudit {
 
     pub(crate) fn record_resolved_paths(&mut self, input: &Path, output: Option<&Path>) {
         self.input_path = Some(input.to_path_buf());
-        self.input_file_name = input
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
+        self.input_file_name = file_name_of(input);
         self.output_path = output.map(Path::to_path_buf);
     }
 
@@ -375,12 +369,12 @@ impl RunAudit {
             application: application_identity(),
             execution: self.execution_identity(),
             input: ManifestInput {
-                path: present_path(input_path, &self.cwd, redact_paths),
-                file_name: input_file_name.clone(),
-                size_bytes: *input_size_bytes,
-                sha256: input_sha256.clone(),
-                selected_sheet: selected_sheet.clone(),
-                reader_rows: *reader_rows,
+                path: present_path(&input_path, &self.cwd, redact_paths),
+                file_name: input_file_name,
+                size_bytes: input_size_bytes,
+                sha256: input_sha256,
+                selected_sheet,
+                reader_rows,
             },
             filter: self.filter_identity(),
             config: self.config_identity(config, redact_paths),
@@ -540,17 +534,17 @@ impl RunAudit {
 }
 
 pub(crate) fn redact_run_summary(summary: &mut RunSummary, cwd: &Path) {
-    summary.workbook_path = summary.workbook_path.as_deref().map(|path| {
-        let path = Path::new(path);
-        present_path(path, cwd, true)
-    });
+    summary.workbook_path = summary
+        .workbook_path
+        .as_deref()
+        .map(|path| present_path(Path::new(path), cwd, true));
 }
 
 pub(crate) fn redact_failure_paths(failure: &mut ErrorSummary, cwd: &Path) {
     let Some(details) = failure.details.as_mut() else {
         return;
     };
-    let diagnostic_paths = std::iter::once(details.path.as_deref())
+    for path in std::iter::once(details.path.as_deref())
         .chain(std::iter::once(
             details
                 .final_output
@@ -564,9 +558,7 @@ pub(crate) fn redact_failure_paths(failure: &mut ErrorSummary, cwd: &Path) {
                 .map(|cleanup| cleanup.path.as_deref()),
         )
         .flatten()
-        .map(Path::to_path_buf)
-        .collect::<Vec<_>>();
-    for path in &diagnostic_paths {
+    {
         redact_path_in_message(&mut failure.message, path, cwd);
     }
     details.path = details
@@ -602,7 +594,7 @@ pub(crate) fn sha256_file(path: &Path) -> io::Result<(u64, String)> {
     let size_bytes = file.metadata()?.len();
     let mut reader = BufReader::new(file);
     let mut digest = Sha256::new();
-    let mut buffer = vec![0_u8; 64 * 1024];
+    let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = reader.read(&mut buffer)?;
         if read == 0 {
@@ -637,29 +629,24 @@ pub(crate) fn publish_manifest(
 }
 
 pub(crate) fn preflight_summary_output(path: &Path, request_id: &str) -> Result<(), CostingError> {
-    match path.try_exists() {
-        Ok(false) => Ok(()),
-        Ok(true) => Err(CostingError::io(
+    let error = match path.try_exists() {
+        Ok(false) => return Ok(()),
+        Ok(true) => CostingError::io(
             ErrorCode::OutputExists,
             format!("运行 Manifest 已存在: {}", path.display()),
             path.to_path_buf(),
-        )
-        .with_context(ErrorContext::new(
-            request_id,
-            ErrorStage::CheckSummaryOutput,
-            Some(path.to_path_buf()),
-        ))),
-        Err(source) => Err(CostingError::io_with_source(
+        ),
+        Err(source) => CostingError::io_with_source(
             ErrorCode::OutputNotWritable,
             format!("无法检查运行 Manifest 路径 {}: {source}", path.display()),
             source,
-        )
-        .with_context(ErrorContext::new(
-            request_id,
-            ErrorStage::CheckSummaryOutput,
-            Some(path.to_path_buf()),
-        ))),
-    }
+        ),
+    };
+    Err(error.with_context(ErrorContext::new(
+        request_id,
+        ErrorStage::CheckSummaryOutput,
+        Some(path.to_path_buf()),
+    )))
 }
 
 fn publish_manifest_with_hook(
@@ -793,9 +780,10 @@ fn application_identity() -> ManifestApplication {
     }
 }
 
-fn required<'a, T>(value: &'a Option<T>, field: &str) -> Result<&'a T, CostingError> {
+fn required<T: Clone>(value: &Option<T>, field: &str) -> Result<T, CostingError> {
     value
         .as_ref()
+        .cloned()
         .ok_or_else(|| CostingError::internal(format!("运行 Manifest 缺少必需字段 {field}")))
 }
 
@@ -821,6 +809,11 @@ fn present_path(path: &Path, cwd: &Path, redact: bool) -> String {
         .or_else(|| absolute.file_name())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "redacted".to_string())
+}
+
+fn file_name_of(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
 }
 
 fn absolute_lexical(path: &Path, cwd: &Path) -> PathBuf {

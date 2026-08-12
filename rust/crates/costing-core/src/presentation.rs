@@ -1,9 +1,12 @@
+use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 
 use crate::anomaly::build_work_order_anomaly_sheet;
 use crate::error::CostingError;
 use crate::fact::qty_sheet_columns;
-use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel, StageTimings, WorkbookPayload};
+use crate::model::{
+    CellValue, CostAmounts, FactBundle, QtyFactRow, SheetModel, StageTimings, WorkbookPayload,
+};
 use crate::pipeline::PipelineRules;
 use crate::quality::build_quality_metrics;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow, ProjectionPlan};
@@ -98,16 +101,12 @@ fn build_flat_sheet(
         .into_iter()
         .map(|row| plan.project_row(row))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(SheetModel {
-        sheet_name: sheet_name.to_string(),
-        column_types: build_column_types(&columns),
-        number_formats: build_number_formats(&number_format_columns(&columns)),
+    Ok(build_sheet_model(
+        sheet_name,
         columns,
-        rows: sheet_rows,
-        freeze_panes: Some("A2".to_string()),
-        auto_filter: true,
-        fixed_width: Some(15.0),
-    })
+        number_format_columns,
+        sheet_rows,
+    ))
 }
 
 // 这些参数逐项对应冻结的工作簿契约；合并为不透明配置对象反而会弱化调用处的审计性。
@@ -131,21 +130,34 @@ fn build_typed_qty_sheet(
         cells.extend(derived);
         sheet_rows.push(cells);
     }
-    Ok(SheetModel {
+    Ok(build_sheet_model(
+        sheet_name,
+        columns,
+        number_format_columns,
+        sheet_rows,
+    ))
+}
+
+fn build_sheet_model(
+    sheet_name: &str,
+    columns: Vec<String>,
+    number_format_columns: fn(&[String]) -> Vec<String>,
+    rows: Vec<Vec<CellValue>>,
+) -> SheetModel {
+    SheetModel {
         sheet_name: sheet_name.to_string(),
         column_types: build_column_types(&columns),
         number_formats: build_number_formats(&number_format_columns(&columns)),
         columns,
-        rows: sheet_rows,
+        rows,
         freeze_panes: Some("A2".to_string()),
         auto_filter: true,
         fixed_width: Some(15.0),
-    })
+    }
 }
 
-fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: &PipelineRules) {
-    let amounts = &row.amounts;
-    for amount in [
+fn standard_amounts(amounts: &CostAmounts) -> [Decimal; 8] {
+    [
         amounts.direct_material,
         amounts.direct_labor,
         amounts.manufacturing_overhead,
@@ -154,57 +166,54 @@ fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: 
         amounts.moh_consumables,
         amounts.moh_depreciation,
         amounts.moh_utilities,
-    ] {
+    ]
+}
+
+fn append_typed_qty_cells(cells: &mut Vec<CellValue>, row: &QtyFactRow, config: &PipelineRules) {
+    let amounts = &row.amounts;
+    let standard = standard_amounts(amounts);
+    let completed_qty = row.completed_qty;
+
+    for amount in standard {
         cells.push(CellValue::Decimal(amount));
     }
     for index in 0..config.standalone_cost_items.len() {
         cells.push(CellValue::Decimal(amounts.standalone_amount(index)));
     }
 
-    for amount in [
-        amounts.direct_material,
-        amounts.direct_labor,
-        amounts.manufacturing_overhead,
-        amounts.moh_other,
-        amounts.moh_labor,
-        amounts.moh_consumables,
-        amounts.moh_depreciation,
-        amounts.moh_utilities,
-    ] {
-        cells.push(decimal_or_blank(safe_divide(amount, row.completed_qty)));
+    for amount in standard {
+        cells.push(decimal_or_blank(safe_divide(amount, completed_qty)));
     }
     for index in 0..config.standalone_cost_items.len() {
         cells.push(decimal_or_blank(safe_divide(
             amounts.standalone_amount(index),
-            row.completed_qty,
+            completed_qty,
         )));
     }
 
     cells.push(CellValue::Text(yes_no(row.moh_matches).into()));
     cells.push(CellValue::Text(yes_no(row.total_matches).into()));
-    cells.push(CellValue::Text(
-        if row.check_reason.is_empty() {
-            "通过"
-        } else {
-            "需复核"
-        }
-        .into(),
-    ));
+    cells.push(CellValue::Text(check_status(&row.check_reason).into()));
     cells.push(CellValue::Text(row.check_reason.clone().into()));
 }
 
-fn safe_divide(
-    numerator: rust_decimal::Decimal,
-    denominator: rust_decimal::Decimal,
-) -> Option<rust_decimal::Decimal> {
-    if denominator == rust_decimal::Decimal::ZERO {
+fn check_status(check_reason: &str) -> &'static str {
+    if check_reason.is_empty() {
+        "通过"
+    } else {
+        "需复核"
+    }
+}
+
+fn safe_divide(numerator: Decimal, denominator: Decimal) -> Option<Decimal> {
+    if denominator == Decimal::ZERO {
         None
     } else {
         numerator.checked_div(denominator)
     }
 }
 
-fn decimal_or_blank(value: Option<rust_decimal::Decimal>) -> CellValue {
+fn decimal_or_blank(value: Option<Decimal>) -> CellValue {
     value.map(CellValue::Decimal).unwrap_or(CellValue::Blank)
 }
 
@@ -251,13 +260,15 @@ fn detail_number_format_columns(columns: &[String]) -> Vec<String> {
 fn qty_number_format_columns(columns: &[String]) -> Vec<String> {
     columns
         .iter()
-        .filter(|column| {
-            QTY_TWO_DECIMAL_COLUMNS.contains(&column.as_str())
-                || ((column.starts_with("本期完工") && column.ends_with("合计完工金额"))
-                    || column.ends_with("单位完工成本"))
-        })
+        .filter(|column| needs_two_decimal_format(column))
         .cloned()
         .collect()
+}
+
+fn needs_two_decimal_format(column: &str) -> bool {
+    QTY_TWO_DECIMAL_COLUMNS.contains(&column)
+        || ((column.starts_with("本期完工") && column.ends_with("合计完工金额"))
+            || column.ends_with("单位完工成本"))
 }
 
 fn ensure_no_product_dimension(sheets: &[SheetModel]) -> Result<(), CostingError> {

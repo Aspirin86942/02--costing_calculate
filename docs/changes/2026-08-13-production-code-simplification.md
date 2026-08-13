@@ -42,7 +42,7 @@ GB N=5 用当前 `data/raw/gb` 样本(sha `99644502…`,40,057 明细行)时输�
 
 原始冻结样本在本机找到:`D:\01- 工作\2026年\28- 如本尽调\PBE\成本\gb-成本计算单_2026070916484310_100160.xlsx`(sha 与冻结值完全一致)。用它重跑 GB N=5 全部通过(见上)。
 
-**待用户决定**:是否把原始样本恢复进 `data/raw/gb/`(否则以当前样本跑验收时 GB 输出门槛必然超限,且 CLI 自动发现会使用当前样本)。
+**已处理(2026-08-13,用户批准)**:原始冻结样本已恢复进 `data/raw/gb/`(sha `6aa5e3e7…` 与冻结一致,自动发现恢复正常);被替换的新导出样本移至 `data/raw/gb-replaced-2026-08-13/` 保留。`data/raw/` 为 gitignore 目录,不入库。
 
 ## 优化候选清单(只记录,未实施;是否另开优化阶段由用户决定)
 
@@ -70,9 +70,9 @@ GB N=5 用当前 `data/raw/gb` 样本(sha `99644502…`,40,057 明细行)时输�
 - reader `header_start+1` 直接索引缺不变量注释(不变量由 `find_header_start` 结构保证)
 - run_paths.rs `reject_if_exists` 与 manifest.rs `preflight_summary_output` 存在近重复检查(跨阶段、context 不同,可选跟进)
 
-## 工具健壮性发现(建议后续修复)
+## 工具健壮性发现(已修复)
 
-`tools/validation/measure_release.ps1` 从 Git Bash 启动时,宿主控制台代码页为 GBK,.NET `Process` 默认以 GBK 解码 CLI 的 UTF-8 stdout,中文串奇数高字节会吞掉后续 ASCII 引号导致 JSON 解析失败。建议在脚本中设置 `$psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8`。本次验收改用 UTF-8 控制台的 PowerShell 会话跑通。
+`tools/validation/measure_release.ps1` 与 `measure_paired_release.ps1` 从 Git Bash 启动时,宿主控制台代码页为 GBK,.NET `Process` 默认以 GBK 解码 CLI 的 UTF-8 stdout,中文串奇数高字节会吞掉后续 ASCII 引号导致 JSON 解析失败。已修复(2026-08-13,用户批准):两个脚本均增加 `$startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8`,并经 bash→pwsh 启动 GB 实测(measure_release.ps1,Iterations 1,status=passed)验证通过。
 
 ## 剩余风险
 

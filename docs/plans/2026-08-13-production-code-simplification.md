@@ -1,6 +1,6 @@
 # 生产代码深度简化计划
 
-- 状态：Approved
+- 状态：Completed（实际结果见 `../changes/2026-08-13-production-code-simplification.md`）
 - 日期：2026-08-13
 - 依据：用户指令「简化整个项目深度简化」+ `code-simplification` skill（用户级已安装）
 

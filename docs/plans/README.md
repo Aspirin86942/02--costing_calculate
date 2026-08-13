@@ -13,6 +13,8 @@
 
 ## 当前文件
 
+- [`2026-08-13-production-code-simplification.md`](2026-08-13-production-code-simplification.md)：Completed，生产代码深度简化计划（结果见 `../changes/2026-08-13-production-code-simplification.md`）。
+- [`2026-08-13-production-code-simplification-implementation.md`](2026-08-13-production-code-simplification-implementation.md)：Completed，深度简化的 13 任务实施计划（每批门禁、护栏与检查点）。
 - [`2026-07-28-sk-performance-optimization.md`](2026-07-28-sk-performance-optimization.md)：Completed，SK 管线多候选实验、reader/T3-A 采纳与最终验证计划。
 - [`2026-07-27-v0.3.0-project-cleanup.md`](2026-07-27-v0.3.0-project-cleanup.md)：v0.3.0 Rust 收敛、Python 退役与文档/发布整理计划。
 - [`python_retirement_after_rust.md`](python_retirement_after_rust.md)：已完成的 Python 退役计划，实际结果见对应 change 记录。

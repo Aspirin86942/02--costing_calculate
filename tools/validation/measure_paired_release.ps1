@@ -417,6 +417,7 @@ function Invoke-MeasurementRun {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     [void]$startInfo.ArgumentList.Add($RunPipeline)
     [void]$startInfo.ArgumentList.Add('--input')
     [void]$startInfo.ArgumentList.Add($InputWorkbook)

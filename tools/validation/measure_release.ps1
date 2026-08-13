@@ -90,6 +90,7 @@ for ($iteration = 1; $iteration -le $Iterations; $iteration++) {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     [void]$startInfo.ArgumentList.Add($Pipeline)
     [void]$startInfo.ArgumentList.Add('--input')
     [void]$startInfo.ArgumentList.Add($inputWorkbook)

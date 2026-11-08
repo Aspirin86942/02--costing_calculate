@@ -45,6 +45,6 @@ GB 真实样本的本地验收报告：`.pytest-tmp/gb-real-validation.json`；�
 
 当前 Linux 实测覆盖 Debian 13 x86_64。GNU/Linux 二进制依赖兼容的系统运行库，其他环境应在目标系统构建或先确认 glibc 兼容性。
 Windows 发布包、SK 真实 workbook、Excel / WPS 视觉复核和正式性能门禁在本轮为未验证；性能基线继续使用已有 Windows 证据。
-远端 GitHub Actions 运行结果为未验证。
+远端 GitHub Actions 首次运行（推送 `60503d1` 后）：Ubuntu 通过；Windows 有 4 项 Colab notebook 测试因平台差异失败，其后的构建、构建身份和合成端到端步骤被跳过，尚未验证。原因与处理见 [关闭 GitHub CI 自动运行](2026-11-08-disable-automatic-ci.md)。
 
 本次可按差异恢复 CI、pytest 配置、平台条件和文档；恢复后重新运行受影响的公共验证命令。

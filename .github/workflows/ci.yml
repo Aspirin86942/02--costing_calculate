@@ -1,17 +1,8 @@
 name: CI
 
+# Automatic runs on push and pull request are off (docs/decisions/2026-11-08-manual-ci.md).
+# Start it by hand from the Actions tab; the Release workflow reuses it before packaging.
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - labeled
-      - unlabeled
-      - edited
-  push:
-    branches:
-      - main
   workflow_dispatch:
   workflow_call:
 
@@ -64,10 +55,6 @@ jobs:
 
       - name: Install Python dependencies
         run: uv sync --frozen --extra dev
-
-      - name: Enforce frozen baseline policy
-        if: github.event_name == 'pull_request'
-        run: uv run python tools/ci/baseline_policy.py
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path rust/Cargo.toml --all --check

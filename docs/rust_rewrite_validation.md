@@ -67,7 +67,7 @@ uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing
 ```
 
 Windows 的 `--binary` 改为 `rust/target/release/costing-calculate.exe`。
-CI 按运行平台选择可执行文件路径，版本校验和合成端到端命令使用各平台默认 shell。
+手动运行或发布前复用的 CI 按运行平台选择可执行文件路径，版本校验和合成端到端命令使用各平台默认 shell；push / PR 不再自动触发 CI，见 [`decisions/2026-11-08-manual-ci.md`](decisions/2026-11-08-manual-ci.md)。
 
 真实 workbook 跨版本验证：
 

@@ -84,6 +84,8 @@ uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing
 
 Windows 使用 `rust/target/release/costing-calculate.exe`，并用 `New-Item -ItemType Directory -Force .pytest-tmp` 创建测试临时目录。非 Windows 环境未安装 `pwsh` 时，仅跳过 Windows 性能脚本自检；Windows 门禁仍必须运行该自检。
 
+GitHub CI（`.github/workflows/ci.yml`）不再随 push / PR 自动运行，只能在 Actions 页面手动运行，并由 `release.yml` 在发布前复用；提交前以上面的本地命令为准。决策见 `docs/decisions/2026-11-08-manual-ci.md`。
+
 跨版本真实 workbook：
 
 ```powershell

@@ -63,6 +63,11 @@
 - 方案与后续验收：[`plans/2026-11-08-colab-offline-autotuning.md`](plans/2026-11-08-colab-offline-autotuning.md)
 - 工具与实验记录：[`changes/2026-11-08-colab-autotuning-tooling.md`](changes/2026-11-08-colab-autotuning-tooling.md)
 
+## GitHub CI
+
+- 自动触发已关闭，仅手动运行并在发布前复用：[`decisions/2026-11-08-manual-ci.md`](decisions/2026-11-08-manual-ci.md)
+- 关闭记录与 Windows 测试失败原因：[`changes/2026-11-08-disable-automatic-ci.md`](changes/2026-11-08-disable-automatic-ci.md)
+
 ## 权威顺序
 
 1. 当前代码、配置/schema、契约 baseline 和测试结果。

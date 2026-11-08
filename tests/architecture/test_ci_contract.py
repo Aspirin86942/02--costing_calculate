@@ -26,16 +26,15 @@ REQUIRED_CI_COMMANDS = (
 def test_ci_workflow_is_pinned_and_runs_required_public_gates() -> None:
     workflow = CI_WORKFLOW.read_text(encoding='utf-8')
 
-    for trigger in ('pull_request:', 'push:', 'workflow_dispatch:', 'workflow_call:'):
+    # 自动触发已关闭（docs/decisions/2026-11-08-manual-ci.md）：只能手动运行或被 Release 复用。
+    for trigger in ('workflow_dispatch:', 'workflow_call:'):
         assert trigger in workflow
-    for pull_request_update in ('labeled', 'unlabeled', 'edited'):
-        assert pull_request_update in workflow
+    assert re.search(r'^  (push|pull_request):', workflow, re.MULTILINE) is None
     assert 'windows-latest' in workflow
     assert 'ubuntu-latest' in workflow
     for command in REQUIRED_CI_COMMANDS:
         assert command in workflow
     assert 'tools/ci/run_synthetic_e2e.py' in workflow
-    assert 'tools/ci/baseline_policy.py' in workflow
 
     action_refs = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
     assert action_refs

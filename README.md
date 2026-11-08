@@ -1,6 +1,6 @@
 # Costing Calculate
 
-Costing Calculate 是 GB / SK 成本核算工作簿处理工具。正式实现是 Rust CLI；发布包是自包含 Windows ZIP，运行时不需要安装 Rust 或 Python。
+Costing Calculate 是 GB / SK 成本核算工作簿处理工具。正式实现是 Rust CLI，支持 Windows 和 Linux。Windows 提供自包含 ZIP；Linux 可从源码构建，生成的程序运行时不需要 Rust 或 Python。
 
 ## 安装
 
@@ -25,15 +25,45 @@ $expected -eq $actual
 
 ### 从源码构建
 
-仓库根目录的 `rust-toolchain.toml` 固定 Rust `1.96.0`：
+仓库根目录的 `rust-toolchain.toml` 固定 Rust `1.96.0`。Linux 构建环境需要 Rust 工具链和 C 链接器（用于生成可执行文件）；在仓库根目录执行：
 
-```powershell
+```sh
 cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
 ```
 
-生成文件位于 `rust\target\release\costing-calculate.exe`。
+生成文件：
+
+- Linux：`rust/target/release/costing-calculate`
+- Windows：`rust/target/release/costing-calculate.exe`
+
+Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在实际运行的 Linux 环境构建，或确认目标环境的 glibc（系统运行库）与构建环境兼容。
 
 ## 运行
+
+### Linux
+
+在仓库根目录执行。Linux 文件名区分大小写；含空格的路径要加引号。
+
+```sh
+./rust/target/release/costing-calculate --version-json
+./rust/target/release/costing-calculate --help
+
+# 处理 GB / SK
+./rust/target/release/costing-calculate gb --input ./data/raw/gb/gb-input.xlsx --output ./data/processed/gb/gb-result.xlsx
+./rust/target/release/costing-calculate sk --input ./data/raw/sk/sk-input.xlsx --output ./data/processed/sk/sk-result.xlsx
+
+# 只检查并输出耗时
+./rust/target/release/costing-calculate gb --input ./data/raw/gb/gb-input.xlsx --check-only --benchmark
+
+# 校验内嵌默认配置
+./rust/target/release/costing-calculate gb --validate-config
+```
+
+其余参数与下方示例一致。Linux 使用 `/` 路径分隔符，多行命令使用 `\` 续行。开发验证见 [`docs/rust_rewrite_validation.md`](docs/rust_rewrite_validation.md)。
+
+### Windows
+
+下面的命令在解压后的发布包目录运行。
 
 处理 GB：
 
@@ -114,6 +144,10 @@ cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calcul
 降低大工作簿处理时的重复 clone 成本和峰值内存；不启用文本驻留池。
 这些优化不改变 workbook、CLI 或 Manifest 契约。当前门禁、复测命令和实测结果见
 [`docs/performance/README.md`](docs/performance/README.md)。
+
+离线调优工具可在本机 Linux 或 Colab CPU 环境运行：自动构建候选、生成合成数据、比较结果并配对测速。
+入口是 [`colab_autotune.ipynb`](tools/validation/colab_autotune.ipynb)，本地命令与验收条件见
+[离线调优说明](docs/performance/README.md#linux--colab-离线调优)。源码包包含内嵌业务配置，上传前须审阅；真实 ERP 数据留在本地。
 
 ## 常见错误
 

@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [`2026-11-08-colab-autotuning-tooling.md`](2026-11-08-colab-autotuning-tooling.md)：离线调优工具、允许文件包、合成验证与本地候选筛选。
+- [`2026-11-08-linux-environment.md`](2026-11-08-linux-environment.md)：Linux 原生构建、公共验证适配与 GB / SK 隔离运行验收。
 - [`2026-07-12-rust-performance-validation.md`](2026-07-12-rust-performance-validation.md)：Rust 主路径 N=5 验收证据。
 - [`2026-07-25-v0.2.0-m0-baseline.md`](2026-07-25-v0.2.0-m0-baseline.md)：v0.2.0 冻结基线。
 - [`2026-07-25-v0.2.0-m3-config-governance.md`](2026-07-25-v0.2.0-m3-config-governance.md)：配置治理退出证据。

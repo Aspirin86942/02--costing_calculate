@@ -18,7 +18,7 @@ REQUIRED_CI_COMMANDS = (
     'uv sync --frozen --extra dev',
     'uv run python -m ruff check tests tools',
     'uv run python -m ruff format tests tools --check',
-    'uv run python tools/validation/check_markdown_links.py',
+    'uv run python -m tools.validation.check_markdown_links',
     ('uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp "${{ runner.temp }}/costing-pytest"'),
 )
 
@@ -40,6 +40,15 @@ def test_ci_workflow_is_pinned_and_runs_required_public_gates() -> None:
     action_refs = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
     assert action_refs
     assert all(re.fullmatch(r'[0-9a-f]{40}', ref) for ref in action_refs)
+
+
+def test_ci_uses_native_binary_paths_without_powershell() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding='utf-8')
+
+    assert 'binary: rust/target/release/costing-calculate.exe' in workflow
+    assert 'binary: rust/target/release/costing-calculate\n' in workflow
+    assert workflow.count('--binary "${{ matrix.binary }}"') == 2
+    assert 'shell: pwsh' not in workflow
 
 
 def test_ci_verifies_fixed_build_identity_before_running_synthetic_smokes() -> None:

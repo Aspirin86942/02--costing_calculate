@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import xlsxwriter
 
@@ -12,6 +14,7 @@ from tools.validation.types import PipelineName
 LOW_MEMORY_QUANTITY_ROWS = 140_000
 # 当前 SK 数量 Sheet 的闭合输出契约为 36 列；真实 smoke 还会直接复核 OOXML dimension。
 LOW_MEMORY_OUTPUT_COLUMNS_LOWER_BOUND = 36
+BenchmarkSize = Literal['small', 'medium', 'below-threshold', 'above-threshold']
 
 RAW_COLUMNS = (
     '年期',
@@ -112,3 +115,69 @@ def _detail_row(pipeline: PipelineName, cost_item: str, unit_cost: int, amount: 
         unit_cost,
         amount,
     )
+
+
+def build_benchmark_fixture(
+    output_dir: Path,
+    pipeline: PipelineName,
+    size: BenchmarkSize = 'small',
+    seed: int = 20261108,
+) -> dict[str, Any]:
+    """Generate a reproducible benchmark input, complete TOML config and spec.json."""
+    from tools.validation.synthetic_benchmark import build_benchmark_fixture as build
+
+    return build(output_dir, pipeline, size, seed)
+
+
+def benchmark_spec(
+    pipeline: PipelineName,
+    size: BenchmarkSize = 'small',
+    seed: int = 20261108,
+) -> dict[str, Any]:
+    """Return expected counts and threshold shapes without allocating large data."""
+    from tools.validation.synthetic_benchmark import benchmark_spec as describe
+
+    return describe(pipeline, size, seed)
+
+
+class _SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        raise ValueError('Invalid synthetic fixture arguments.')
+
+
+def main() -> int:
+    from tools.validation.synthetic_benchmark import BENCHMARK_SIZES, DEFAULT_SEED
+
+    parser = _SafeArgumentParser(description='Generate reproducible synthetic benchmark fixtures and TOML config.')
+    parser.add_argument('--pipeline', choices=('gb', 'sk'), required=True)
+    parser.add_argument('--size', choices=BENCHMARK_SIZES, default='small')
+    parser.add_argument('--seed', type=int, default=DEFAULT_SEED)
+    parser.add_argument('--output-dir', type=Path)
+    parser.add_argument('--spec-only', action='store_true', help='Print expected counts/shapes without writing files')
+    try:
+        args = parser.parse_args()
+        if args.spec_only:
+            spec = benchmark_spec(args.pipeline, args.size, args.seed)
+        elif args.output_dir is not None:
+            spec = build_benchmark_fixture(args.output_dir, args.pipeline, args.size, args.seed)
+        else:
+            raise ValueError('output directory is required unless --spec-only is set')
+        print(json.dumps(spec, ensure_ascii=False, indent=2, allow_nan=False))
+        return 0
+    except (OSError, ValueError, xlsxwriter.exceptions.XlsxWriterException):
+        print(
+            json.dumps(
+                {
+                    'status': 'failed',
+                    'error_code': 'SYNTHETIC_INPUT_ERROR',
+                    'message': 'Synthetic fixture generation failed; check arguments and unused writable output paths.',
+                    'retryable': False,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

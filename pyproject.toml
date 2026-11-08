@@ -20,6 +20,7 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "slow: 真实 Excel 端到端正确性测试,依赖真实数据样本",
     "benchmark: 正式性能与内存验收",

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MEASURE_SCRIPT = PROJECT_ROOT / 'tools' / 'validation' / 'measure_release.ps1'
@@ -85,6 +88,8 @@ def test_paired_measurement_schema_requires_complete_safe_evidence() -> None:
 
 def test_paired_measurement_self_test_covers_statistics_and_ordering() -> None:
     powershell = shutil.which('pwsh')
+    if powershell is None and sys.platform != 'win32':
+        pytest.skip('Windows 性能脚本自检需要 PowerShell 7；当前系统未安装 pwsh')
     assert powershell is not None
     result = subprocess.run(  # noqa: S603 - resolved executable and repository-owned script.
         [

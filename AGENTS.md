@@ -5,6 +5,7 @@
 ## 项目边界
 
 - Rust 是唯一正式业务实现。新增或修复业务能力默认写入 `rust/`。
+- 支持 Windows 和 Linux；Linux 使用原生 Bash 和无 `.exe` 后缀的可执行文件，公共验证不得强制依赖 PowerShell。Windows 发布包仍按现有 ZIP 流程验收。
 - Python 只用于工作簿比较、合成输入和发布验收，不得重新建立第二套业务管线或生产入口。
 - 不新增生产依赖，除非用户明确批准。
 - `data/raw/` 中的 ERP 输入、`data/processed/` 输出和本地验收产物都视为敏感数据，不得提交。
@@ -69,15 +70,19 @@ cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets 
 cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
 ```
 
-Python 验证工具环境：
+Python 验证工具环境（Linux / Bash）：
 
-```powershell
+```sh
 uv sync --frozen --extra dev
+mkdir -p .pytest-tmp
 uv run python -m ruff check tests tools
 uv run python -m ruff format tests tools --check
+uv run python -m tools.validation.check_markdown_links
 uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp .pytest-tmp/python-validation
-uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate.exe
+uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate
 ```
+
+Windows 使用 `rust/target/release/costing-calculate.exe`，并用 `New-Item -ItemType Directory -Force .pytest-tmp` 创建测试临时目录。非 Windows 环境未安装 `pwsh` 时，仅跳过 Windows 性能脚本自检；Windows 门禁仍必须运行该自检。
 
 跨版本真实 workbook：
 
@@ -96,11 +101,12 @@ uv run python -m tools.validation.compare_releases `
 ## 性能与发布
 
 - release profile 固定 `codegen-units = 1`。
-- 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统 `%TEMP%`。
+- 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
 - `CellValue::Text` / `DateLike` 使用 `Arc<str>`，但不建立全局或按列文本驻留池。
 - reader 的整数快路径只接受有限、无小数且安全落在 `i64` 范围内的值；其余值必须保留原字符串解析回退。
 - `rust_xlsxwriter` 使用 `rust/Cargo.toml` 中精确 revision 的受控 fork。
 - 性能门禁见 `docs/performance/README.md`。只有测出瓶颈才优化；优化实验使用至少 8 对交错配对并记录到 `docs/changes/`。
+- Linux / Colab 的实验入口为 `tools/validation/autotune_experiment.py` 和 `colab_autotune.ipynb`；配对测量使用 `measure_paired_release.py`，Linux 峰值 RSS 与 Windows PWS 分别判定。源码包用 `prepare_colab_bundle.py` 按允许清单生成，上传前审阅内嵌业务配置，真实 ERP 数据留在本地。
 - Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。
 - `RunManifestV1` schema 仍是 V1；应用版本升级不得顺带改 schema。
 - 推送正式标签、GitHub Release 或其他外部资产前必须获得明确确认。

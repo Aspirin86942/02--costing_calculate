@@ -43,23 +43,31 @@ Rust 深模块整理后，基线与候选分别处理真实 GB、SK workbook：
 
 ## 持续验证
 
-公共门禁：
+公共门禁适用于 Windows 和 Linux。首次运行先执行 `uv sync --frozen --extra dev`。
+使用 `--basetemp` 前需创建父目录：Linux 执行 `mkdir -p .pytest-tmp`，Windows 执行 `New-Item -ItemType Directory -Force .pytest-tmp`。
 
-```powershell
+```sh
 cargo fmt --manifest-path rust/Cargo.toml --all --check
 cargo clippy --locked --manifest-path rust/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --manifest-path rust/Cargo.toml --workspace --all-features
 uv run python -m ruff check tests tools
 uv run python -m ruff format tests tools --check
+uv run python -m tools.validation.check_markdown_links
 uv run python -m pytest tests -q -m "not slow and not benchmark" --basetemp .pytest-tmp/python-validation
 ```
 
-合成端到端：
+非 Windows 环境未安装 `pwsh` 时，Windows 性能脚本自检会报告跳过；其余公共测试照常运行。
+Windows 环境必须执行该自检。
 
-```powershell
+合成端到端（Linux / Bash）：
+
+```sh
 cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
-uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate.exe
+uv run python tools/ci/run_synthetic_e2e.py --binary rust/target/release/costing-calculate
 ```
+
+Windows 的 `--binary` 改为 `rust/target/release/costing-calculate.exe`。
+CI 按运行平台选择可执行文件路径，版本校验和合成端到端命令使用各平台默认 shell。
 
 真实 workbook 跨版本验证：
 

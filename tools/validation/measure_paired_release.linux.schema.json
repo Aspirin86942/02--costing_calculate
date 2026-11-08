@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://costing-calculate.local/schemas/measure-paired-release-linux-v1.json",
+  "title": "Linux Paired Release Measurement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "measurement_only", "started_utc", "finished_utc", "attempt", "artifacts", "environment", "options", "warmups", "samples", "summary", "calibration", "error", "checkpoint_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["running", "valid", "invalid", "interrupted"]},
+    "measurement_only": {"const": true},
+    "started_utc": {"type": "string", "format": "date-time"},
+    "finished_utc": {"type": ["string", "null"], "format": "date-time"},
+    "attempt": {"type": "integer", "minimum": 1},
+    "checkpoint_sha256": {"$ref": "#/$defs/hash"},
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["baseline", "candidate", "input"],
+      "properties": {
+        "baseline": {"$ref": "#/$defs/artifact"}, "candidate": {"$ref": "#/$defs/artifact"},
+        "input": {"$ref": "#/$defs/artifact"}, "config": {"$ref": "#/$defs/artifact"},
+        "baseline_source": {"$ref": "#/$defs/artifact"}, "candidate_source": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["system", "machine", "logical_cpus", "cpu_affinity", "session_sha256", "memory_metric"],
+      "properties": {
+        "system": {"const": "Linux"}, "machine": {"type": "string"},
+        "logical_cpus": {"type": ["integer", "null"], "minimum": 1},
+        "cpu_affinity": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+        "session_sha256": {"$ref": "#/$defs/hash"}, "memory_metric": {"const": "peak_rss_bytes"}
+      }
+    },
+    "options": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pipeline", "mode", "pair_count", "timeout_seconds", "memory_limit_bytes", "disk_limit_bytes", "month_start", "month_end", "calibration", "target_stage"],
+      "properties": {
+        "pipeline": {"enum": ["gb", "sk"]}, "mode": {"enum": ["normal", "check-only"]},
+        "pair_count": {"type": "integer", "minimum": 1, "maximum": 100},
+        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "memory_limit_bytes": {"type": "integer", "minimum": 1},
+        "disk_limit_bytes": {"type": "integer", "minimum": 1},
+        "month_start": {"type": ["string", "null"]}, "month_end": {"type": ["string", "null"]},
+        "calibration": {"type": "boolean"}, "target_stage": {"type": ["string", "null"]}
+      }
+    },
+    "warmups": {"type": "array", "items": {"$ref": "#/$defs/run"}},
+    "samples": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["pair_number", "execution_order", "baseline", "candidate"],
+        "properties": {
+          "pair_number": {"type": "integer", "minimum": 1},
+          "execution_order": {"enum": [["baseline", "candidate"], ["candidate", "baseline"]]},
+          "baseline": {"$ref": "#/$defs/run"}, "candidate": {"$ref": "#/$defs/run"}
+        }
+      }
+    },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "external_wall_seconds": {"$ref": "#/$defs/statistics"}, "peak_rss_bytes": {"$ref": "#/$defs/statistics"},
+        "baseline_max_output_bytes": {"type": "integer", "minimum": 0},
+        "candidate_max_output_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "calibration": {
+      "oneOf": [{"type": "null"}, {
+        "type": "object", "additionalProperties": false,
+        "required": ["passed", "reasons", "stage_median_differences"],
+        "properties": {
+          "passed": {"type": "boolean"}, "reasons": {"type": "array", "items": {"type": "string"}},
+          "stage_median_differences": {"type": "object", "additionalProperties": {"type": "number"}}
+        }
+      }]
+    },
+    "error": {
+      "oneOf": [{"type": "null"}, {
+        "type": "object", "additionalProperties": false,
+        "required": ["error_code", "message", "retryable"],
+        "properties": {
+          "error_code": {"type": "string", "pattern": "^[A-Z_]+$"},
+          "message": {"type": "string"}, "retryable": {"type": "boolean"}
+        }
+      }]
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["sha256", "size_bytes"],
+      "properties": {"sha256": {"$ref": "#/$defs/hash"}, "size_bytes": {"type": "integer", "minimum": 0}}
+    },
+    "statistics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["baseline_median", "candidate_median", "paired_median_improvement", "median_absolute_paired_difference", "candidate_wins", "pair_count"],
+      "properties": {
+        "baseline_median": {"type": "number", "exclusiveMinimum": 0},
+        "candidate_median": {"type": "number", "exclusiveMinimum": 0},
+        "paired_median_improvement": {"type": "number"}, "median_absolute_paired_difference": {"type": "number", "minimum": 0},
+        "candidate_wins": {"type": "integer", "minimum": 0}, "pair_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "run_alias", "external_wall_seconds", "peak_rss_bytes", "output_size_bytes", "output_sha256", "stage_timings", "summary", "temporary_residue_count", "low_memory_writer", "build_identity"],
+      "properties": {
+        "role": {"enum": ["baseline", "candidate"]}, "run_alias": {"type": "string", "pattern": "^attempt-[0-9]+-(warmup|pair)-"},
+        "external_wall_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "peak_rss_bytes": {"type": "integer", "minimum": 1}, "output_size_bytes": {"type": "integer", "minimum": 0},
+        "output_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/hash"}]},
+        "stage_timings": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "number", "minimum": 0}},
+        "summary": {
+          "type": "object", "additionalProperties": false,
+          "required": ["status", "pipeline", "sheet_count", "error_log_count", "issue_type_counts", "run_counts", "quality_metrics", "effective_config_sha256", "sheet_names", "low_memory_writer", "warning_count", "warnings_sha256"],
+          "properties": {
+            "status": {"const": "succeeded"}, "pipeline": {"enum": ["gb", "sk"]}, "sheet_count": {"const": 3},
+            "error_log_count": {"type": "integer", "minimum": 0},
+            "issue_type_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+            "run_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+            "quality_metrics": {"type": "array", "items": {
+              "type": "object", "additionalProperties": false, "required": ["category", "metric", "value"],
+              "properties": {"category": {"type": "string"}, "metric": {"type": "string"}, "value": {"type": "string"}}
+            }},
+            "effective_config_sha256": {"$ref": "#/$defs/hash"},
+            "sheet_names": {"const": ["成本计算单总表", "成本计算单数量聚合维度", "成本分析工单维度"]},
+            "low_memory_writer": {"type": "boolean"},
+            "warning_count": {"type": "integer", "minimum": 0},
+            "warnings_sha256": {"$ref": "#/$defs/hash"}
+          }
+        },
+        "temporary_residue_count": {"const": 0}, "low_memory_writer": {"type": "boolean"},
+        "build_identity": {
+          "type": "object", "additionalProperties": false,
+          "required": ["name", "version", "git_commit", "build_timestamp", "rustc_version", "target"],
+          "properties": {
+            "name": {"const": "costing-calculate"}, "version": {"type": "string"},
+            "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "build_timestamp": {"type": "string"}, "rustc_version": {"type": "string"}, "target": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

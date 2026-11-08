@@ -147,7 +147,12 @@ def test_safe_extract_normal_bundle(extract_namespace: dict[str, Any], tmp_path:
         '\\\\server\\share',
         'source/./file.txt',
         'source//file.txt',
-        'source\\file.txt',
+        pytest.param(
+            'source\\file.txt',
+            marks=pytest.mark.skipif(
+                sys.platform == 'win32', reason='Windows zipfile converts backslashes before the helper sees them'
+            ),
+        ),
     ],
 )
 def test_safe_extract_rejects_unsafe_paths_before_writing(
@@ -427,7 +432,8 @@ def test_rustup_official_download_is_verified_before_execution(
     if correct_checksum:
         installer = namespace['download_rustup'](download_dir, source, '1.28.2')
         assert installer.read_bytes() == payload
-        assert installer.stat().st_mode & stat.S_IXUSR
+        if sys.platform != 'win32':  # Windows 文件没有 Unix 可执行权限位。
+            assert installer.stat().st_mode & stat.S_IXUSR
     else:
         with pytest.raises(ValueError, match='SHA-256 校验失败'):
             namespace['download_rustup'](download_dir, source, '1.28.2')

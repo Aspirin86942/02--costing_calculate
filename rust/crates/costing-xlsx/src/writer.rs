@@ -5,7 +5,7 @@ use std::time::Instant;
 use costing_core::error::{CleanupFailureMeta, ErrorContext, ErrorStage, IoFailureMeta};
 use costing_core::model::{CellValue, SheetModel, WorkbookPayload};
 use rust_decimal::prelude::ToPrimitive;
-use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet};
+use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet, XlsxError};
 
 use crate::atomic_file::{AtomicFile, AtomicFileError, AtomicFileStage};
 use crate::reader::CostingXlsxError;
@@ -216,24 +216,16 @@ fn write_workbook_controlled(
 
     #[cfg(feature = "low-memory")]
     if let Some(workspace) = temp_workspace.as_ref() {
-        let setup_error = |error| {
+        workbook.set_zip_compression_level(5);
+        if let Err(error) = workbook.set_tempdir(workspace.path()).map_err(|error| {
             writer_error(
                 context,
                 workspace.path(),
                 ErrorStage::InitializeLowMemoryTempWriter,
-                WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                primary_from_xlsx_error(CostingXlsxError::Writer(error)),
             )
             .with_low_memory_writer(needs_low_memory)
-        };
-        if let Err(error) = workbook
-            .set_compression_level(5)
-            .map_err(&setup_error)
-            .and_then(|workbook_ref| {
-                workbook_ref
-                    .set_tempdir(workspace.path())
-                    .map_err(&setup_error)
-            })
-        {
+        }) {
             drop(workbook);
             return finish_with_temp_cleanup(context, Err(error), temp_workspace, needs_low_memory);
         }
@@ -293,7 +285,7 @@ fn write_workbook_controlled(
                         context,
                         path,
                         ErrorStage::SaveWorkbook,
-                        WriterPrimaryError::Xlsx(CostingXlsxError::Writer(error)),
+                        primary_from_xlsx_error(CostingXlsxError::Writer(error)),
                     ),
                     staged,
                 ))
@@ -383,14 +375,17 @@ fn use_low_memory_for_shape(row_count: usize, column_count: usize) -> bool {
     }
 }
 
-fn add_worksheet_for_mode(workbook: &mut Workbook, use_low_memory: bool) -> &mut Worksheet {
+fn add_worksheet_for_mode(
+    workbook: &mut Workbook,
+    use_low_memory: bool,
+) -> Result<&mut Worksheet, XlsxError> {
     #[cfg(feature = "low-memory")]
     if use_low_memory {
         return workbook.add_worksheet_with_low_memory();
     }
 
     let _ = use_low_memory;
-    workbook.add_worksheet()
+    Ok(workbook.add_worksheet())
 }
 
 fn populate_error(context: &WriterContext, path: &Path, error: CostingXlsxError) -> WriterError {
@@ -410,7 +405,18 @@ fn populate_sheet(
     sheet: &SheetModel,
     use_low_memory: bool,
 ) -> Result<(), WriterError> {
-    let worksheet = add_worksheet_for_mode(workbook, use_low_memory);
+    let worksheet = add_worksheet_for_mode(workbook, use_low_memory).map_err(|error| {
+        let error_path = match &error {
+            XlsxError::TempFileError(directory, _) => directory.clone(),
+            _ => path.to_path_buf(),
+        };
+        writer_error(
+            context,
+            &error_path,
+            ErrorStage::InitializeLowMemoryTempWriter,
+            primary_from_xlsx_error(CostingXlsxError::Writer(error)),
+        )
+    })?;
     worksheet
         .set_name(&sheet.sheet_name)
         .map_err(CostingXlsxError::Writer)
@@ -531,6 +537,11 @@ fn writer_error(
 fn primary_from_xlsx_error(error: CostingXlsxError) -> WriterPrimaryError {
     match error {
         CostingXlsxError::Message(message) => WriterPrimaryError::Contract(message),
+        CostingXlsxError::Writer(
+            XlsxError::IoError(source)
+            | XlsxError::TempFileError(_, source)
+            | XlsxError::ZipError(zip::result::ZipError::Io(source)),
+        ) => WriterPrimaryError::Io(source),
         error => WriterPrimaryError::Xlsx(error),
     }
 }

@@ -104,6 +104,8 @@ normalize -> split -> fact -> presentation
 
 两个 writer 是同一适配器内部的实现选择，不向 CLI 暴露第二套业务接口。
 
+读取器依赖 calamine 0.38.0；写出器依赖 `rust/vendor/rust_xlsxwriter/` 中基于上游 0.102.0 的受控源码。该第三方源码排除在父 workspace 成员外，保留必要的临时文件 I/O 传播补丁；[来源清单](performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)固定上游 revision、许可证与本地文件哈希。读取和写出共用 ZIP 9.4.2。
+
 ### costing-oracle-tests
 
 只验证运行摘要与契约快照，不实现生产业务规则。

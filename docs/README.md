@@ -63,6 +63,14 @@
 - 方案与后续验收：[`plans/2026-11-08-colab-offline-autotuning.md`](plans/2026-11-08-colab-offline-autotuning.md)
 - 工具与实验记录：[`changes/2026-11-08-colab-autotuning-tooling.md`](changes/2026-11-08-colab-autotuning-tooling.md)
 
+## Excel 读写与压缩优化
+
+- 完整方案：[`plans/2026-11-08-xlsx-io-optimization.md`](plans/2026-11-08-xlsx-io-optimization.md)
+- 开销定位、候选与验收：[`changes/2026-11-08-xlsx-io-optimization.md`](changes/2026-11-08-xlsx-io-optimization.md)
+- 当前测量、审计模式及采纳门槛：[`performance/README.md`](performance/README.md)
+- 最新上游更新与适配：[`changes/2026-11-08-upstream-refresh.md`](changes/2026-11-08-upstream-refresh.md)
+- 受控写出源码来源与哈希：[`performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json`](performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)
+
 ## GitHub CI
 
 - 自动触发已关闭，仅手动运行并在发布前复用：[`decisions/2026-11-08-manual-ci.md`](decisions/2026-11-08-manual-ci.md)

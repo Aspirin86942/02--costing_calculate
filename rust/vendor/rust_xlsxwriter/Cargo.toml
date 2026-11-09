@@ -1,0 +1,53 @@
+[package]
+name = "rust_xlsxwriter"
+description = "A Rust library for writing Excel 2007 xlsx files"
+authors = ["John McNamara <jmcnamara@cpan.org>"]
+homepage = "https://rustxlsxwriter.github.io"
+repository = "https://github.com/jmcnamara/rust_xlsxwriter"
+keywords = ["excel", "xlsx"]
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+version = "0.102.0"
+edition = "2021"
+rust-version = "1.88.0"
+
+# Retain upstream test modules referenced by src, without the upstream test suite
+# and its development dependencies and external fixtures.
+[lib]
+path = "src/lib.rs"
+test = false
+doctest = false
+
+[dependencies]
+zip = { version = "9.0", default-features = false, features = ["deflate"] }
+ryu = { optional = true, version = "1.0" }
+zmij = { optional = true, version = "1.0" }
+jiff = { optional = true, version = "0.2", default-features = false, features = [] }
+serde = { optional = true, version = "1.0", features = ["derive"] }
+ssfmt = { optional = true, version = "0.1" }
+chrono = { optional = true, version = "0.4", default-features = false, features = ["clock", "wasmbind", "serde"] }
+js-sys = { optional = true, version = "0.3" }
+polars = { optional = true, version = "0.55", default-features = false, features = [] }
+tempfile = { optional = true, version = "3.24" }
+wasm-bindgen = { optional = true, version = "0.2" }
+rust_decimal = { optional = true, version = "1.40" }
+rust_xlsxwriter_derive = { optional = true, version = "0.2" }
+
+[features]
+default = []
+chrono = ["dep:chrono"]
+jiff = ["dep:jiff"]
+constant_memory = ["dep:tempfile"]
+enhanced_autofit = ["dep:ssfmt"]
+polars = ["dep:polars"]
+serde = ["dep:serde", "dep:rust_xlsxwriter_derive"]
+wasm = ["js-sys", "wasm-bindgen"]
+rust_decimal = ["dep:rust_decimal"]
+zmij = ["dep:zmij"]
+ryu = ["dep:ryu"]
+zlib = ["zip/deflate-flate2-zlib"]
+test-resave = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

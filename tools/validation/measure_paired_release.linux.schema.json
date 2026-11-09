@@ -34,9 +34,11 @@
     },
     "options": {
       "type": "object", "additionalProperties": false,
-      "required": ["pipeline", "mode", "pair_count", "timeout_seconds", "memory_limit_bytes", "disk_limit_bytes", "month_start", "month_end", "calibration", "target_stage"],
+      "required": ["pipeline", "mode", "audit_mode", "purpose", "pair_count", "timeout_seconds", "memory_limit_bytes", "disk_limit_bytes", "month_start", "month_end", "calibration", "target_stage"],
       "properties": {
         "pipeline": {"enum": ["gb", "sk"]}, "mode": {"enum": ["normal", "check-only"]},
+        "audit_mode": {"enum": ["manifest", "none"], "default": "manifest"},
+        "purpose": {"enum": ["screening", "acceptance", "diagnostic", "calibration"], "default": "screening", "description": "Measurement purpose; valid measurements do not imply optimization acceptance."},
         "pair_count": {"type": "integer", "minimum": 1, "maximum": 100},
         "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
         "memory_limit_bytes": {"type": "integer", "minimum": 1},
@@ -104,7 +106,7 @@
     },
     "run": {
       "type": "object", "additionalProperties": false,
-      "required": ["role", "run_alias", "external_wall_seconds", "peak_rss_bytes", "output_size_bytes", "output_sha256", "stage_timings", "summary", "temporary_residue_count", "low_memory_writer", "build_identity"],
+      "required": ["role", "run_alias", "external_wall_seconds", "peak_rss_bytes", "output_size_bytes", "output_sha256", "stage_timings", "summary", "temporary_residue_count", "low_memory_writer", "build_identity", "manifest_validation", "unknown_fields"],
       "properties": {
         "role": {"enum": ["baseline", "candidate"]}, "run_alias": {"type": "string", "pattern": "^attempt-[0-9]+-(warmup|pair)-"},
         "external_wall_seconds": {"type": "number", "exclusiveMinimum": 0},
@@ -123,14 +125,20 @@
               "type": "object", "additionalProperties": false, "required": ["category", "metric", "value"],
               "properties": {"category": {"type": "string"}, "metric": {"type": "string"}, "value": {"type": "string"}}
             }},
-            "effective_config_sha256": {"$ref": "#/$defs/hash"},
-            "sheet_names": {"const": ["成本计算单总表", "成本计算单数量聚合维度", "成本分析工单维度"]},
-            "low_memory_writer": {"type": "boolean"},
-            "warning_count": {"type": "integer", "minimum": 0},
-            "warnings_sha256": {"$ref": "#/$defs/hash"}
+            "effective_config_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/hash"}]},
+            "sheet_names": {"enum": [null, ["成本计算单总表", "成本计算单数量聚合维度", "成本分析工单维度"]], "description": "Unknown for check-only without a Manifest; otherwise ZIP metadata or Manifest declarations."},
+            "low_memory_writer": {"type": ["boolean", "null"]},
+            "warning_count": {"type": ["integer", "null"], "minimum": 0},
+            "warnings_sha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/hash"}]}
           }
         },
-        "temporary_residue_count": {"const": 0}, "low_memory_writer": {"type": "boolean"},
+        "temporary_residue_count": {"const": 0}, "low_memory_writer": {"type": ["boolean", "null"]},
+        "manifest_validation": {"enum": ["passed", "not-requested"]},
+        "unknown_fields": {
+          "type": "array", "uniqueItems": true,
+          "description": "Unavailable report fields are null, including the writer mode; null never means false.",
+          "items": {"enum": ["summary.effective_config_sha256", "summary.sheet_names", "summary.low_memory_writer", "summary.warning_count", "summary.warnings_sha256", "low_memory_writer"]}
+        },
         "build_identity": {
           "type": "object", "additionalProperties": false,
           "required": ["name", "version", "git_commit", "build_timestamp", "rustc_version", "target"],

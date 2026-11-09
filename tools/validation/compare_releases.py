@@ -7,12 +7,21 @@ import hashlib
 import json
 import math
 import re
-import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Literal
 from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
+from tools.validation.measure_paired_release import (
+    AUDIT_MODES,
+    PURPOSES,
+    SHEET_NAMES,
+    MeasurementError,
+    file_identity,
+    run_process,
+    workbook_sheet_names,
+)
 from tools.validation.types import PipelineName
 from tools.validation.workbook_compare import compare_workbooks, workbook_payloads_identical
 
@@ -29,7 +38,6 @@ BUSINESS_FIELDS = (
     'run_counts',
     'warnings',
 )
-SHEET_NAMES = ['成本计算单总表', '成本计算单数量聚合维度', '成本分析工单维度']
 
 
 class ValidationError(RuntimeError):
@@ -57,15 +65,22 @@ def compare_releases(
     month_end: str | None = None,
     config_path: Path | None = None,
     mode: RunMode = 'normal',
+    audit_mode: str = 'manifest',
+    purpose: str = 'screening',
     timeout_seconds: float = 300,
+    memory_limit_bytes: int = 2 * 1024**3,
+    disk_limit_bytes: int = 2 * 1024**3,
 ) -> dict[str, Any]:
     if (
         pipeline not in ('gb', 'sk')
         or mode not in ('normal', 'check-only')
+        or audit_mode not in AUDIT_MODES
+        or purpose not in PURPOSES
         or not math.isfinite(timeout_seconds)
         or timeout_seconds <= 0
+        or min(memory_limit_bytes, disk_limit_bytes) <= 0
     ):
-        raise ValidationError('INVALID_ARGUMENT', 'Invalid pipeline, mode or timeout.')
+        raise ValidationError('INVALID_ARGUMENT', 'Invalid pipeline, mode, purpose or resource budgets.')
     baseline_binary = _require_file(baseline_binary, 'baseline binary')
     candidate_binary = _require_file(candidate_binary, 'candidate binary')
     input_path = _require_file(input_path, 'input workbook')
@@ -82,6 +97,13 @@ def compare_releases(
         'baseline_binary_sha256': _sha256(baseline_binary),
         'candidate_binary_sha256': _sha256(candidate_binary),
     }
+    limits = {
+        'timeout_seconds': timeout_seconds,
+        'memory_limit_bytes': memory_limit_bytes,
+        'disk_limit_bytes': disk_limit_bytes,
+    }
+    if _has_temporary_residue(output_dir):
+        raise FileExistsError('Validation staging artifacts already exist.')
     summaries = {}
     manifest_payloads = {}
     mismatches: list[dict[str, Any]] = []
@@ -95,10 +117,18 @@ def compare_releases(
             month_end=month_end,
             config_path=config_path,
             mode=mode,
-            manifest_path=manifests[name],
-            timeout_seconds=timeout_seconds,
+            manifest_path=manifests[name] if audit_mode == 'manifest' else None,
+            **limits,
         )
         summaries[name] = summary
+        if _has_temporary_residue(output_dir):
+            mismatches.append({'kind': 'temporary-residue', 'side': name})
+        if mode == 'check-only' and outputs[name].exists():
+            mismatches.append({'kind': 'output-validation', 'side': name, 'field': 'no_workbook'})
+        if audit_mode == 'none':
+            if manifests[name].exists():
+                mismatches.append({'kind': 'unexpected-manifest', 'side': name})
+            continue
         manifest = _read_manifest(manifests[name])
         manifest_payloads[name] = manifest
         for field in _validate_manifest(
@@ -119,28 +149,30 @@ def compare_releases(
         default = [] if field == 'warnings' else None
         if summaries['baseline'].get(field, default) != summaries['candidate'].get(field, default):
             mismatches.append({'kind': 'business-summary', 'field': field})
-    for field, getter in (
-        ('warnings', lambda manifest: manifest.get('warnings')),
-        ('sheet_names', lambda manifest: manifest.get('result', {}).get('sheet_names')),
-        ('low_memory_writer', lambda manifest: manifest.get('execution', {}).get('low_memory_writer')),
-        ('effective_config_sha256', lambda manifest: manifest.get('config', {}).get('effective_sha256')),
-        ('selected_sheet', lambda manifest: manifest.get('input', {}).get('selected_sheet')),
-    ):
-        if getter(manifest_payloads['baseline']) != getter(manifest_payloads['candidate']):
-            mismatches.append({'kind': 'manifest-business', 'field': field})
+    if audit_mode == 'manifest':
+        for field, getter in (
+            ('warnings', lambda manifest: manifest.get('warnings')),
+            ('sheet_names', lambda manifest: manifest.get('result', {}).get('sheet_names')),
+            ('low_memory_writer', lambda manifest: manifest.get('execution', {}).get('low_memory_writer')),
+            ('effective_config_sha256', lambda manifest: manifest.get('config', {}).get('effective_sha256')),
+            ('selected_sheet', lambda manifest: manifest.get('input', {}).get('selected_sheet')),
+        ):
+            if getter(manifest_payloads['baseline']) != getter(manifest_payloads['candidate']):
+                mismatches.append({'kind': 'manifest-business', 'field': field})
+    output_evidence = {name: {'sha256': None, 'size_bytes': None, 'sheet_names': None} for name in outputs}
     if mode == 'check-only':
         comparison_mode = 'summary-only'
     elif not all(path.is_file() for path in outputs.values()):
         comparison_mode = 'missing-workbook'
-    elif workbook_payloads_identical(outputs['baseline'], outputs['candidate']):
-        comparison_mode = 'package-fast-path'
+        mismatches.append({'kind': 'output-validation', 'field': 'workbook_exists'})
     else:
-        comparison_mode = 'semantic'
-        comparison = compare_workbooks(outputs['baseline'], outputs['candidate'], pipeline=pipeline)
-        mismatches.extend(
-            {'sheet': item.sheet, 'coordinate': item.coordinate, 'kind': item.mismatch_kind}
-            for item in comparison.mismatches
-        )
+        comparison = _compare_outputs(outputs['baseline'], outputs['candidate'], pipeline=pipeline, **limits)
+        comparison_mode = comparison['comparison_mode']
+        mismatches.extend(comparison['mismatches'])
+        output_evidence = comparison['outputs']
+        for name in outputs:
+            if output_evidence[name]['size_bytes'] != summaries[name].get('output_size_bytes'):
+                mismatches.append({'kind': 'output-validation', 'side': name, 'field': 'output_size_bytes'})
     for field, path in (
         ('input_sha256', input_path),
         ('config_source_sha256', config_path),
@@ -151,11 +183,21 @@ def compare_releases(
             mismatches.append({'kind': 'identity-changed', 'field': field})
     baseline_size = summaries['baseline'].get('output_size_bytes')
     candidate_size = summaries['candidate'].get('output_size_bytes')
+    audit_evidence = {name: _audit_evidence(manifest_payloads.get(name)) for name in outputs}
+    unknown_fields = [
+        f'audit_evidence.{name}.{field}'
+        for name, evidence in audit_evidence.items()
+        for field, value in evidence.items()
+        if value is None
+    ]
+    if mode == 'check-only':
+        unknown_fields.extend(f'outputs.{name}.sheet_names' for name in outputs)
     report = {
         'schema_version': 1,
         'status': 'passed' if not mismatches else 'failed',
         'pipeline': pipeline,
         'mode': mode,
+        'options': {'audit_mode': audit_mode, 'purpose': purpose, **limits},
         'filter': {'month_start': month_start, 'month_end': month_end},
         'comparison_mode': comparison_mode,
         'mismatch_count': len(mismatches),
@@ -163,9 +205,16 @@ def compare_releases(
         'baseline': _safe_summary(summaries['baseline']),
         'candidate': _safe_summary(summaries['candidate']),
         'identities': identities,
-        'manifest_validation': 'passed'
-        if not any(m['kind'] == 'manifest-validation' for m in mismatches)
-        else 'failed',
+        'manifest_validation': (
+            'not-requested'
+            if audit_mode == 'none'
+            else 'failed'
+            if any(m['kind'] == 'manifest-validation' for m in mismatches)
+            else 'passed'
+        ),
+        'outputs': output_evidence,
+        'audit_evidence': audit_evidence,
+        'unknown_fields': unknown_fields,
         'output_metrics': {
             'baseline_size_bytes': baseline_size,
             'candidate_size_bytes': candidate_size,
@@ -205,39 +254,131 @@ def _run_binary(
     mode: RunMode = 'normal',
     manifest_path: Path | None = None,
     timeout_seconds: float = 300,
+    memory_limit_bytes: int = 2 * 1024**3,
+    disk_limit_bytes: int = 2 * 1024**3,
 ) -> dict[str, Any]:
-    try:
-        result = subprocess.run(  # noqa: S603 - binaries are explicit, verified local files.
-            _binary_arguments(
-                binary,
-                pipeline,
-                input_path,
-                output_path,
-                month_start=month_start,
-                month_end=month_end,
-                config_path=config_path,
-                mode=mode,
-                manifest_path=manifest_path,
-            ),
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        raise ValidationError('BINARY_TIMEOUT', 'A release process exceeded its timeout.', retryable=True) from None
-    except (OSError, UnicodeError):
-        raise ValidationError('BINARY_EXECUTION_ERROR', 'A release process could not be executed or decoded.') from None
-    if result.returncode != 0:
-        raise ValidationError('BINARY_FAILED', 'A release process exited unsuccessfully.')
-    try:
-        payload = json.loads(result.stdout)
-    except (json.JSONDecodeError, UnicodeError):
-        raise ValidationError('INVALID_RUN_SUMMARY', 'A release did not return a valid JSON summary.') from None
+    payload = _limited_process(
+        _binary_arguments(
+            binary,
+            pipeline,
+            input_path,
+            output_path,
+            month_start=month_start,
+            month_end=month_end,
+            config_path=config_path,
+            mode=mode,
+            manifest_path=manifest_path,
+        ),
+        directory=output_path.parent,
+        cwd=PROJECT_ROOT,
+        timeout_seconds=timeout_seconds,
+        memory_limit_bytes=memory_limit_bytes,
+        disk_limit_bytes=disk_limit_bytes,
+    )
     _validate_summary(payload, pipeline, mode)
     return payload
+
+
+def _limited_process(
+    arguments: list[str],
+    *,
+    directory: Path,
+    timeout_seconds: float,
+    memory_limit_bytes: int,
+    disk_limit_bytes: int,
+    comparison: bool = False,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    try:
+        return run_process(
+            arguments,
+            directory=directory,
+            timeout=timeout_seconds,
+            memory_limit_bytes=memory_limit_bytes,
+            disk_limit_bytes=disk_limit_bytes,
+            cwd=cwd,
+        )['payload']
+    except MeasurementError as error:
+        codes = {
+            'RUN_TIMEOUT': 'COMPARISON_TIMEOUT' if comparison else 'BINARY_TIMEOUT',
+            'CHILD_FAILED': 'COMPARISON_FAILED' if comparison else 'BINARY_FAILED',
+            'INVALID_STDOUT': 'INVALID_COMPARISON' if comparison else 'INVALID_RUN_SUMMARY',
+        }
+        raise ValidationError(
+            codes.get(error.code, error.code),
+            'A correctness process failed or exceeded its frozen resource budgets.',
+            retryable=error.retryable,
+        ) from None
+    except (OSError, UnicodeError):
+        raise ValidationError(
+            'BINARY_EXECUTION_ERROR', 'A correctness process could not be executed or decoded.'
+        ) from None
+
+
+def _has_temporary_residue(directory: Path) -> bool:
+    return any(path.name.startswith(('.costing-', '.tmp')) for path in directory.rglob('*'))
+
+
+def _workbook_comparison(baseline: Path, candidate: Path, *, pipeline: PipelineName) -> dict[str, Any]:
+    """Run the existing complete ZIP/semantic comparison in a budgeted worker; it never returns cell values."""
+    paths = {'baseline': baseline, 'candidate': candidate}
+    mismatches: list[dict[str, Any]] = []
+    try:
+        outputs = {}
+        for name, path in paths.items():
+            # 实际 Sheet 名只读自 ZIP 元数据，不依赖 Manifest 的自我声明。
+            outputs[name] = {**file_identity(path), 'sheet_names': workbook_sheet_names(path)}
+            if outputs[name]['sheet_names'] != SHEET_NAMES:
+                mismatches.append({'kind': 'output-validation', 'side': name, 'field': 'sheet_names'})
+        if workbook_payloads_identical(baseline, candidate):
+            comparison_mode = 'package-fast-path'
+        else:
+            comparison_mode = 'semantic'
+            comparison = compare_workbooks(baseline, candidate, pipeline=pipeline)
+            mismatches.extend(
+                {'sheet': item.sheet, 'coordinate': item.coordinate, 'kind': item.mismatch_kind}
+                for item in comparison.mismatches
+            )
+        for name, path in paths.items():
+            if file_identity(path) != {key: outputs[name][key] for key in ('sha256', 'size_bytes')}:
+                return {'error_code': 'OUTPUT_IDENTITY_CHANGED'}
+    except (MeasurementError, OSError, ValueError, KeyError, BadZipFile, ParseError) as error:
+        return {'error_code': error.code if isinstance(error, MeasurementError) else 'INVALID_WORKBOOK'}
+    return {'comparison_mode': comparison_mode, 'mismatches': mismatches, 'outputs': outputs}
+
+
+def _compare_outputs(
+    baseline: Path,
+    candidate: Path,
+    *,
+    pipeline: PipelineName,
+    timeout_seconds: float,
+    memory_limit_bytes: int,
+    disk_limit_bytes: int,
+) -> dict[str, Any]:
+    # -I 隔离 Python 的导入环境；只加入已知仓库路径，业务输出目录不参与模块查找。
+    worker = (
+        'import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); '
+        'from tools.validation.compare_releases import _workbook_comparison; '
+        'print(json.dumps(_workbook_comparison(Path(sys.argv[2]), Path(sys.argv[3]), '
+        'pipeline=sys.argv[4]), ensure_ascii=False, allow_nan=False))'
+    )
+    result = _limited_process(
+        [sys.executable, '-I', '-c', worker, str(PROJECT_ROOT), str(baseline), str(candidate), pipeline],
+        directory=baseline.parent,
+        timeout_seconds=timeout_seconds,
+        memory_limit_bytes=memory_limit_bytes,
+        disk_limit_bytes=disk_limit_bytes,
+        comparison=True,
+    )
+    if 'error_code' in result:
+        # worker 只会返回自己生成的错误码；仍校验格式，避免任何子进程文本进入公开错误。
+        code = result['error_code']
+        safe = isinstance(code, str) and re.fullmatch(r'[A-Z_]+', code) is not None
+        raise ValidationError(code if safe else 'INVALID_COMPARISON', 'The workbook comparison could not be completed.')
+    if not all(key in result for key in ('comparison_mode', 'mismatches', 'outputs')):
+        raise ValidationError('INVALID_COMPARISON', 'The workbook comparison returned an incomplete result.')
+    return result
 
 
 def _validate_summary(payload: Any, pipeline: PipelineName, mode: RunMode) -> None:
@@ -395,6 +536,23 @@ def _validate_manifest(
     return [field for field, passed in expected.items() if not passed]
 
 
+def _audit_evidence(manifest: dict[str, Any] | None) -> dict[str, Any]:
+    if manifest is None:
+        return dict.fromkeys(('low_memory_writer', 'effective_config_sha256', 'warning_count', 'warnings_sha256'))
+    low_memory = manifest['execution'].get('low_memory_writer')
+    effective_hash = manifest['config'].get('effective_sha256')
+    warnings = manifest.get('warnings')
+    valid_warnings = isinstance(warnings, list) and all(isinstance(item, str) for item in warnings)
+    return {
+        'low_memory_writer': low_memory if type(low_memory) is bool else None,
+        'effective_config_sha256': effective_hash
+        if isinstance(effective_hash, str) and re.fullmatch(r'[0-9a-f]{64}', effective_hash)
+        else None,
+        'warning_count': len(warnings) if valid_warnings else None,
+        'warnings_sha256': _json_sha256(warnings) if valid_warnings else None,
+    }
+
+
 def _safe_summary(summary: dict[str, Any]) -> dict[str, Any]:
     safe = {
         key: summary.get(key)
@@ -424,7 +582,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--month-end')
     parser.add_argument('--mode', choices=('normal', 'check-only'), default='normal')
     parser.add_argument('--check-only', action='store_true')
+    parser.add_argument('--audit-mode', choices=AUDIT_MODES, default='manifest')
+    parser.add_argument('--purpose', choices=PURPOSES, default='screening')
     parser.add_argument('--timeout-seconds', type=float, default=300)
+    parser.add_argument('--memory-limit-mib', type=int, default=2048)
+    parser.add_argument('--disk-limit-mib', type=int, default=2048)
     parser.add_argument('--report', type=Path)
     return parser.parse_args()
 
@@ -445,7 +607,11 @@ def main() -> int:
             month_end=args.month_end,
             config_path=args.config,
             mode='check-only' if args.check_only else args.mode,
+            audit_mode=args.audit_mode,
+            purpose=args.purpose,
             timeout_seconds=args.timeout_seconds,
+            memory_limit_bytes=args.memory_limit_mib * 1024**2,
+            disk_limit_bytes=args.disk_limit_mib * 1024**2,
         )
         rendered = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
         if args.report is not None:

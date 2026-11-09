@@ -106,9 +106,10 @@ uv run python -m tools.validation.compare_releases `
 - 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
 - `CellValue::Text` / `DateLike` 使用 `Arc<str>`，但不建立全局或按列文本驻留池。
 - reader 的整数快路径只接受有限、无小数且安全落在 `i64` 范围内的值；其余值必须保留原字符串解析回退。
-- `rust_xlsxwriter` 使用 `rust/Cargo.toml` 中精确 revision 的受控 fork。
+- `rust_xlsxwriter` 使用 `rust/vendor/rust_xlsxwriter/` 中的受控源码，精确版本为 0.102.0；上游 revision、发布包校验和、必要补丁与完整文件哈希见 `docs/performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json`。保留来源、许可证、CHANGELOG 编译输入及原始 I/O 错误链。
 - 性能门禁见 `docs/performance/README.md`。只有测出瓶颈才优化；优化实验使用至少 8 对交错配对并记录到 `docs/changes/`。
-- Linux / Colab 的实验入口为 `tools/validation/autotune_experiment.py` 和 `colab_autotune.ipynb`；配对测量使用 `measure_paired_release.py`，Linux 峰值 RSS 与 Windows PWS 分别判定。源码包用 `prepare_colab_bundle.py` 按允许清单生成，上传前审阅内嵌业务配置，真实 ERP 数据留在本地。
+- Linux / Colab 的实验入口为 `tools/validation/autotune_experiment.py` 和 `colab_autotune.ipynb`；配对测量使用 `measure_paired_release.py`，Linux 峰值 RSS 与 Windows PWS 分别判定。源码包用 `prepare_colab_bundle.py` 按允许清单生成，上传前审阅内嵌业务配置，真实 ERP 数据留在本地。依赖/fork 候选须精确声明 Cargo、锁包及源码载荷；实际执行工具与业务源码分别冻结。
+- 配对与比较支持 `--audit-mode manifest|none`，用途通过 `--purpose` 区分；日常无 Manifest 与审计模式分别校准。Linux 独立 N=5 入口为 `autotune_experiment.run_acceptance`，要求已有合格的 8 对入围证据；诊断结果不能推荐。
 - Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。
 - `RunManifestV1` schema 仍是 V1；应用版本升级不得顺带改 schema。
 - 推送正式标签、GitHub Release 或其他外部资产前必须获得明确确认。

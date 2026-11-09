@@ -381,6 +381,82 @@ fn rejects_extra_non_default_sheet() {
 }
 
 #[test]
+fn xlsx_io_wrappers_preserve_the_original_os_error() {
+    let raw_os_error = if cfg!(windows) { 112 } else { 28 };
+    for error in [
+        XlsxError::IoError(std::io::Error::from_raw_os_error(raw_os_error)),
+        XlsxError::TempFileError(
+            PathBuf::from("writer-temp"),
+            std::io::Error::from_raw_os_error(raw_os_error),
+        ),
+        XlsxError::ZipError(zip::result::ZipError::Io(
+            std::io::Error::from_raw_os_error(raw_os_error),
+        )),
+    ] {
+        let mut source = Some(&error as &(dyn Error + 'static));
+        let mut original_io = None;
+        while let Some(current) = source {
+            if let Some(io_error) = current.downcast_ref::<std::io::Error>() {
+                original_io = Some(io_error);
+                break;
+            }
+            source = current.source();
+        }
+        assert_eq!(
+            original_io
+                .expect("original I/O error in source chain")
+                .raw_os_error(),
+            Some(raw_os_error)
+        );
+        let WriterPrimaryError::Io(source) =
+            primary_from_xlsx_error(CostingXlsxError::Writer(error))
+        else {
+            panic!("expected original I/O error");
+        };
+        assert_eq!(source.kind(), ErrorKind::StorageFull);
+        assert_eq!(source.raw_os_error(), Some(raw_os_error));
+    }
+    assert!(matches!(
+        primary_from_xlsx_error(CostingXlsxError::Writer(XlsxError::ZipError(
+            zip::result::ZipError::UnsupportedArchive("unsupported test option"),
+        ))),
+        WriterPrimaryError::Xlsx(_)
+    ));
+}
+
+#[cfg(feature = "low-memory")]
+#[test]
+fn low_memory_factory_failure_keeps_initialization_stage_and_directory() {
+    let directory = unique_temp_dir("factory-missing");
+    let output = directory.with_extension("xlsx");
+    let mut workbook = Workbook::new();
+    workbook.set_tempdir(&directory).unwrap();
+    std::fs::remove_dir(&directory).unwrap();
+
+    let error = populate_sheet(
+        &writer_context(),
+        &output,
+        &mut workbook,
+        &sheet("成本计算单总表"),
+        true,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.context.details.stage,
+        ErrorStage::InitializeLowMemoryTempWriter
+    );
+    assert_eq!(
+        error.context.details.path.as_deref(),
+        Some(directory.as_path())
+    );
+    assert!(
+        matches!(error.primary, WriterPrimaryError::Io(ref source) if source.kind() == ErrorKind::NotFound)
+    );
+    assert!(!output.exists());
+}
+
+#[test]
 fn cleanup_failure_does_not_replace_primary_error() {
     let output = unique_temp_path("cleanup-primary");
     let raw_os_error = if cfg!(windows) { 112 } else { 28 };

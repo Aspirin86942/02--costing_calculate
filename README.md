@@ -145,9 +145,13 @@ Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在�
 这些优化不改变 workbook、CLI 或 Manifest 契约。当前门禁、复测命令和实测结果见
 [`docs/performance/README.md`](docs/performance/README.md)。
 
+Excel 读取使用 calamine `0.38.0`，写出使用 rust_xlsxwriter `0.102.0` 受控源码；ZIP/压缩依赖同步更新并由锁文件固定。
+上游来源、必要错误处理修补和新旧输出验证见[依赖更新记录](docs/changes/2026-11-08-upstream-refresh.md)。
+
 离线调优工具可在本机 Linux 或 Colab CPU 环境运行：自动构建候选、生成合成数据、比较结果并配对测速。
 入口是 [`colab_autotune.ipynb`](tools/validation/colab_autotune.ipynb)，本地命令与验收条件见
 [离线调优说明](docs/performance/README.md#linux--colab-离线调优)。源码包包含内嵌业务配置，上传前须审阅；真实 ERP 数据留在本地。
+读写与压缩的阶段开销、候选判定及剩余验收见[当前优化记录](docs/changes/2026-11-08-xlsx-io-optimization.md)。
 
 ## 常见错误
 

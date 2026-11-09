@@ -11,6 +11,10 @@
 
 ## 当前记录
 
+- [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Excel 读写最新稳定上游、受控本地源码、接口适配及兼容验证。
+
+- [`2026-11-08-xlsx-io-optimization.md`](2026-11-08-xlsx-io-optimization.md)：Excel 读写、压缩与发布的隔离诊断、候选筛选及验收记录。
+
 - [`2026-11-08-disable-automatic-ci.md`](2026-11-08-disable-automatic-ci.md)：关闭 GitHub CI 自动运行，并记录首次远端运行中 Windows 测试失败的原因。
 - [`2026-11-08-colab-autotuning-tooling.md`](2026-11-08-colab-autotuning-tooling.md)：离线调优工具、允许文件包、合成验证与本地候选筛选。
 - [`2026-11-08-linux-environment.md`](2026-11-08-linux-environment.md)：Linux 原生构建、公共验证适配与 GB / SK 隔离运行验收。

@@ -13,6 +13,10 @@
 
 ## 当前文件
 
+- [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Completed，Excel 读写及必要压缩上游已更新，受控修补与 Linux 本机兼容验收通过；跨平台缺口见实施记录。
+
+- [`2026-11-08-xlsx-io-optimization.md`](2026-11-08-xlsx-io-optimization.md)：In Progress，Excel 全链路开销定位、受控依赖候选、配对筛选与目标电脑验收。
+
 - [`2026-11-08-colab-offline-autotuning.md`](2026-11-08-colab-offline-autotuning.md)：In Progress，Colab 离线调优 v1；本地工具与合成实验已实施，云端及目标电脑真实 GB/SK 采纳待验收。
 - [`2026-08-13-production-code-simplification.md`](2026-08-13-production-code-simplification.md)：Completed，生产代码深度简化计划（结果见 `../changes/2026-08-13-production-code-simplification.md`）。
 - [`2026-08-13-production-code-simplification-implementation.md`](2026-08-13-production-code-simplification-implementation.md)：Completed，深度简化的 13 任务实施计划（每批门禁、护栏与检查点）。

@@ -42,8 +42,12 @@ pub fn build_workbook_payload(
     timings: StageTimings,
     month_filter_empty_result: bool,
 ) -> Result<WorkbookPayload, CostingError> {
-    let quality_metrics = build_quality_metrics(&bundle, month_filter_empty_result)?;
     let work_order_sheet = build_work_order_anomaly_sheet(&bundle, config)?;
+    let quality_metrics = build_quality_metrics(
+        &bundle,
+        work_order_sheet.rows.len(),
+        month_filter_empty_result,
+    )?;
     let detail_columns = column_names(&bundle.schema, &bundle.detail_display_columns)?;
     let qty_base_columns = column_names(&bundle.schema, &bundle.qty_display_columns)?;
     let qty_columns = qty_sheet_columns(&qty_base_columns, config);

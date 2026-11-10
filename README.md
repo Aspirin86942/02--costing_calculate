@@ -126,6 +126,8 @@ Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在�
 
 月份过滤会在 `.xlsx` 前加入 `_YYYY-MM_YYYY-MM`、`_from_YYYY-MM` 或 `_to_YYYY-MM`。程序不会覆盖已有 workbook 或 Manifest，也拒绝输入和输出指向同一文件。
 
+完整 SK ERP 导出支持前置元数据、58 列双层表头及错误声明为 `A1` 的工作表范围。SK 工单材料金额采用 ERP 直接材料汇总，子项明细保留供核查，差异在数量页和分析页提示复核；输入规则和金额口径见[工作簿契约](docs/contracts/workbook.md)。
+
 ## 输出内容
 
 正常运行只生成一个处理后 workbook，固定包含三张 Sheet：

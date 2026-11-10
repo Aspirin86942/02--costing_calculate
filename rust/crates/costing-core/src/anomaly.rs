@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 
 use crate::error::CostingError;
 use crate::model::{CellValue, FactBundle, QtyFactRow, SheetModel};
-use crate::pipeline::PipelineRules;
+use crate::pipeline::{PipelineName, PipelineRules};
 use crate::scoring::{
     decimal_ln, grade_score, modified_z_score, resolve_effective_log_mad, weighted_mad,
     weighted_median,
@@ -290,6 +290,9 @@ fn build_anomaly_row<'a>(
     let production_scope =
         map_doc_type_to_scope(&text_any(schema, row, &["doc_type", "单据类型"])?);
     let mut reasons = Vec::new();
+    if config.name == PipelineName::Sk && !row.check_reason.is_empty() {
+        reasons.push(row.check_reason.clone());
+    }
     if production_scope == UNKNOWN_SCOPE {
         reasons.push("单据类型未归类，不参与正常生产/返工生产异常池".to_string());
     }

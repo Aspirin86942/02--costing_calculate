@@ -6,6 +6,7 @@ use crate::table::ColumnSchema;
 
 pub fn build_quality_metrics(
     bundle: &FactBundle,
+    work_order_output_rows: usize,
     month_filter_empty_result: bool,
 ) -> Result<Vec<QualityMetric>, CostingError> {
     let null_rate_value = if month_filter_empty_result {
@@ -54,8 +55,8 @@ pub fn build_quality_metrics(
         QualityMetric {
             category: "行数勾稽".to_string(),
             metric: "工单异常分析输出行数".to_string(),
-            value: bundle.work_order_row_count().to_string(),
-            description: "去重后的工单级分析行数".to_string(),
+            value: work_order_output_rows.to_string(),
+            description: "产品池筛选后实际输出到分析页的工单行数".to_string(),
         },
         QualityMetric {
             category: "空值率".to_string(),
@@ -238,7 +239,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let metrics = build_quality_metrics(&bundle, bundle.work_order_row_count(), false).unwrap();
         let metric_map = metrics
             .iter()
             .map(|metric| (metric.metric.as_str(), metric))
@@ -274,7 +275,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle, true).unwrap();
+        let metrics = build_quality_metrics(&bundle, 0, true).unwrap();
         let metric_map = metrics
             .iter()
             .map(|metric| (metric.metric.as_str(), metric))
@@ -319,7 +320,8 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let error = build_quality_metrics(&bundle, false).unwrap_err();
+        let error =
+            build_quality_metrics(&bundle, bundle.work_order_row_count(), false).unwrap_err();
 
         assert_eq!(error.code(), crate::error::ErrorCode::InternalError);
     }
@@ -342,7 +344,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let metrics = build_quality_metrics(&bundle, bundle.work_order_row_count(), false).unwrap();
         let duplicate = metrics
             .iter()
             .find(|metric| metric.metric == "工单主键重复行数")
@@ -393,7 +395,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let metrics = build_quality_metrics(&bundle, bundle.work_order_row_count(), false).unwrap();
         let coverage = metrics
             .iter()
             .find(|metric| metric.metric == "可参与分析占比")
@@ -436,7 +438,7 @@ mod tests {
             error_issues: Vec::new(),
         };
 
-        let metrics = build_quality_metrics(&bundle, false).unwrap();
+        let metrics = build_quality_metrics(&bundle, bundle.work_order_row_count(), false).unwrap();
         let non_positive = metrics
             .iter()
             .find(|metric| metric.metric == "完工数量小于等于0行数")

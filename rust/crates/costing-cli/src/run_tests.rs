@@ -367,7 +367,7 @@ fn run_omits_writer_breakdown_and_output_size_for_check_only() {
     };
     let summary = run(args).unwrap();
 
-    assert_run_counts(&summary, 1, 0, 1, 1, 1, 10);
+    assert_run_counts(&summary, 1, 0, 1, 0, 1, 10);
     assert_stage_timings(&summary, false, false);
     assert!(!summary.request_id.is_empty());
     assert_eq!(summary.output_size_bytes, None);
@@ -586,7 +586,7 @@ fn run_filters_rows_inside_month_range_before_split_summary() {
     };
     let summary = run(args).unwrap();
 
-    assert_run_counts(&summary, 2, 0, 1, 1, 1, 10);
+    assert_run_counts(&summary, 2, 0, 1, 0, 1, 10);
     let _ = std::fs::remove_file(path);
 }
 

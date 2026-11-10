@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [`2026-11-09-full-sk-erp-format.md`](2026-11-09-full-sk-erp-format.md)：完整 58 列 SK ERP 格式、材料汇总口径、分析页计数及全量验收。
+
 - [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Excel 读写最新稳定上游、受控本地源码、接口适配及兼容验证。
 
 - [`2026-11-08-xlsx-io-optimization.md`](2026-11-08-xlsx-io-optimization.md)：Excel 读写、压缩与发布的隔离诊断、候选筛选及验收记录。

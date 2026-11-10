@@ -41,6 +41,7 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
     let qty_display_columns = schema.display_order_for(&qty_names)?;
     let mut detail_rows = Vec::new();
     let mut qty_rows = Vec::new();
+    let mut material_summary_rows = Vec::new();
 
     for mut row in rows {
         let material_text = row_text(&row, columns.child_material)?;
@@ -66,6 +67,8 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
                 row.replace(cost_item, filled_cost_item)?;
             }
             detail_rows.push(row);
+        } else if cost_item_text.as_deref() == Some(DIRECT_MATERIAL_NAME) {
+            material_summary_rows.push(row);
         }
     }
 
@@ -75,6 +78,7 @@ pub fn split_detail_and_qty(frame: NormalizedCostFrame) -> Result<SplitResult, C
         detail_rows,
         qty_display_columns,
         qty_rows,
+        material_summary_rows,
     })
 }
 
@@ -398,8 +402,6 @@ mod tests {
         )
         .unwrap();
         let result = split_detail_and_qty(NormalizedCostFrame::new(table, vec![])).unwrap();
-        let (_, _, _, qty_display, _) = result.into_parts();
-
-        assert_eq!(qty_display.len(), 1);
+        assert_eq!(result.qty_display_columns.len(), 1);
     }
 }

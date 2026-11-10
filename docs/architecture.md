@@ -85,7 +85,7 @@ normalize -> split -> fact -> presentation
 负责：
 
 - 表头标准化、别名、向下填充和月份过滤；
-- 明细/数量拆分；
+- 明细/数量拆分，以及 SK ERP 直接材料汇总的独立传递；
 - Decimal 金额、单位成本和勾稽；
 - 异常池、Modified Z-score、等级和解释；
 - 质量指标、error log 和三张 Sheet 的展示模型。

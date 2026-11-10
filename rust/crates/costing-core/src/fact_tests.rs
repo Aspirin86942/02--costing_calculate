@@ -110,6 +110,7 @@ fn split_result_with_columns(
         detail_display_columns,
         detail_rows: rows,
         qty_rows,
+        material_summary_rows: Vec::new(),
     }
 }
 
@@ -129,6 +130,90 @@ fn bundle_columns(bundle: &FactBundle) -> Vec<String> {
         .iter()
         .map(|id| bundle.schema.name(*id).unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn sk_material_summary_is_authoritative_and_missing_values_remain_auditable() {
+    let number = |value| CellValue::Decimal(Decimal::from(value));
+    for (summaries, expected_material, completed_total, missing_summary) in [
+        (vec![number(40)], 40, 50, false),
+        (vec![], 60, 70, false),
+        (vec![number(40), number(5)], 45, 55, false),
+        (vec![CellValue::Blank, number(40)], 0, 10, true),
+        (vec![number(0)], 0, 10, false),
+    ] {
+        let summary_count = summaries.len();
+        let mut details = vec![
+            detail_row("直接材料", number(60)),
+            detail_row("直接人工", number(10)),
+        ];
+        details.extend(
+            summaries
+                .into_iter()
+                .map(|amount| detail_row("直接材料", amount)),
+        );
+        let mut split = split_result(
+            details,
+            vec![qty_row(Decimal::TEN, Decimal::from(completed_total))],
+        );
+        for _ in 0..summary_count {
+            split
+                .material_summary_rows
+                .push(split.detail_rows.pop().unwrap());
+        }
+        let bundle = build_fact_bundle(split, &PipelineRules::for_name(PipelineName::Sk)).unwrap();
+        assert_eq!(
+            bundle.qty_rows[0].amounts.direct_material,
+            Decimal::from(expected_material)
+        );
+        assert!(bundle.qty_rows[0].total_matches);
+        assert_eq!(bundle.detail_rows.len(), 2);
+        assert_eq!(
+            bundle
+                .error_issues
+                .iter()
+                .filter(|issue| issue.issue_type == "MISSING_AMOUNT")
+                .count(),
+            usize::from(missing_summary),
+        );
+        let material_mismatch = summary_count > 0 && !missing_summary && expected_material != 60;
+        assert_eq!(
+            bundle
+                .error_issues
+                .iter()
+                .filter(|issue| issue.issue_type == "MATERIAL_DETAIL_MISMATCH")
+                .count(),
+            usize::from(material_mismatch),
+        );
+        assert_eq!(
+            bundle.qty_rows[0].check_reason.is_empty(),
+            !missing_summary && !material_mismatch
+        );
+    }
+}
+
+#[test]
+fn gb_keeps_material_detail_amount_when_summary_rows_are_present() {
+    let mut split = split_result(
+        vec![
+            detail_row("直接材料", CellValue::Decimal(Decimal::from(60))),
+            detail_row("直接材料", CellValue::Decimal(Decimal::from(40))),
+        ],
+        vec![qty_row(Decimal::ONE, Decimal::from(60))],
+    );
+    split
+        .material_summary_rows
+        .push(split.detail_rows.pop().unwrap());
+    let bundle = build_fact_bundle(split, &PipelineRules::for_name(PipelineName::Gb)).unwrap();
+    assert_eq!(
+        bundle.qty_rows[0].amounts.direct_material,
+        Decimal::from(60)
+    );
+    assert!(bundle.qty_rows[0].total_matches);
+    assert!(!bundle
+        .error_issues
+        .iter()
+        .any(|issue| issue.issue_type == "MATERIAL_DETAIL_MISMATCH"));
 }
 
 #[test]

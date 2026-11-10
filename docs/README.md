@@ -71,6 +71,12 @@
 - 最新上游更新与适配：[`changes/2026-11-08-upstream-refresh.md`](changes/2026-11-08-upstream-refresh.md)
 - 受控写出源码来源与哈希：[`performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json`](performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)
 
+## 完整 SK ERP 格式
+
+- 输入、材料金额口径与输出计数：[`contracts/workbook.md`](contracts/workbook.md)
+- 全量适配及真实文件验收：[`changes/2026-11-09-full-sk-erp-format.md`](changes/2026-11-09-full-sk-erp-format.md)
+- 用户确认的 ERP 材料汇总决策：[`decisions/2026-11-09-sk-material-summary.md`](decisions/2026-11-09-sk-material-summary.md)
+
 ## GitHub CI
 
 - 自动触发已关闭，仅手动运行并在发布前复用：[`decisions/2026-11-08-manual-ci.md`](decisions/2026-11-08-manual-ci.md)

@@ -96,6 +96,7 @@ pub struct SplitResult {
     pub(crate) detail_rows: Vec<IndexedRow>,
     pub(crate) qty_display_columns: Vec<ColumnId>,
     pub(crate) qty_rows: Vec<IndexedRow>,
+    pub(crate) material_summary_rows: Vec<IndexedRow>,
 }
 
 impl SplitResult {
@@ -112,24 +113,6 @@ impl SplitResult {
     #[cfg(test)]
     pub(crate) fn qty_rows(&self) -> &[IndexedRow] {
         &self.qty_rows
-    }
-
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        ColumnSchema,
-        Vec<ColumnId>,
-        Vec<IndexedRow>,
-        Vec<ColumnId>,
-        Vec<IndexedRow>,
-    ) {
-        (
-            self.schema,
-            self.detail_display_columns,
-            self.detail_rows,
-            self.qty_display_columns,
-            self.qty_rows,
-        )
     }
 }
 

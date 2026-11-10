@@ -408,6 +408,48 @@ mod tests {
     }
 
     #[test]
+    fn reads_actual_cells_when_exported_dimension_is_a1() {
+        use std::io::Write;
+
+        use zip::write::SimpleFileOptions;
+        use zip::{ZipArchive, ZipWriter};
+
+        let path = unique_temp_path("incorrect-dimension");
+        write_reader_fixture(&path);
+        let expected = read_raw_workbook(&path).unwrap();
+        let mut archive = ZipArchive::new(Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().unwrap().into_owned();
+            if name == "xl/worksheets/sheet1.xml" {
+                let mut xml = String::new();
+                entry.read_to_string(&mut xml).unwrap();
+                let changed =
+                    xml.replacen("<dimension ref=\"A1:C4\"/>", "<dimension ref=\"A1\"/>", 1);
+                assert_ne!(changed, xml);
+                writer
+                    .start_file(
+                        name,
+                        SimpleFileOptions::default().compression_method(entry.compression()),
+                    )
+                    .unwrap();
+                writer.write_all(changed.as_bytes()).unwrap();
+            } else {
+                writer.raw_copy_file(entry).unwrap();
+            }
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert_eq!(read_raw_workbook(&path).unwrap(), expected);
+        assert_eq!(read_raw_workbook_from_bytes(&bytes).unwrap(), expected);
+        assert_eq!(expected.rows.len(), 2);
+        assert_eq!(expected.header_rows[0].len(), 3);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn rejects_workbook_without_recognizable_header_pair() {
         let path = unique_temp_path("missing-header");
         let mut workbook = Workbook::new();

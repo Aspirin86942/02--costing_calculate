@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [`2026-11-09-sk-material-summary.md`](2026-11-09-sk-material-summary.md)：按用户确认的 ERP 汇总计算 SK 材料成本，同时保留子项差异核查。
+
 - [`2026-07-25-toml-sha2-review.md`](2026-07-25-toml-sha2-review.md)：`toml` / `sha2` 生产依赖批准。
 - [`2026-07-27-documentation-lifecycle.md`](2026-07-27-documentation-lifecycle.md)：文档分层、只读档案和事实同步规则。
 - [`2026-07-27-python-validation-only.md`](2026-07-27-python-validation-only.md)：退役 Python 业务实现，仅保留验证工具。

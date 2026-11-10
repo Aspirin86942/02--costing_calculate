@@ -4,7 +4,7 @@ use rust_decimal::Decimal;
 
 use crate::error::CostingError;
 use crate::model::{CellValue, CostAmounts, ErrorIssue, FactBundle, QtyFactRow, SplitResult};
-use crate::pipeline::PipelineRules;
+use crate::pipeline::{PipelineName, PipelineRules};
 use crate::sheet_contract::qty_sheet_base_columns;
 use crate::table::{ColumnId, ColumnSchema, IndexedRow};
 
@@ -241,8 +241,14 @@ pub fn build_fact_bundle(
     split: SplitResult,
     config: &PipelineRules,
 ) -> Result<FactBundle, CostingError> {
-    let (schema, detail_display_columns, detail_rows, qty_display_columns, qty_source_rows) =
-        split.into_parts();
+    let SplitResult {
+        schema,
+        detail_display_columns,
+        detail_rows,
+        qty_display_columns,
+        qty_rows: qty_source_rows,
+        material_summary_rows,
+    } = split;
     let detail_columns = DetailFactColumns::resolve(&schema)?;
     let qty_columns = QtyFactColumns::resolve(&schema)?;
     let mut error_issues = Vec::new();
@@ -252,6 +258,13 @@ pub fn build_fact_bundle(
         config,
         &mut error_issues,
     )?;
+
+    let material_summaries = if config.name == PipelineName::Sk {
+        aggregate_material_summaries(&material_summary_rows, &detail_columns)?
+    } else {
+        HashMap::new()
+    };
+    drop(material_summary_rows);
 
     let qty_input_row_count = qty_source_rows.len();
     let PreparedQtyRows {
@@ -277,11 +290,28 @@ pub fn build_fact_bundle(
     let mut unique_work_order_indices = Vec::new();
     let mut seen_work_orders = HashSet::new();
     for prepared in prepared_rows {
-        let amounts = amounts_by_key
+        let mut amounts = amounts_by_key
             .get(&prepared.work_order_key)
             .cloned()
             .unwrap_or_else(|| CostAmounts::new(config.standalone_cost_items.len()));
-        let audit = calculate_reconciliation(&amounts, prepared.completed_total, config);
+        let material_reason =
+            material_summaries
+                .get(&prepared.work_order_key)
+                .and_then(|summary| {
+                    apply_material_summary(
+                        &prepared.work_order_key,
+                        *summary,
+                        &mut amounts,
+                        &mut error_issues,
+                    )
+                });
+        let mut audit = calculate_reconciliation(&amounts, prepared.completed_total, config);
+        if let Some(reason) = material_reason {
+            if !audit.check_reason.is_empty() {
+                audit.check_reason.push(';');
+            }
+            audit.check_reason.push_str(reason);
+        }
         append_reconciliation_issues_in_current_order(
             &mut error_issues,
             &prepared.work_order_key,
@@ -398,6 +428,61 @@ fn aggregate_detail_rows_in_input_order(
             .add(classification, amount);
     }
     Ok(amounts_by_key)
+}
+
+fn aggregate_material_summaries(
+    rows: &[IndexedRow],
+    columns: &DetailFactColumns,
+) -> Result<HashMap<String, Option<Decimal>>, CostingError> {
+    let mut summaries = HashMap::new();
+    for row in rows {
+        let key = work_order_key(row, &columns.key)?;
+        let amount = cell_to_decimal(row.get(columns.completed_amount)?);
+        let total = summaries.entry(key).or_insert(Some(ZERO));
+        *total = match (*total, amount) {
+            (Some(current), Some(value)) => Some(current + value),
+            _ => None,
+        };
+    }
+    Ok(summaries)
+}
+
+fn apply_material_summary(
+    key: &str,
+    summary: Option<Decimal>,
+    amounts: &mut CostAmounts,
+    issues: &mut Vec<ErrorIssue>,
+) -> Option<&'static str> {
+    // 完整 SK 的 ERP 汇总是工单材料金额来源；子项金额继续保留并独立核查。
+    let detail_amount = amounts.direct_material;
+    amounts.direct_material = summary.unwrap_or(ZERO);
+    match summary {
+        Some(amount) if amount == detail_amount => None,
+        Some(amount) => {
+            let reason = "材料子项合计与ERP汇总不一致";
+            issues.push(error_issue(
+                key.to_string(),
+                "MATERIAL_DETAIL_MISMATCH",
+                "直接材料",
+                format!("子项明细合计={detail_amount};ERP汇总={amount}"),
+                reason,
+                "工单成本按ERP汇总计算，保留明细并标记需复核",
+            ));
+            Some(reason)
+        }
+        None => {
+            let reason = "ERP直接材料汇总金额缺失";
+            issues.push(error_issue(
+                key.to_string(),
+                "MISSING_AMOUNT",
+                "直接材料汇总本期完工金额",
+                String::new(),
+                reason,
+                "材料金额按0计算并标记需复核",
+            ));
+            Some(reason)
+        }
+    }
 }
 
 fn duplicate_work_order_issue(work_order_key: &str, count: usize) -> ErrorIssue {

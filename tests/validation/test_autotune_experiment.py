@@ -198,6 +198,43 @@ def test_patch_scope_is_checked_before_execution_and_after_application(tmp_path:
     assert (candidate / relative).read_text(encoding='utf-8') == 'fn after() {}\n'
 
 
+def test_each_source_tree_has_its_own_cargo_artifacts(
+    bundle: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work = tmp_path / 'isolated-artifacts'
+    work.mkdir()
+    (work / 'logs').mkdir()
+    destinations: dict[str, list[Path]] = {'build': [], 'test': []}
+
+    def build(tree: Path, target_dir: Path, destination: Path, **kwargs: Any) -> dict[str, str]:
+        destinations['build'].append(target_dir)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(tree.name.encode())
+        return {'binary_sha256': tune._sha256(destination)}
+
+    def run_tests(tree: Path, target_dir: Path, **kwargs: Any) -> None:
+        destinations['test'].append(target_dir)
+
+    monkeypatch.setattr(tune, 'build_binary', build)
+    monkeypatch.setattr(tune, 'run_rust_tests', run_tests)
+    experiment = tune.Experiment(
+        bundle=bundle,
+        work=work,
+        manifest=tune.verify_bundle(bundle),
+        deadline=time.monotonic() + 60,
+        report={'builds': {}},
+    )
+    for name in ('baseline', 'control'):
+        experiment.build(name, None)
+        assert experiment.run_tests(name)['status'] == 'passed'
+    for paths in destinations.values():
+        assert len(set(paths)) == 2
+        assert [path.name for path in paths] == ['baseline', 'control']
+        assert all(path.is_relative_to(work) for path in paths)
+
+
 def _dependency_patch(tmp_path: Path, *, extra: str = '') -> tuple[Path, Path, Path, dict[str, Any]]:
     baseline, candidate = tmp_path / 'baseline', tmp_path / 'candidate'
     manifest = '[workspace.dependencies]\nflate2 = "1.0"\n[profile.release]\ncodegen-units = 1\n'
@@ -579,6 +616,10 @@ def test_large_semantic_scenario_uses_clean_months_and_keeps_dirty_checks() -> N
     from tools.validation.synthetic_benchmark import benchmark_spec
 
     scenarios = tune._correctness_scenarios()
+    assert {
+        (f'sk-full-{name}', 'sk', 'full-sk', tune.SEED, mode, start, end)
+        for name, mode, start, end in tune.SMALL_CHECKS
+    } <= set(scenarios)
     assert tune.SEMANTIC_SCENARIO in scenarios
     _, pipeline, size, seed, mode, start, end = tune.SEMANTIC_SCENARIO
     spec = benchmark_spec(pipeline, size, seed)
@@ -772,6 +813,8 @@ def test_bad_workbook_is_not_timed_and_skipping_rust_tests_cannot_recommend(
         {'run_timeout': 0},
         {'budget_seconds': 21601},
         {'budget_seconds': float('nan')},
+        {'memory_limit_bytes': 2 * 1024**3 + 1},
+        {'disk_limit_bytes': 2 * 1024**3 + 1},
     ],
 )
 def test_protocol_cannot_be_weakened(bundle: Path, tmp_path: Path, arguments: dict[str, Any]) -> None:
@@ -796,7 +839,7 @@ def test_every_build_test_and_fixture_precedes_the_first_measurement(
     built, tested, fixtures, _ = stubbed['measurement_preparation'][0]
     assert built == ['baseline', 'control', 'candidate-1', 'candidate-2', 'candidate-3', 'candidate-4']
     assert tested == ['baseline', 'candidate-1', 'candidate-2', 'candidate-3', 'candidate-4']
-    assert fixtures == 10
+    assert fixtures == 11
     assert any(kwargs.get('audit_mode') == 'none' for _, _, _, kwargs in stubbed['measurement_preparation'])
 
 
@@ -1067,10 +1110,47 @@ def test_actual_measurement_call_uses_frozen_identity_and_protocol(
 
 
 @pytest.mark.parametrize(
-    'case', ['passed', 'short-screening', 'diagnostic-screening', 'wrong-binary', 'unknown-writer', 'bundle-changed']
+    'resource_options',
+    [
+        pytest.param({}, id='standard-default'),
+        pytest.param({'pipeline': 'sk', 'resource_scenario': 'full-sk'}, id='full-sk-default'),
+        pytest.param(
+            {
+                'pipeline': 'sk',
+                'resource_scenario': 'full-sk',
+                'memory_limit_bytes': 6 * 1024**3,
+                'disk_limit_bytes': 4 * 1024**3,
+            },
+            id='full-sk-caps',
+        ),
+        pytest.param(
+            {
+                'pipeline': 'sk',
+                'resource_scenario': 'full-sk',
+                'memory_limit_bytes': 5 * 1024**3,
+                'disk_limit_bytes': 3 * 1024**3,
+                'timeout': 300,
+                'budget_seconds': 900,
+            },
+            id='full-sk-lower-budgets',
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    'case',
+    [
+        'passed',
+        'short-screening',
+        'diagnostic-screening',
+        'wrong-binary',
+        'unknown-writer',
+        'bundle-changed',
+        'resource-scenario-changed',
+        'below-performance-gate',
+    ],
 )
 def test_independent_acceptance_reuses_measure_pairs_with_five_pairs_and_audit_replay(
-    bundle: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+    bundle: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str, resource_options: dict[str, Any]
 ) -> None:
     experiment = _prepared_driver(bundle, tmp_path)
     fixture = experiment.fixtures[('gb', 'small', tune.SEED)]
@@ -1106,15 +1186,27 @@ def test_independent_acceptance_reuses_measure_pairs_with_five_pairs_and_audit_r
         options['output_dir'].mkdir()
         if options['audit_mode'] == 'manifest':
             for side in ('baseline', 'candidate'):
-                (options['output_dir'] / f'{side}-gb.manifest.json').write_text(
+                (options['output_dir'] / f'{side}-{options["pipeline"]}.manifest.json').write_text(
                     json.dumps({'execution': {'low_memory_writer': None if case == 'unknown-writer' else False}}),
                     encoding='utf-8',
                 )
+        if case == 'resource-scenario-changed':
+            scenario = resource_options.get('resource_scenario', 'standard')
+            monkeypatch.setitem(
+                tune.ACCEPTANCE_RESOURCE_SCENARIOS[scenario],
+                'memory_limit_bytes',
+                tune.ACCEPTANCE_RESOURCE_SCENARIOS[scenario]['memory_limit_bytes'] + 1,
+            )
         return {'status': 'passed'}
 
     def measure(**options: Any) -> Any:
         calls.append(options)
-        return _raw_measurement(options, fixture['spec'])
+        measurement = _raw_measurement(options, fixture['spec'])
+        if case == 'below-performance-gate' and options['purpose'] == 'acceptance':
+            for pair in measurement['samples']:
+                pair['candidate']['external_wall_seconds'] = 0.96
+            measurement['summary'] = paired_statistics(measurement['samples'])
+        return measurement
 
     monkeypatch.setattr(tune, 'compare_releases', compare)
     monkeypatch.setattr(tune, 'measure_pairs', measure)
@@ -1129,7 +1221,7 @@ def test_independent_acceptance_reuses_measure_pairs_with_five_pairs_and_audit_r
             input_path=fixture['input'],
             config_path=fixture['config'],
             output_dir=tmp_path / 'acceptance',
-            pipeline='gb',
+            **{'pipeline': 'gb', **resource_options},
         )
 
     if case in ('short-screening', 'diagnostic-screening', 'wrong-binary', 'bundle-changed'):
@@ -1137,15 +1229,96 @@ def test_independent_acceptance_reuses_measure_pairs_with_five_pairs_and_audit_r
             run()
         assert not (tmp_path / 'acceptance').exists()
         assert calls == comparisons == []
+    elif case == 'resource-scenario-changed':
+        with pytest.raises(tune.ExperimentError) as failure:
+            run()
+        assert failure.value.code == 'IDENTITY_CHANGED'
+        assert len(comparisons) == 1 and not calls
+        assert not (tmp_path / 'acceptance/acceptance-report.json').exists()
     else:
         report = run()
         assert [item['audit_mode'] for item in comparisons] == ['none', 'manifest']
         assert all(item['purpose'] == 'acceptance' for item in comparisons)
+        expected_limits = {
+            'memory_limit_bytes': resource_options.get('memory_limit_bytes', 2 * 1024**3),
+            'disk_limit_bytes': resource_options.get('disk_limit_bytes', 2 * 1024**3),
+            'run_timeout_seconds': resource_options.get('timeout', 600),
+            'budget_seconds': resource_options.get('budget_seconds', 21600),
+        }
+        assert report['resource_scenario'] == resource_options.get('resource_scenario', 'standard')
+        assert report['limits'] == expected_limits
+        assert report['resource_identity_sha256'] == tune._json_hash(
+            {key: report[key] for key in ('protocol_sha256', 'resource_scenario', 'limits')}
+        )
+        assert json.loads((tmp_path / 'acceptance/acceptance-report.json').read_text()) == report
+        for options in [*comparisons, *calls]:
+            assert options['pipeline'] == resource_options.get('pipeline', 'gb')
+            for field in ('memory_limit_bytes', 'disk_limit_bytes'):
+                assert options[field] == expected_limits[field]
         if case == 'unknown-writer':
             assert report['status'] == 'failed' and not calls
         else:
             assert [(item['pairs'], item['purpose']) for item in calls] == [(4, 'calibration'), (5, 'acceptance')]
-            assert report['status'] == 'passed'
+            if case == 'below-performance-gate':
+                assert report['status'] == 'failed'
+                assert report['evaluation']['reasons'] == ['PRIMARY_IMPROVEMENT_BELOW_GATE']
+            else:
+                assert report['status'] == 'passed'
             assert report['measurement']['options']['purpose'] == 'acceptance'
             assert report['correctness']['manifest']['writer_replay'] == {'baseline': False, 'candidate': False}
-            assert json.loads((tmp_path / 'acceptance/acceptance-report.json').read_text())['purpose'] == 'acceptance'
+
+
+@pytest.mark.parametrize(
+    'arguments',
+    [
+        {'resource_scenario': 'full-sk', 'pipeline': 'gb'},
+        {'resource_scenario': 'unknown'},
+        {'resource_scenario': None},
+        {'resource_scenario': []},
+        {'resource_scenario': True},
+        {'memory_limit_bytes': 2 * 1024**3 + 1},
+        {'disk_limit_bytes': 2 * 1024**3 + 1},
+        {'resource_scenario': 'full-sk', 'memory_limit_bytes': 6 * 1024**3 + 1},
+        {'resource_scenario': 'full-sk', 'disk_limit_bytes': 4 * 1024**3 + 1},
+        *[
+            {'resource_scenario': scenario, field: value}
+            for scenario in ('standard', 'full-sk')
+            for field in ('memory_limit_bytes', 'disk_limit_bytes')
+            for value in (0, -1, True, False, 1.0, 1.5, '1', None, float('nan'), float('inf'), float('-inf'))
+        ],
+        *[
+            {'resource_scenario': 'full-sk', field: value}
+            for field in ('timeout', 'budget_seconds')
+            for value in (0, -1, True, '1', None, float('nan'), float('inf'), float('-inf'))
+        ],
+        {'resource_scenario': 'full-sk', 'timeout': 601},
+        {'resource_scenario': 'full-sk', 'budget_seconds': 21601},
+    ],
+)
+def test_acceptance_rejects_invalid_resource_budgets_before_preparation(
+    tmp_path: Path, arguments: dict[str, Any]
+) -> None:
+    output = tmp_path / 'acceptance'
+    with pytest.raises(tune.ExperimentError) as failure:
+        tune.run_acceptance(
+            bundle_root=tmp_path / 'unused-bundle',
+            screening_report={},
+            candidate_id='candidate-1',
+            baseline_binary=tmp_path / 'unused-baseline',
+            candidate_binary=tmp_path / 'unused-candidate',
+            input_path=tmp_path / 'unused-input.xlsx',
+            output_dir=output,
+            **{'pipeline': 'sk', **arguments},
+        )
+    assert failure.value.code == 'INVALID_ARGUMENT'
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('scenario', ['standard', 'full-sk'])
+@pytest.mark.parametrize('field', ['pipelines', 'memory_limit_bytes', 'disk_limit_bytes'])
+def test_acceptance_resource_scenario_definitions_are_frozen_in_protocol(
+    monkeypatch: pytest.MonkeyPatch, scenario: str, field: str
+) -> None:
+    identity = tune.protocol_identity()
+    monkeypatch.setitem(tune.ACCEPTANCE_RESOURCE_SCENARIOS[scenario], field, () if field == 'pipelines' else 1)
+    assert tune.protocol_identity() != identity

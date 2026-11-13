@@ -77,6 +77,17 @@
 - 全量适配及真实文件验收：[`changes/2026-11-09-full-sk-erp-format.md`](changes/2026-11-09-full-sk-erp-format.md)
 - 用户确认的 ERP 材料汇总决策：[`decisions/2026-11-09-sk-material-summary.md`](decisions/2026-11-09-sk-material-summary.md)
 
+## 行容量与读取优化
+
+- 实施方案：[`plans/2026-11-11-memory-optimization.md`](plans/2026-11-11-memory-optimization.md)
+- 候选、构建身份和验证证据：[`changes/2026-11-11-memory-optimization.md`](changes/2026-11-11-memory-optimization.md)
+- 逐单元格读取候选的正式筛选与拒绝结果：[`changes/2026-11-12-streaming-reader.md`](changes/2026-11-12-streaming-reader.md)
+- 完整 SK 实测、校准与原始基线内容异常：[`changes/2026-11-12-full-sk-benchmark.md`](changes/2026-11-12-full-sk-benchmark.md)
+- 写出前定位、跨语言最小复现与读取评估：[`changes/2026-11-12-baseline-content-localization.md`](changes/2026-11-12-baseline-content-localization.md)
+- 运行环境修复对照与复验入口：[`changes/2026-11-12-runtime-repair.md`](changes/2026-11-12-runtime-repair.md)
+- 失配物理地址采集与本批未复现结果：[`changes/2026-11-12-physical-address-capture.md`](changes/2026-11-12-physical-address-capture.md)
+- 完整 SK 合成场景与资源预算：[`performance/README.md`](performance/README.md)
+
 ## GitHub CI
 
 - 自动触发已关闭，仅手动运行并在发布前复用：[`decisions/2026-11-08-manual-ci.md`](decisions/2026-11-08-manual-ci.md)

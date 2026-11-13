@@ -11,6 +11,18 @@
 
 ## 当前记录
 
+- [`2026-11-12-streaming-reader.md`](2026-11-12-streaming-reader.md)：XLSX 逐单元格读取 V2/V3 正式筛选与阶段内存诊断；两批均因阶段回退拒绝，生产读取器未变。
+
+- [`2026-11-12-physical-address-capture.md`](2026-11-12-physical-address-capture.md)：物理地址采集链路验证、两批 64 次检测与原始程序交叉检查；本批未捕获真实失配地址。
+
+- [`2026-11-12-runtime-repair.md`](2026-11-12-runtime-repair.md)：分配器与页策略修复对照、基本整数读写失配和修复后复验入口；修复仍受运行环境阻塞。
+
+- [`2026-11-12-baseline-content-localization.md`](2026-11-12-baseline-content-localization.md)：写出前的文字变化定位、Rust/C++ 最小复现与逐单元格读取评估；具体运行层根因未确定。
+
+- [`2026-11-12-full-sk-benchmark.md`](2026-11-12-full-sk-benchmark.md)：完整 SK 新编译与计时校准通过；B1 六对有效数据及两处原始基线内容异常，未形成性能采纳。
+
+- [`2026-11-11-memory-optimization.md`](2026-11-11-memory-optimization.md)：行容量与读写候选、完整 SK 合成保护、独立构建和资源预算验收。
+
 - [`2026-11-09-full-sk-erp-format.md`](2026-11-09-full-sk-erp-format.md)：完整 58 列 SK ERP 格式、材料汇总口径、分析页计数及全量验收。
 
 - [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Excel 读写最新稳定上游、受控本地源码、接口适配及兼容验证。

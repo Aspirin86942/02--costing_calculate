@@ -111,6 +111,8 @@ uv run python -m tools.validation.compare_releases `
 - 性能门禁见 `docs/performance/README.md`。只有测出瓶颈才优化；优化实验使用至少 8 对交错配对并记录到 `docs/changes/`。
 - Linux / Colab 的实验入口为 `tools/validation/autotune_experiment.py` 和 `colab_autotune.ipynb`；配对测量使用 `measure_paired_release.py`，Linux 峰值 RSS 与 Windows PWS 分别判定。源码包用 `prepare_colab_bundle.py` 按允许清单生成，上传前审阅内嵌业务配置，真实 ERP 数据留在本地。依赖/fork 候选须精确声明 Cargo、锁包及源码载荷；实际执行工具与业务源码分别冻结。
 - 配对与比较支持 `--audit-mode manifest|none`，用途通过 `--purpose` 区分；日常无 Manifest 与审计模式分别校准。Linux 独立 N=5 入口为 `autotune_experiment.run_acceptance`，要求已有合格的 8 对入围证据；诊断结果不能推荐。
+- 候选的源码、Cargo 构建/测试产物和可执行文件均按候选独立目录；不得跨源码副本复用业务编译产物。SK 可显式选择 `full-sk-medium` 主场景，完整格式保护覆盖 58 列、材料汇总及错误 A1 范围声明。
+- Linux 真实完整 SK 的独立 N=5 可显式使用 `resource_scenario='full-sk'`，内存上限 6 GiB、磁盘上限 4 GiB；普通验收和 Colab 合成实验维持 2 GiB。具体预算冻结到报告，性能采纳门槛沿用原规则。
 - Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。
 - `RunManifestV1` schema 仍是 V1；应用版本升级不得顺带改 schema。
 - 推送正式标签、GitHub Release 或其他外部资产前必须获得明确确认。

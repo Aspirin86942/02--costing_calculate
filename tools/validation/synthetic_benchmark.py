@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from collections.abc import Iterator
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import xlsxwriter
 
@@ -18,6 +20,7 @@ from tools.validation.types import PipelineName
 
 BENCHMARK_SIZES = ('small', 'medium', 'below-threshold', 'above-threshold')
 DEFAULT_SEED = 20261108
+FULL_SK_PRIMARY_ORDERS = 5_000
 CELL_SLOT_THRESHOLD = 5_000_000
 BENCHMARK_COLUMNS = (
     *RAW_COLUMNS,
@@ -125,14 +128,13 @@ def benchmark_spec(
     detail_rows = total_orders * item_count + 2
     qty_input_rows = total_orders + 1
     qty_rows = total_orders - 3  # 三个无效数量、一个缺总额，加一条重复数量。
-    unique_orders = total_orders - 4
     in_pool = sum(_residue_count(base_orders, index, 4) for index in (0, 1)) + len(DIRTY_CASES) - 4
     run_counts = {
         'reader_rows': detail_rows + qty_input_rows,
         'detail_rows': detail_rows,
         'qty_rows': qty_rows,
         'qty_sheet_rows': qty_rows,
-        'work_order_rows': unique_orders,
+        'work_order_rows': in_pool,
         'quality_metric_count': 10,
     }
     issues = {
@@ -171,7 +173,7 @@ def benchmark_spec(
         }
     return {
         'schema_version': 1,
-        'generator_version': 1,
+        'generator_version': 2,
         'pipeline': pipeline,
         'size': size,
         'seed': seed,
@@ -263,6 +265,215 @@ def build_benchmark_fixture(
         finally:
             workbook.close()
     spec['sha256'] = {key: _sha256(path) for key, path in paths.items() if key != 'spec'}
+    with paths['spec'].open('x', encoding='utf-8', newline='\n') as stream:
+        json.dump(spec, stream, ensure_ascii=False, indent=2, allow_nan=False)
+        stream.write('\n')
+    return spec
+
+
+FULL_SK_HEADERS = (
+    *(
+        (name, name)
+        for name in (
+            '年期',
+            '需求单据',
+            '需求单据行号',
+            '成本中心编码',
+            '成本中心名称',
+            '产品编码',
+            '产品名称',
+            '规格型号',
+            '生产类型',
+            '单据类型',
+            '工单编号',
+            '工单行号',
+            '业务状态',
+            '供应商编码',
+            '供应商名称',
+            'BOM版本',
+            '批号',
+            '计划跟踪号',
+            '辅助属性',
+            '基本单位',
+            '计划产量',
+            '成本项目编码',
+            '成本项目名称',
+            '子项物料编码',
+            '子项物料名称',
+            '子项物料规格型号',
+            '子项物料基本单位',
+            '费用项目编码',
+            '费用项目名称',
+        )
+    ),
+    *(
+        (group, name)
+        for group in (
+            '期初在产品',
+            '期初调整',
+            '本期投入',
+            '累计投入',
+            '期末在产品',
+            '期末调整',
+            '期末调整后',
+        )
+        for name in ('数量', '金额')
+    ),
+    *(('本期完工', name) for name in ('数量', '单耗', '单位成本', '金额')),
+    ('在产品分配标准', '在产品分配标准'),
+    *((group, name) for group in ('累计合格品入库', '累计不良品入库', '累计废品入库') for name in ('数量', '金额')),
+    *(('累计完工', name) for name in ('数量', '单耗', '单位成本', '金额')),
+)
+
+
+def build_full_sk_fixture(
+    output_dir: Path,
+    *,
+    orders: int = 64,
+    seed: int = DEFAULT_SEED,
+    declared_a1: bool = True,
+) -> dict[str, Any]:
+    """Generate the 58-column SK layout with shared strings and independent material totals."""
+    if type(orders) is not int or not 4 <= orders <= 50_000 or type(seed) is not int or not 0 <= seed < 2**64:
+        raise ValueError('Full SK fixtures require 4..50000 orders and an unsigned 64-bit seed')
+    if type(declared_a1) is not bool:
+        raise ValueError('declared_a1 must be a boolean')
+    output_dir = Path(output_dir)
+    paths = {
+        name: output_dir / filename
+        for name, filename in {
+            'input': 'sk-full-synthetic.xlsx',
+            'config': 'config.toml',
+            'spec': 'spec.json',
+            'staging': 'sk-full-staging.xlsx',
+        }.items()
+    }
+    if any(path.exists() for path in paths.values()):
+        raise FileExistsError('synthetic full SK artifact already exists')
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with paths['config'].open('x', encoding='utf-8', newline='\n') as stream:
+        stream.write(synthetic_config())
+    rng = random.Random(seed)  # noqa: S311 - reproducible synthetic identities only.
+    with xlsxwriter.Workbook(
+        paths['staging'],
+        {
+            'tmpdir': str(output_dir),
+            'strings_to_formulas': False,
+            'strings_to_urls': False,
+        },
+    ) as workbook:
+        workbook.set_properties(
+            {'title': 'Synthetic full SK', 'author': 'Synthetic fixture builder', 'created': datetime(2000, 1, 1)}
+        )
+        sheet = workbook.add_worksheet('SyntheticFullSK')
+        sheet.write_row(0, 0, ('核算体系:合成测试',))
+        sheet.write_row(1, 0, ('币别:人民币',))
+        sheet.write_row(2, 0, tuple(top for top, _ in FULL_SK_HEADERS))
+        sheet.write_row(3, 0, tuple(bottom for _, bottom in FULL_SK_HEADERS))
+        for index in range(orders):
+            product = _products('sk')[index % 4]
+            month = MONTHS[(index // 4) % len(MONTHS)]
+            doc_type = '汇报入库-返工生产' if (index // 16) % 2 else '汇报入库-普通生产'
+            common: list[object] = [None] * len(FULL_SK_HEADERS)
+            for column, value in {
+                0: f'{month[:4]}年{int(month[-2:])}期',
+                1: f'SYN-DEMAND-{rng.randrange(10**8):08d}',
+                4: '集成车间' if index % 7 == 0 else '合成成本中心',
+                5: product[0],
+                6: product[1],
+                7: '  合成规格  ',
+                8: '返工生产' if '返工' in doc_type else '正常生产',
+                9: doc_type,
+                10: f'SYN-SK-{index:07d}',
+                11: 1,
+                19: 'PCS',
+            }.items():
+                common[column] = value
+            for column in (30, 32, 34, 36, 38, 40, 42, 49, 51, 53, 57):
+                common[column] = 999
+            quantity = common.copy()
+            quantity[43], quantity[45], quantity[46] = 10, 10, 100
+            first = 4 + index * 12
+            sheet.write_row(first, 0, quantity)
+            for offset, item, amount, material in (
+                (1, '直接材料', 40, None),
+                (2, None, 25, 'SYN-MATERIAL-1'),
+                (3, None, 35, 'SYN-MATERIAL-2'),
+                (4, '直接人工', 10, None),
+                (5, '制造费用_其他', 10, None),
+                (6, '制造费用-人工', 10, None),
+                (7, '制造费用_机物料及低耗', 10, None),
+                (8, '制造费用_折旧', 5, None),
+                (9, '制造费用_水电费', 5, None),
+                (10, '委外加工费', 5, None),
+                (11, '软件费用', 5, None),
+            ):
+                row = common.copy()
+                row[22], row[23], row[28], row[46] = item, material, '合成费用项目', amount
+                sheet.write_row(first + offset, 0, row)
+        sheet.write_string(4 + orders * 12, 0, '合计')
+    # 实际坐标才是输入范围；错误 A1 声明必须继续覆盖，不能据 dimension 截断数据。
+    with ZipFile(paths['staging']) as source, ZipFile(paths['input'], 'x', compression=ZIP_DEFLATED) as target:
+        for entry in source.infolist():
+            content = source.read(entry)
+            if declared_a1 and entry.filename == 'xl/worksheets/sheet1.xml':
+                content, count = re.subn(rb'<dimension ref="[^"]+"', b'<dimension ref="A1"', content, count=1)
+                if count != 1:
+                    raise ValueError('Synthetic worksheet dimension is missing')
+            target.writestr(entry, content)
+    paths['staging'].unlink()
+    analysis_rows = sum(_residue_count(orders, residue, 4) for residue in (0, 1))
+    sheets = {
+        name: {
+            'data_rows': rows,
+            'columns': columns,
+            'xlsx_rows_including_header': rows + 1,
+            'cell_slots': rows * columns,
+            'low_memory': rows * columns >= CELL_SLOT_THRESHOLD,
+        }
+        for name, rows, columns in zip(
+            SHEET_NAMES,
+            (orders * 10, orders, analysis_rows),
+            (35, 52, 37),
+            strict=True,
+        )
+    }
+    per_month = {}
+    for index, month in enumerate(MONTHS):
+        quantity_rows = sum(_residue_count(orders, residue, 16) for residue in range(index * 4, index * 4 + 4))
+        selected_rows = sum(_residue_count(orders, residue, 16) for residue in range(index * 4, index * 4 + 2))
+        per_month[month] = {
+            'detail_rows': quantity_rows * 10,
+            'qty_rows': quantity_rows,
+            'analysis_rows': selected_rows,
+        }
+    spec = {
+        'schema_version': 1,
+        'generator_version': 2,
+        'pipeline': 'sk',
+        'input_format': 'full-sk',
+        'orders': orders,
+        'seed': seed,
+        'declared_a1': declared_a1,
+        'input_columns': len(FULL_SK_HEADERS),
+        'files': {key: path.name for key, path in paths.items() if key != 'staging'},
+        'expected': {
+            'run_counts': {
+                'reader_rows': orders * 12 + 1,
+                'detail_rows': orders * 10,
+                'qty_rows': orders,
+                'qty_sheet_rows': orders,
+                'work_order_rows': analysis_rows,
+                'quality_metric_count': 10,
+            },
+            'issue_type_counts': {'MATERIAL_DETAIL_MISMATCH': orders},
+            'error_log_count': orders,
+            'sheets': sheets,
+            'per_month': per_month,
+            'low_memory_writer': any(sheet['low_memory'] for sheet in sheets.values()),
+        },
+        'sha256': {key: _sha256(paths[key]) for key in ('input', 'config')},
+    }
     with paths['spec'].open('x', encoding='utf-8', newline='\n') as stream:
         json.dump(spec, stream, ensure_ascii=False, indent=2, allow_nan=False)
         stream.write('\n')

@@ -13,6 +13,8 @@
 
 ## 当前文件
 
+- [`2026-11-11-memory-optimization.md`](2026-11-11-memory-optimization.md)：Completed，完整 SK 验证工具已交付；行容量、读取和主键字符串候选均未采纳。
+
 - [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Completed，Excel 读写及必要压缩上游已更新，受控修补与 Linux 本机兼容验收通过；跨平台缺口见实施记录。
 
 - [`2026-11-08-xlsx-io-optimization.md`](2026-11-08-xlsx-io-optimization.md)：In Progress，Excel 全链路开销定位、受控依赖候选、配对筛选与目标电脑验收。

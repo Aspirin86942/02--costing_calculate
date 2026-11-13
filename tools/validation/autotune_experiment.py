@@ -45,6 +45,7 @@ from tools.validation.prepare_colab_bundle import (
 from tools.validation.prepare_colab_bundle import (
     target_stages as candidate_stages,
 )
+from tools.validation.synthetic_benchmark import FULL_SK_PRIMARY_ORDERS, build_full_sk_fixture
 from tools.validation.synthetic_inputs import build_benchmark_fixture
 
 SEED = 20261108
@@ -53,6 +54,18 @@ CONTROL_ID = 'control'
 MAX_SHORTLIST = 2
 BUILD_TIMEOUT_SECONDS = 3600.0
 SETTLE_SECONDS = 3.0
+ACCEPTANCE_RESOURCE_SCENARIOS = {
+    'standard': {
+        'pipelines': ('gb', 'sk'),
+        'memory_limit_bytes': 2 * 1024**3,
+        'disk_limit_bytes': 2 * 1024**3,
+    },
+    'full-sk': {
+        'pipelines': ('sk',),
+        'memory_limit_bytes': 6 * 1024**3,
+        'disk_limit_bytes': 4 * 1024**3,
+    },
+}
 # 与 docs/plans/2026-11-08-colab-offline-autotuning.md 第 6.4 节一致；开测前冻结，运行中不得修改。
 THRESHOLDS = {
     'primary_improvement': 0.05,
@@ -149,13 +162,16 @@ def protocol_identity() -> str:
     return _json_hash(
         {
             'thresholds': THRESHOLDS,
+            'acceptance_resource_scenarios': ACCEPTANCE_RESOURCE_SCENARIOS,
             'seed': SEED,
             'validation_seed': VALIDATION_SEED,
             'small_checks': SMALL_CHECKS,
+            'full_sk_layout': {'orders': 64, 'primary_orders': FULL_SK_PRIMARY_ORDERS, 'checks': SMALL_CHECKS},
             'extended': EXTENDED_SCENARIOS,
             'semantic_scenario': SEMANTIC_SCENARIO,
             'stage_children': STAGE_CHILDREN,
             'max_shortlist': MAX_SHORTLIST,
+            'build_artifact_isolation': 'per-candidate',
         }
     )
 
@@ -723,6 +739,9 @@ def _correctness_scenarios() -> list[tuple[str, str, str, int, str, str | None, 
     scenarios += [
         (f'{pipeline}-medium-normal', pipeline, 'medium', SEED, 'normal', None, None) for pipeline in ('gb', 'sk')
     ]
+    scenarios += [
+        (f'sk-full-{name}', 'sk', 'full-sk', SEED, mode, start, end) for name, mode, start, end in SMALL_CHECKS
+    ]
     scenarios.append(SEMANTIC_SCENARIO)
     return scenarios
 
@@ -820,7 +839,13 @@ class Experiment:
             self.check_budget()
             directory = self.work / 'fixtures' / f'{pipeline}-{size}-{seed}'
             _log(f'generating fixture {pipeline}/{size}/{seed}')
-            spec = build_benchmark_fixture(directory, pipeline, size, seed)  # type: ignore[arg-type]
+            spec = (
+                build_full_sk_fixture(
+                    directory, orders=FULL_SK_PRIMARY_ORDERS if size == 'full-sk-medium' else 64, seed=seed
+                )
+                if pipeline == 'sk' and size in ('full-sk', 'full-sk-medium')
+                else build_benchmark_fixture(directory, pipeline, size, seed)  # type: ignore[arg-type]
+            )
             self.fixtures[key] = {
                 'input': directory / spec['files']['input'],
                 'config': directory / spec['files']['config'],
@@ -851,10 +876,11 @@ class Experiment:
         source_identity = {
             path.relative_to(tree).as_posix(): _sha256(path) for path in tree.rglob('*') if path.is_file()
         }
+        # 不同副本可能保留旧 mtime；共享产物会复用前一候选的业务代码。
         try:
             self.report['builds'][name] = build_binary(
                 tree,
-                self.work / 'cargo-target',
+                self.work / 'cargo-target' / name,
                 self.binary(name),
                 commit=self.manifest['base_commit'],
                 epoch=self.manifest['source_date_epoch'],
@@ -879,7 +905,7 @@ class Experiment:
         try:
             run_rust_tests(
                 self.work / 'trees' / name,
-                self.work / 'cargo-test-target',
+                self.work / 'cargo-test-target' / name,
                 commit=self.manifest['base_commit'],
                 epoch=self.manifest['source_date_epoch'],
                 log_path=self.work / 'logs' / f'test-{name}.log',
@@ -1566,21 +1592,27 @@ def run_acceptance(
     pipeline: str,
     config_path: Path | None = None,
     audit_mode: str = 'none',
+    resource_scenario: str = 'standard',
     timeout: float = 600,
     memory_limit_bytes: int = 2 * 1024**3,
     disk_limit_bytes: int = 2 * 1024**3,
     budget_seconds: float = 21600,
 ) -> dict[str, Any]:
-    """Independent Linux N=5 target-input replay; it cannot replace the eight-pair screening batch."""
+    """Independent Linux N=5 replay with explicit budgets bounded by the registered resource scenario."""
+    scenario = ACCEPTANCE_RESOURCE_SCENARIOS.get(resource_scenario) if isinstance(resource_scenario, str) else None
     if (
         sys.platform != 'linux'
-        or pipeline not in ('gb', 'sk')
+        or scenario is None
+        or pipeline not in scenario['pipelines']
         or audit_mode not in ('manifest', 'none')
-        or not math.isfinite(timeout)
+        or type(timeout) not in (int, float)
         or not 0 < timeout <= 600
-        or not math.isfinite(budget_seconds)
+        or type(budget_seconds) not in (int, float)
         or not 0 < budget_seconds <= 21600
-        or not 0 < min(memory_limit_bytes, disk_limit_bytes) <= max(memory_limit_bytes, disk_limit_bytes) <= 2 * 1024**3
+        or type(memory_limit_bytes) is not int
+        or type(disk_limit_bytes) is not int
+        or not 0 < memory_limit_bytes <= scenario['memory_limit_bytes']
+        or not 0 < disk_limit_bytes <= scenario['disk_limit_bytes']
     ):
         raise ExperimentError('INVALID_ARGUMENT', 'Acceptance requires Linux and the frozen resource budgets.')
     manifest = verify_bundle(bundle_root.resolve())
@@ -1614,9 +1646,25 @@ def run_acceptance(
     if config_path is not None:
         paths['config'] = config_path
     identities = {name: {'sha256': _sha256(path), 'size_bytes': path.stat().st_size} for name, path in paths.items()}
+    frozen_resources = {
+        'protocol_sha256': protocol_identity(),
+        'resource_scenario': resource_scenario,
+        'limits': {
+            'memory_limit_bytes': memory_limit_bytes,
+            'disk_limit_bytes': disk_limit_bytes,
+            'run_timeout_seconds': timeout,
+            'budget_seconds': budget_seconds,
+        },
+    }
+    resource_identity = _json_hash(frozen_resources)
     deadline = time.monotonic() + budget_seconds
 
     def unchanged() -> None:
+        if (
+            _json_hash(frozen_resources) != resource_identity
+            or protocol_identity() != frozen_resources['protocol_sha256']
+        ):
+            raise ExperimentError('IDENTITY_CHANGED', 'Acceptance resource scenario or frozen budgets changed.')
         if (
             verify_bundle(bundle_root.resolve()) != manifest
             or _sha256(bundle_root / 'bundle-manifest.json') != bundle_hash
@@ -1673,7 +1721,8 @@ def run_acceptance(
         'status': 'failed',
         'correctness': comparisons,
         'candidate_id': candidate_id,
-        'protocol_sha256': protocol_identity(),
+        **frozen_resources,
+        'resource_identity_sha256': resource_identity,
         'artifacts': identities,
     }
     if all(item['status'] == 'passed' for item in comparisons.values()):

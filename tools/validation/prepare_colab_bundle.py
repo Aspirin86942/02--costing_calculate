@@ -241,8 +241,11 @@ def validate_candidates(items: Any) -> None:
         if candidate.get('primary_pipeline') not in ('gb', 'sk') or candidate.get('primary_size') not in (
             'medium',
             'above-threshold',
+            'full-sk-medium',
         ):
             raise BundleError('Candidate must declare a primary pipeline and benchmark size')
+        if candidate['primary_size'] == 'full-sk-medium' and candidate['primary_pipeline'] != 'sk':
+            raise BundleError('The full SK primary scenario requires the SK pipeline')
         if not isinstance(candidate.get('hypothesis'), str) or not candidate['hypothesis'].strip():
             raise BundleError('Candidate must declare its hypothesis')
         paths = candidate.get('changed_paths')

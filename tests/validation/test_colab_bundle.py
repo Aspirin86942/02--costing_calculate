@@ -87,6 +87,23 @@ def bundle_inputs(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+@pytest.mark.parametrize('pipeline', ['gb', 'sk'])
+def test_full_sk_primary_scenario_is_registered_only_for_sk(
+    bundle_inputs: dict[str, Path],
+    pipeline: str,
+) -> None:
+    path = bundle_inputs['candidate_manifest']
+    document = json.loads(path.read_text(encoding='utf-8'))
+    document['candidates'][0].update(primary_pipeline=pipeline, primary_size='full-sk-medium')
+    path.write_text(json.dumps(document), encoding='utf-8')
+    if pipeline == 'gb':
+        with pytest.raises(BundleError, match='full SK'):
+            prepare_bundle(**bundle_inputs)
+    else:
+        result = prepare_bundle(**bundle_inputs)
+        assert result['candidates'][0]['primary_size'] == 'full-sk-medium'
+
+
 def test_bundle_is_reproducible_and_allowlist_excludes_runtime_data(bundle_inputs: dict[str, Path]) -> None:
     first = prepare_bundle(**bundle_inputs)
     other_output = bundle_inputs['output_dir'].with_name('bundle-again')

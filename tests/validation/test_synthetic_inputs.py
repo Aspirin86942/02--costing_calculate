@@ -3,6 +3,7 @@ import json
 import sys
 import tomllib
 from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -14,6 +15,8 @@ from tools.validation.synthetic_benchmark import (
     BENCHMARK_COLUMNS,
     BENCHMARK_SIZES,
     CELL_SLOT_THRESHOLD,
+    FULL_SK_HEADERS,
+    build_full_sk_fixture,
     synthetic_config,
 )
 from tools.validation.synthetic_inputs import RAW_COLUMNS, benchmark_spec, build_benchmark_fixture, build_raw_fixture
@@ -64,6 +67,16 @@ def test_benchmark_input_contains_linked_costs_and_dirty_boundaries(tmp_path: Pa
     quantities = [row for row in rows if row['成本项目名称'] is None]
     details = [row for row in rows if row['成本项目名称'] is not None]
     assert len(quantities) == spec['expected']['quantity_input_rows']
+    selected_products = {(product['code'], product['name']) for product in spec['distribution']['whitelist']}
+    analysis_keys = {
+        (row['年期'], row['产品编码'], row['工单编号'], str(row['工单行号']))
+        for row in quantities
+        if row['本期完工数量'] is not None
+        and Decimal(str(row['本期完工数量'])) > 0
+        and row['本期完工金额'] is not None
+        and (row['产品编码'], row['产品名称']) in selected_products
+    }
+    assert spec['expected']['run_counts']['work_order_rows'] == len(analysis_keys)
     assert len(details) == spec['expected']['run_counts']['detail_rows']
     detail_items = defaultdict(set)
     for row in details:
@@ -144,6 +157,68 @@ def test_benchmark_specs_cover_medium_and_exact_threshold_sides(pipeline: str) -
             == spec['expected']['analysis_rows']
         )
         assert spec['runtime_verification'].startswith('required:')
+
+
+@pytest.mark.parametrize('declared_a1', [True, False])
+def test_full_sk_fixture_preserves_width_material_totals_and_real_coordinates(
+    tmp_path: Path,
+    declared_a1: bool,
+) -> None:
+    spec = build_full_sk_fixture(tmp_path, orders=4, declared_a1=declared_a1)
+    path = tmp_path / spec['files']['input']
+    assert len(FULL_SK_HEADERS) == 58
+    with ZipFile(path) as archive:
+        assert 'xl/sharedStrings.xml' in archive.namelist()
+        xml = archive.read('xl/worksheets/sheet1.xml')
+        assert (b'<dimension ref="A1"' in xml) is declared_a1
+        assert b'r="BF53"' not in xml  # 最后一行仅有合计；宽度来自真实数据行。
+        assert b'r="BF52"' in xml
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheet = workbook.active
+        sheet.reset_dimensions()
+        headers = list(sheet.iter_rows(min_row=3, max_row=4, max_col=58, values_only=True))
+        assert list(zip(*headers, strict=True)) == list(FULL_SK_HEADERS)
+        rows = list(sheet.iter_rows(min_row=5, max_col=58, values_only=True))
+        assert len(rows) == 49
+        assert [rows[index][46] for index in (0, 1, 2, 3)] == [100, 40, 25, 35]
+        assert rows[0][34] == 999
+        assert rows[0][43] == 10
+        assert rows[-1][0] == '合计'
+    finally:
+        workbook.close()
+    expected = spec['expected']
+    assert expected['run_counts']['reader_rows'] == 49
+    assert expected['run_counts']['work_order_rows'] == 2
+    assert expected['issue_type_counts'] == {'MATERIAL_DETAIL_MISMATCH': 4}
+    assert json.loads((tmp_path / 'spec.json').read_text(encoding='utf-8')) == spec
+
+
+def test_full_sk_fixture_is_reproducible_and_refuses_existing_artifacts(tmp_path: Path) -> None:
+    first = build_full_sk_fixture(tmp_path / 'first', orders=4, seed=7)
+    second = build_full_sk_fixture(tmp_path / 'second', orders=4, seed=7)
+    assert first == second
+    original = (tmp_path / 'first' / first['files']['input']).read_bytes()
+    with pytest.raises(FileExistsError):
+        build_full_sk_fixture(tmp_path / 'first', orders=4, seed=8)
+    assert (tmp_path / 'first' / first['files']['input']).read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    'options',
+    [
+        {'orders': True},
+        {'orders': 3},
+        {'orders': 50_001},
+        {'seed': -1},
+        {'seed': True},
+        {'declared_a1': 'yes'},
+    ],
+)
+def test_full_sk_fixture_rejects_invalid_options_before_writing(tmp_path: Path, options: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        build_full_sk_fixture(tmp_path, **options)
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize('seed', [-1, 2**64, True])

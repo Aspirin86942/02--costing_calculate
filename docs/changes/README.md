@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [Windows 0.3.1 全流程耗时与 XLSX 体积实测](2026-11-20-windows-stage-profile.md)记录三组真实输入的阶段分布、N=5 与固定 XML 压缩结果。
+
 - [0.3.1 版本说明](releases/v0.3.1.md)和[完整 SK 五项优化实测](2026-11-20-sk-speed.md)
 
 - [`2026-11-12-streaming-reader.md`](2026-11-12-streaming-reader.md)：XLSX 逐单元格读取 V2/V3 正式筛选与阶段内存诊断；两批均因阶段回退拒绝，生产读取器未变。

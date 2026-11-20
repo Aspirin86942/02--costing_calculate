@@ -35,7 +35,7 @@
 
 ## 复测顺序
 
-0.3.1 已采用五项实现。完整 SK 的重复性能验收受原版输出不稳定影响，Windows 原生性能仍待测量。[实验记录](../changes/2026-11-20-sk-speed.md)和[采用决策](../decisions/2026-11-20-v0.3.1-performance.md)
+0.3.1 已采用五项实现。Linux 完整 SK 的重复验收遇到崩溃和内容差异。Windows 原生基线已完成三组输入的 N=5，完整 SK 的耗时和 PWS 达标，输出大小超限。[Windows 实测](../changes/2026-11-20-windows-stage-profile.md) · [五项实验](../changes/2026-11-20-sk-speed.md) · [采用决策](../decisions/2026-11-20-v0.3.1-performance.md)
 
 先通过正确性：
 

@@ -66,6 +66,7 @@
 
 ## Excel 读写与压缩优化
 
+- [GB / SK 全流程优化方案](plans/2026-11-20-cross-platform-performance.md)及其[Windows 阶段与体积实测](changes/2026-11-20-windows-stage-profile.md)
 - [完整 SK 五项优化与真实工作簿验证](changes/2026-11-20-sk-speed.md)
 - 完整方案：[`plans/2026-11-08-xlsx-io-optimization.md`](plans/2026-11-08-xlsx-io-optimization.md)
 - 开销定位、候选与验收：[`changes/2026-11-08-xlsx-io-optimization.md`](changes/2026-11-08-xlsx-io-optimization.md)

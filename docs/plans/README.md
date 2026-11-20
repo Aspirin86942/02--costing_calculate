@@ -13,6 +13,8 @@
 
 ## 当前文件
 
+- [GB / SK 全流程性能优化方案](2026-11-20-cross-platform-performance.md)（Proposed）覆盖 Linux 正确性对照、两种写出路径、读取、内存与成品体积。
+
 - [`2026-11-11-memory-optimization.md`](2026-11-11-memory-optimization.md)：Completed，完整 SK 验证工具已交付；行容量、读取和主键字符串候选均未采纳。
 
 - [`2026-11-08-upstream-refresh.md`](2026-11-08-upstream-refresh.md)：Completed，Excel 读写及必要压缩上游已更新，受控修补与 Linux 本机兼容验收通过；跨平台缺口见实施记录。

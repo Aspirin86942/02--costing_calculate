@@ -714,6 +714,34 @@ def test_workbook_comparison_worker_is_budgeted(
     assert str(tmp_path) not in str(failure.value)
 
 
+def test_comparison_worker_preserves_sheet_names_with_legacy_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    baseline, candidate = tmp_path / 'baseline-gb.xlsx', tmp_path / 'candidate-gb.xlsx'
+    _write_workbook(baseline)
+    candidate.write_bytes(baseline.read_bytes())
+    run_process = release_module.run_process
+
+    def run_with_cp1252(arguments: list[str], **options: Any) -> dict[str, Any]:
+        command = arguments.copy()
+        script = command.index('-c') + 1
+        command[script] = "import sys; sys.stdout.reconfigure(encoding='cp1252'); " + command[script]
+        return run_process(command, **options)
+
+    monkeypatch.setattr(release_module, 'run_process', run_with_cp1252)
+    result = _compare_outputs(
+        baseline,
+        candidate,
+        pipeline='gb',
+        timeout_seconds=60,
+        memory_limit_bytes=2 * 1024**3,
+        disk_limit_bytes=2 * 1024**3,
+    )
+
+    assert result['mismatches'] == []
+    assert result['outputs']['candidate']['sheet_names'] == release_module.SHEET_NAMES
+
+
 @pytest.mark.parametrize('zip64', [False, True])
 def test_missing_worksheet_descriptor_fails_even_when_payloads_match(tmp_path: Path, zip64: bool) -> None:
     class Stream(io.BytesIO):
@@ -783,6 +811,25 @@ def _cli_arguments(*extra: str) -> list[str]:
         'outputs',
         *extra,
     ]
+
+
+def test_cli_report_keeps_unicode_when_stdout_uses_a_legacy_codepage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = {'status': 'passed', 'sheets': release_module.SHEET_NAMES}
+    report = tmp_path / 'report.json'
+    monkeypatch.setattr(release_module, 'compare_releases', lambda **kwargs: result)
+    monkeypatch.setattr(sys, 'argv', _cli_arguments('--report', str(report)))
+    wire = io.BytesIO()
+    with io.TextIOWrapper(wire, encoding='cp1252', write_through=True) as stdout:
+        with monkeypatch.context() as patch:
+            patch.setattr(sys, 'stdout', stdout)
+            exit_code = release_module.main()
+        assert exit_code == 0
+        assert json.loads(wire.getvalue()) == result
+    contents = report.read_text(encoding='utf-8')
+    assert release_module.SHEET_NAMES[0] in contents
+    assert json.loads(contents) == result
 
 
 def test_cli_forwards_audit_mode_purpose_and_budgets(monkeypatch: pytest.MonkeyPatch) -> None:

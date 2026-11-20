@@ -369,11 +369,12 @@ def _compare_outputs(
     disk_limit_bytes: int,
 ) -> dict[str, Any]:
     # -I 隔离 Python 的导入环境；只加入已知仓库路径，业务输出目录不参与模块查找。
+    # 子进程的标准输出可能使用 Windows 代码页，用 JSON 转义传递中文 Sheet 名。
     worker = (
         'import json, sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); '
         'from tools.validation.compare_releases import _workbook_comparison; '
         'print(json.dumps(_workbook_comparison(Path(sys.argv[2]), Path(sys.argv[3]), '
-        'pipeline=sys.argv[4]), ensure_ascii=False, allow_nan=False))'
+        'pipeline=sys.argv[4]), ensure_ascii=True, allow_nan=False))'
     )
     result = _limited_process(
         [sys.executable, '-I', '-c', worker, str(PROJECT_ROOT), str(baseline), str(candidate), pipeline],
@@ -604,6 +605,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    escape_stdout = (sys.stdout.encoding or '').lower() not in ('utf-8', 'utf8')
     try:
         args = _parse_args()
         # 报告占位也先拒绝，避免完成两个运行后才发现已有报告。
@@ -629,7 +631,7 @@ def main() -> int:
         if args.report is not None:
             with args.report.open('x', encoding='utf-8', newline='\n') as stream:
                 stream.write(f'{rendered}\n')
-        print(rendered)
+        print(json.dumps(report, indent=2, allow_nan=False) if escape_stdout else rendered)
         return 0 if report['status'] == 'passed' else 1
     except (OSError, ValueError, RuntimeError, BadZipFile, ParseError) as error:
         print(
@@ -642,7 +644,7 @@ def main() -> int:
                     else 'Release validation failed; check inputs, unused output paths and local permissions.',
                     'retryable': error.retryable if isinstance(error, ValidationError) else False,
                 },
-                ensure_ascii=False,
+                ensure_ascii=escape_stdout,
                 indent=2,
             )
         )

@@ -4,6 +4,10 @@
 
 ## 当前事实
 
+- [Windows 0.3.1-rc.1 常规版与 PGO 版](changes/releases/v0.3.1-rc.1.md)
+
+- [当前源码的 Windows 性能和桌面 Excel 验收](changes/2026-11-20-windows-workbook-export.md)
+
 - [0.3.1 版本说明](changes/releases/v0.3.1.md)和[五项优化的采用依据](decisions/2026-11-20-v0.3.1-performance.md)
 - [`../README.md`](../README.md)：Windows / Linux 安装与运行、输入输出、常见错误和 Windows 发布包。
 - [`architecture.md`](architecture.md)：四个 Rust crate、稳定接口、调用顺序和依赖规则。

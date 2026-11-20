@@ -1,6 +1,6 @@
 # GB / SK 全流程性能优化方案
 
-状态为 **Proposed**。本机先做 Windows 11 x64 优化，基线为 0.3.1，提交 `e1c8d2a`。主场景选用完整 SK 的普通写出，验收同时覆盖 GB、常规 SK、预检和审计写出。Windows 候选可独立开发和验收。Linux 段错误另在原生环境复验。
+状态为 **In Progress**。Windows 的总表写出优化、低内存 ZIP 兼容修复及可选 PGO 构建已完成。三组真实输入分别做了八对测量和独立五次复测，并核对完整 SK 的桌面 Excel 回存。对照为冻结的 0.3.1，提交 `e1c8d2a`。Linux 段错误仍待原生环境复验。[实现与实测](../changes/2026-11-20-windows-workbook-export.md)
 
 ## 为什么先做写出
 
@@ -29,7 +29,9 @@ Windows 上的完整 SK 有 912,921 行输入。普通写出和审计写出各 5
 
 完整 SK 需要从 75,372,863 字节减少 26,714,040 字节（35.44%）才能达到原上限。第一张表占包体 96.11%。保持该表 XML 完全相同，用 Python 验证环境的 DEFLATE 9 级重压后，估计整包仍为 74,180,768 字节。GB 同法估计为 4,563,589 字节，也高于其上限。直接上调压缩等级的预期收益很小。[固定 XML 实验](../changes/2026-11-20-windows-stage-profile.md)
 
-先在合成总表 XML 上按类别统计重复的单元格属性，试算省略可由列格式继承的冗余样式属性能节省多少**压缩后**的字节。只考虑能证明在 Excel 打开及重新保存后，逐格类型、有效样式、数字格式、文本覆盖和空白均等价的表示。尤其核对数值列中的文本、显式格式覆盖和稀疏单元格。通过离线核对才为受控写出库制作独立候选，再用真实三组输入量速度和体积。若达不到绝对上限，报告还差多少字节，保留该门禁的失败状态。若业务另行决定为完整导出设独立大小目标，再单独记录决策，继续执行既有样本门禁。[工作簿契约](../contracts/workbook.md) · [工作簿比较器](../../tools/validation/workbook_compare.py)
+体积首选实验是省略可由位置推导的单元格坐标 `c@r`。保留行号，每行从 A 列开始推导，只对紧接上一个实际写出单元格的位置省略坐标。行首跳列或中间有空洞时显式写地址。Office 文档给出了这条规则。对完整 SK 首表实施离线转换后，逐个补回坐标可以还原原始 XML，估计整包为 **30.28 MiB**。合成小表在桌面 Excel 打开、另存、重开后保留了金额格式、前导零文本、公式和稀疏位置。[Office 的单元格定位规则](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oe376/b3e61d30-f15f-4712-9252-50883cbf0f8c) · [实验明细](../changes/2026-11-20-windows-stage-profile.md)
+
+实施分两步。先让独立比较器按行解析显式和隐式坐标，它当前直接索引 `node.attrib['r']`。用已知坐标的小表验证首列缺失、中间空洞、Z 到 AA、空行和格式覆盖，再用数值错位与漏格负例验证它确实能检出差异。然后才在受控写出库给总表制作 Rust 候选，保留显式样式 `s`、类型、数值和公式。全量验收需要真实 Rust 产物的大小、耗时、峰值内存、工作簿比对及 Excel 打开回存结果。省略金额单元格的显式样式已在合成样本上使 `#,##0.00` 变成 `General`，该做法退出候选。[工作簿比较器](../../tools/validation/workbook_compare.py) · [工作簿契约](../contracts/workbook.md)
 
 ### 4. 降低读取成本和峰值内存
 
@@ -43,11 +45,43 @@ Windows 上的完整 SK 有 912,921 行输入。普通写出和审计写出各 5
 - 在读取、规范化、展示表构造和写出边界分别采集当前驻留内存及生命周期峰值，关联仍存活的行、块缓冲和展示表。GB 此批 N=5 中位数距上限仅约 0.11 MiB，对 GB 单独验收内存。CLI 退出和库入口在同一进程内多次调用都要验证。[内存表示与入口](../architecture.md)
 - 日常与审计分别计时，在审计路径单列输入快照与 SHA-256、输出发布后哈希和 Manifest 发布。哈希与解析取自同一份输入字节，文件并发替换也是测试场景。产物继续在输出目录内暂存、同步、拒绝覆盖并原子发布。[运行编排](../../rust/crates/costing-cli/src/run.rs) · [原子发布](../../rust/crates/costing-xlsx/src/atomic_file.rs)
 
+## 可借鉴的上游实现
+
+| 方向 | 对本项目的用法与试验条件 |
+| --- | --- |
+| 顺序写行与缓冲复用 | Excelize 的流式写出按递增行号接收数据，缓冲达到一定规模后使用临时文件。本项目已有顺序写行和后台压缩，下一步量化发送块时的分配及等待，若分配突出，用有上限、可归还的缓冲区试验。现有原始行文件继续承担错误重放。[Excelize StreamWriter](https://github.com/qax-os/excelize/blob/master/stream.go) · [本地块发送逻辑](../../rust/vendor/rust_xlsxwriter/src/worksheet.rs) |
+| 同一表内的并行 DEFLATE | pigz 将块并行压缩，使用前一块的历史字典并按原序输出。只有确认压缩线程占主导时，才在单个 worksheet ZIP 成员上单独试验这个思路。控制在途字节，并验证解压后的 XML、整个成员的 CRC、大小及 Excel 兼容性。Rust 的 gzp 提供连续 raw DEFLATE 的实验参考。[pigz 原理](https://github.com/madler/pigz/blob/master/pigz.1) · [gzp](https://github.com/sstadick/gzp) |
+| 持久线程池与并行解压 | 先借鉴 Rayon 的工作线程池，用现有标准库复用读取线程，继续按块序号合并。若采样进一步指向 ZIP 解压，才在隔离实验中参考 rapidgzip-rust 对可按偏移读取的 raw DEFLATE 输入做并行解码。保留 ZIP 成员边界、CRC/长度校验和顺序回退，同时限制解析与解压两侧的线程总数。[Rayon 线程池](https://github.com/rayon-rs/rayon/blob/main/FAQ.md) · [rapidgzip-rust](https://github.com/COMBINE-lab/rapidgzip-rust) |
+| 构建期 PGO | Rust 1.96 支持用插桩版本收集典型执行路径，再将合并后的 profile 反馈给优化构建。将其作为独立候选，Windows 和 Linux 分别用各自的 GB/SK 代表性输入训练，并用留出的样本进行配对验收。训练和计时分开。[Rust 1.96 PGO 文档](https://github.com/rust-lang/rust/blob/1.96.0/src/doc/rustc/src/profile-guided-optimization.md) |
+| 近期写出库更新 | 2026-11-18 发布的 rust_xlsxwriter 0.103.0 修复了特定行格式、行高或隐藏标记在 constant-memory 模式下可能引起的重复行或缺行。先用上游案例核对本地 0.102.0 受控版本是否受影响，再评估单独移植修复。该更新值得用于正确性回归，速度须另测。[上游变更记录](https://github.com/jmcnamara/rust_xlsxwriter/blob/v0.103.0/CHANGELOG.md) |
+
+共享 Rust 代码可以在两端减少同类工作，例如生成的坐标字节数、块复制次数、每次打开工作簿所创建的线程数。Windows 的采样能选出实验方向。线程调度、临时文件 I/O、分配器和 CPU 指令选择取决于平台和机器，部署目标分别用原生构建测端到端耗时，Windows 报峰值工作集，Linux 报子进程峰值 RSS。引入第三方生产依赖需按仓库规则另行批准。
+
 ## Linux 原生环境到位后的复验
 
 - 在原生 Linux 固定输入、配置、源码、工具链、运行工具和二进制的 SHA-256。用最后一份通过完整 SK 契约核对的同平台程序作参考，分别运行普通、审计和预检模式。记录退出码或信号、子进程峰值 RSS、可取得的内核 OOM 记录、失败阶段和首个不一致位置。已有证据把一次差异定位到 Calamine 的 Range 转成 `RawWorkbook` 期间，另一次发生在进入写出前，分段检查从这里开始。[内容定位记录](../changes/2026-11-12-baseline-content-localization.md)
 - 在 Linux 诊断构建中一次改变一项。先对照现有顺序读取回退路径与并行分块读取，在块合并、规范化、展示表三个边界核对计数与内容摘要。如果预检通过而普通写出失配，再单独对照后台压缩与已有原始行文件重放。审计专有问题另查输入字节身份、输出哈希及 Manifest。单核与默认并发均使用相同文件和核对规则。
 - 段错误、超限或单元格差异均保留失败样本，结束该批排名。Linux 的参考程序和候选都须在普通、审计模式逐次通过内容核对，才开始该平台的计时校准。[既有恢复实验](../changes/2026-11-12-runtime-repair.md) · [版本采用记录](../decisions/2026-11-20-v0.3.1-performance.md)
+
+在原生 Linux 上，将 `BASELINE` 设为上一次在当地通过完整 SK 核对的可执行文件，`CANDIDATE` 设为本次源码的 Linux release 程序，`FULL_SK` 设为本地真实输入路径。在仓库根目录运行以下 Bash 命令。四种模式各自保存报告，首次失败时保留该批结果。
+
+```bash
+mkdir -p .pytest-tmp
+run_dir=$(mktemp -d .pytest-tmp/linux-full-sk.XXXXXXXX)
+(
+  set -e
+  for mode in check-only normal; do
+    for audit in none manifest; do
+      uv run python -m tools.validation.compare_releases \
+        --baseline-binary "$BASELINE" --candidate-binary "$CANDIDATE" \
+        --pipeline sk --input "$FULL_SK" --mode "$mode" --audit-mode "$audit" \
+        --purpose diagnostic --memory-limit-mib 6144 --disk-limit-mib 4096 \
+        --timeout-seconds 600 --output-dir "$run_dir/$mode-$audit" \
+        --report "$run_dir/$mode-$audit.json"
+    done
+  done
+)
+```
 
 ## 验收与回滚
 
@@ -62,4 +96,4 @@ Windows 上的完整 SK 有 912,921 行输入。普通写出和审计写出各 5
 3. Windows 用现有 PowerShell 工具做普通模式配对与最终独立 N=5，记录峰值工作集、外部耗时和输出字节。Windows 配对脚本当前只传普通或只检查参数。审计先用 `compare_releases --audit-mode manifest` 重放，需正式审计测速时为验证脚本补独立审计参数和逐轮校验，单独校准。Linux 使用原生 Python/Bash 工具测子进程峰值 RSS。普通验收和 Colab 合成筛选的内存、磁盘各限 2 GiB。真实完整 SK 独立验收可用 `resource_scenario='full-sk'`，预算为 6 GiB 内存、4 GiB 磁盘。合格的 8 对证据之后才进入 Linux 独立 N=5，主场景至少赢 4/5。[Windows 配对工具](../../tools/validation/measure_paired_release.ps1) · [跨版本比较器](../../tools/validation/compare_releases.py) · [Linux 验收入口](../../tools/validation/autotune_experiment.py)
 4. 入围实现再跑 Rust 格式、Clippy、全 workspace 测试、Python 验证及合成端到端，按平台完成发布包 smoke。Windows 从干净提交构建 ZIP，在 child PATH 移除 Rust/Python 后验收。任一平台正确性失败或基线不稳定，保存该批失败记录并沿用上一份已验证的同平台程序。按单项撤回补丁及配套受控库清单。通过后才把正式实现、验收结论和发布说明写入相应版本记录。
 
-**Windows 的第一项实现**从 SK 的填表计时与采样开始。按实测选择一个能解释端到端 5% 改善空间的改动，交付候选补丁、逐份工作簿比对和同机配对报告，再决定是否组合。Linux 单独出具故障复验和性能验收记录。
+Windows 首轮选择了第一张表的坐标写出，三组真实输入均通过普通模式的大小、耗时和峰值工作集门禁。后续内存改动按阶段峰值和独立候选筛选。Linux 单独出具故障复验和性能验收记录。[首轮实测](../changes/2026-11-20-windows-workbook-export.md)

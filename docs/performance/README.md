@@ -28,6 +28,7 @@
 - 默认启用 `low-memory`；单张 Sheet 达到 `5,000,000` cell slots 时切换。
 - low-memory 临时目录位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
 - 写出器直接接收 `Arc<str>` 共享文本，预计算列行为并跳过空白单元格。低内存模式将行发送给后台压缩线程，原始行与压缩临时文件均位于最终输出目录。
+- 总表连续的数值、日期及共享文本按行使用隐式坐标。低内存预压缩表连同其有效本地头合入最终 ZIP。[Windows 实测及 Excel 回存](../changes/2026-11-20-windows-workbook-export.md)
 - 命令行程序使用 `mimalloc 0.1.52`。单次执行结束时由系统回收展示表，库接口 `application::execute` 在每次调用结束时释放展示表。
 - `rust_xlsxwriter 0.102.0` 使用 `rust/vendor/rust_xlsxwriter/` 受控源码，保留必要 I/O 错误传播；来源与文件哈希见[依赖清单](dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)。
 - 读写共用 ZIP `9.4.2`，配套 quick-xml `0.42.0`、flate2 `1.1.11`、zlib-rs `0.6.8`；以 `rust/Cargo.lock` 为准。
@@ -35,7 +36,20 @@
 
 ## 复测顺序
 
-0.3.1 已采用五项实现。Linux 完整 SK 的重复验收遇到崩溃和内容差异。Windows 原生基线已完成三组输入的 N=5，完整 SK 的耗时和 PWS 达标，输出大小超限。[Windows 实测](../changes/2026-11-20-windows-stage-profile.md) · [五项实验](../changes/2026-11-20-sk-speed.md) · [采用决策](../decisions/2026-11-20-v0.3.1-performance.md)
+### Windows PGO 候选构建
+
+在 Windows x64 的仓库根目录运行以下两条命令。输出目录须为新目录。工具使用固定 Rust 工具链的 LLVM 训练组件及项目的 Python 验证环境，生成的可执行文件仍可独立运行。
+
+```powershell
+rustup component add llvm-tools-preview
+uv run python -m tools.validation.build_windows_pgo --output-dir .pytest-tmp/windows-pgo
+```
+
+训练只使用固定种子的合成 GB、常规 SK 和 58 列 SK。两次 Cargo 构建使用独立目标目录，并在训练程序退出时写出 LLVM 计数器。最终程序位于输出目录的 `costing-calculate.exe`，`pgo-build.json` 记录合成输入、配置、profile 与二进制哈希。更换平台或工具链须重新训练并在留出的真实输入上验收。[构建工具](../../tools/validation/build_windows_pgo.py) · [Rust PGO 文档](https://doc.rust-lang.org/rustc/profile-guided-optimization.html)
+
+### 常规构建和测量
+
+已发布的 0.3.1 采用五项实现。Linux 完整 SK 重复验收遇到崩溃和内容差异。Windows 冻结基线的 GB 和完整 SK 大小超限；当前源码的三组真实输入均通过 N=5 三项门禁。[Windows 基线](../changes/2026-11-20-windows-stage-profile.md) · [当前 Windows 结果](../changes/2026-11-20-windows-workbook-export.md) · [五项优化采用决策](../decisions/2026-11-20-v0.3.1-performance.md)
 
 先通过正确性：
 

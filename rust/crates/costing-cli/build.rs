@@ -77,6 +77,7 @@ fn watch_git_identity(manifest_dir: &Path) {
 }
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(costing_pgo_training)");
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let manifest_dir = Path::new(&manifest_dir);
     let git_commit = git_commit(manifest_dir);

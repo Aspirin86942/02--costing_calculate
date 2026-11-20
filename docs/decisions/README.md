@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [成本总表隐式坐标、显式样式与 ZIP 兼容性](2026-11-20-workbook-export.md)
+
 - [0.3.1 采用五项性能改动及验收边界](2026-11-20-v0.3.1-performance.md)
 
 - [`2026-11-09-sk-material-summary.md`](2026-11-09-sk-material-summary.md)：按用户确认的 ERP 汇总计算 SK 材料成本，同时保留子项差异核查。

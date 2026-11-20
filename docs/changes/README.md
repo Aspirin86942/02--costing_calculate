@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [Windows 写出优化与桌面 Excel 验收](2026-11-20-windows-workbook-export.md)记录三份真实输入的配对、独立 N=5 及完整 SK 回存结果。
+
 - [Windows 0.3.1 全流程耗时与 XLSX 体积实测](2026-11-20-windows-stage-profile.md)记录三组真实输入的阶段分布、N=5 与固定 XML 压缩结果。
 
 - [0.3.1 版本说明](releases/v0.3.1.md)和[完整 SK 五项优化实测](2026-11-20-sk-speed.md)

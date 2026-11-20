@@ -1680,6 +1680,7 @@ pub struct Worksheet {
     pub(crate) is_chartsheet: bool,
     pub(crate) use_constant_memory: bool,
     pub(crate) use_inline_strings: bool,
+    implicit_cell_references: bool,
     pub(crate) current_row: RowNum,
     pub(crate) workbook_xf_indices: Arc<RwLock<HashMap<Format, u32>>>,
     pub(crate) string_table: Arc<Mutex<SharedStringsTable>>,
@@ -2040,6 +2041,7 @@ impl Worksheet {
             is_chartsheet: false,
             use_constant_memory: false,
             use_inline_strings: false,
+            implicit_cell_references: false,
             has_sheet_data: false,
             current_row: 0,
             workbook_xf_indices: Arc::new(RwLock::new(HashMap::new())),
@@ -19197,6 +19199,33 @@ impl Worksheet {
         }
     }
 
+    /// Omit predictable addresses on consecutive numeric and shared-string cells.
+    /// The row number, explicit gaps, cell values and format indexes remain encoded.
+    pub fn set_implicit_cell_references(&mut self, enable: bool) -> &mut Self {
+        self.implicit_cell_references = enable;
+        self
+    }
+
+    // Other cell variants may have no XML representation (e.g. an unformatted
+    // blank). Anchor the next value explicitly after any such variant.
+    fn omit_value_reference(next: &mut Option<ColNum>, column: ColNum, cell: &CellType) -> bool {
+        let adjacent = *next == Some(column);
+        match cell {
+            CellType::Number { .. }
+            | CellType::DateTime { .. }
+            | CellType::String {
+                string_id: Some(_), ..
+            } => {
+                *next = Some(column + 1);
+                adjacent
+            }
+            _ => {
+                *next = None;
+                false
+            }
+        }
+    }
+
     // Write out all the row and cell data in the worksheet data table.
     #[allow(clippy::too_many_lines)]
     fn write_data_table(&mut self) {
@@ -19227,7 +19256,10 @@ impl Worksheet {
 
             // The row has data. Write it out cell by cell.
             self.write_table_row(row_num, span, row_options, true);
+            let mut next_column = Some(0);
             for (&col_num, cell) in columns {
+                let omit_reference = self.implicit_cell_references
+                    && Self::omit_value_reference(&mut next_column, col_num, cell);
                 // Faster column name lookup for inner loop.
                 let col_name = if col_num < 26 {
                     &COLUMN_LETTERS[col_num as usize..(col_num + 1) as usize]
@@ -19244,7 +19276,7 @@ impl Worksheet {
                         Self::write_number_cell(
                             &mut self.writer,
                             row_num + 1,
-                            col_name,
+                            (!omit_reference).then_some(col_name),
                             *number,
                             xf_index,
                         );
@@ -19265,7 +19297,7 @@ impl Worksheet {
                             Self::write_string_cell(
                                 &mut self.writer,
                                 row_num + 1,
-                                col_name,
+                                (!omit_reference).then_some(col_name),
                                 *string_id,
                                 xf_index,
                             );
@@ -19399,29 +19431,26 @@ impl Worksheet {
         // First find any write ahead cached rows.
         let mut remaining_rows: Vec<_> = self.write_ahead.keys().copied().collect();
 
-        // Add any changed row elements.
-        let max_changed_row = self.changed_rows.keys().max().unwrap_or(&0);
-        if *max_changed_row > self.current_row {
-            for row_num in self.current_row..=*max_changed_row {
-                if self.changed_rows.contains_key(&row_num) {
-                    remaining_rows.push(row_num);
-                }
-            }
-        }
-
-        // Add the current row.
-        remaining_rows.push(self.current_row);
-
-        // Remove any duplicate rows.
+        // flush_data_row writes the current row, then advances to its argument.
+        // Only future rows are destinations; targeting the current row twice
+        // can serialize its formatting again without its cells (upstream #219).
+        let current_row = self.current_row;
+        remaining_rows.extend(
+            self.changed_rows
+                .keys()
+                .copied()
+                .filter(|row| *row > current_row),
+        );
         remaining_rows.sort_unstable();
         remaining_rows.dedup();
 
-        // If there is data to write (and not just write-ahead or rows) we move
-        // the final row ahead by one. This will start any subsequent write() on
-        // the next row, after a resave.
-        if self.data_table.contains_key(&self.current_row) {
-            remaining_rows.push(1 + *remaining_rows.last().unwrap());
+        if remaining_rows.is_empty()
+            && !self.data_table.contains_key(&current_row)
+            && !self.changed_rows.contains_key(&current_row)
+        {
+            return Ok(());
         }
+        remaining_rows.push(remaining_rows.last().copied().unwrap_or(current_row) + 1);
 
         // Flush all the remaining rows.
         for remaining_row in remaining_rows {
@@ -19497,7 +19526,10 @@ impl Worksheet {
 
         // The row has data. Write it out cell by cell.
         self.write_constant_table_row(current_row, row_options, true);
+        let mut next_column = Some(0);
         for (&col_num, cell) in columns {
+            let omit_reference = self.implicit_cell_references
+                && Self::omit_value_reference(&mut next_column, col_num, cell);
             let col_name = if col_num < 26 {
                 &COLUMN_LETTERS[col_num as usize..(col_num + 1) as usize]
             } else {
@@ -19510,7 +19542,7 @@ impl Worksheet {
                     Self::write_number_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        (!omit_reference).then_some(col_name),
                         *number,
                         xf_index,
                     );
@@ -19526,7 +19558,7 @@ impl Worksheet {
                         Self::write_string_cell(
                             self.file_writer(),
                             current_row + 1,
-                            col_name,
+                            (!omit_reference).then_some(col_name),
                             *string_id,
                             xf_index,
                         );
@@ -19815,11 +19847,19 @@ impl Worksheet {
     // Note: the following write_*_cell() functions are optimized for minimum
     // overhead since they are in the inner loop for all worksheet data.
 
+    fn write_value_cell_start<W: Write>(writer: &mut W, row: RowNum, column: Option<&str>) {
+        match column {
+            Some(column) => write!(writer, r#"<c r="{column}{row}""#),
+            None => writer.write_all(b"<c"),
+        }
+        .expect(XML_WRITE_ERROR);
+    }
+
     // Write the <c> element for a number.
     fn write_number_cell<W: Write>(
         writer: &mut W,
         row: RowNum,
-        col_name: &str,
+        col_name: Option<&str>,
         number: f64,
         xf_index: u32,
     ) {
@@ -19836,14 +19876,11 @@ impl Worksheet {
         #[cfg(any(feature = "ryu", feature = "zmij"))]
         let number = buffer.format_finite(number);
 
+        Self::write_value_cell_start(writer, row, col_name);
         if xf_index > 0 {
-            write!(
-                writer,
-                r#"<c r="{col_name}{row}" s="{xf_index}"><v>{number}</v></c>"#
-            )
-            .expect(XML_WRITE_ERROR);
+            write!(writer, r#" s="{xf_index}"><v>{number}</v></c>"#).expect(XML_WRITE_ERROR);
         } else {
-            write!(writer, r#"<c r="{col_name}{row}"><v>{number}</v></c>"#).expect(XML_WRITE_ERROR);
+            write!(writer, "><v>{number}</v></c>").expect(XML_WRITE_ERROR);
         }
     }
 
@@ -19851,22 +19888,16 @@ impl Worksheet {
     fn write_string_cell<W: Write>(
         writer: &mut W,
         row: RowNum,
-        col_name: &str,
+        col_name: Option<&str>,
         string_index: u32,
         xf_index: u32,
     ) {
+        Self::write_value_cell_start(writer, row, col_name);
         if xf_index > 0 {
-            write!(
-                writer,
-                r#"<c r="{col_name}{row}" s="{xf_index}" t="s"><v>{string_index}</v></c>"#
-            )
-            .expect(XML_WRITE_ERROR);
+            write!(writer, r#" s="{xf_index}" t="s"><v>{string_index}</v></c>"#)
+                .expect(XML_WRITE_ERROR);
         } else {
-            write!(
-                writer,
-                r#"<c r="{col_name}{row}" t="s"><v>{string_index}</v></c>"#
-            )
-            .expect(XML_WRITE_ERROR);
+            write!(writer, r#" t="s"><v>{string_index}</v></c>"#).expect(XML_WRITE_ERROR);
         }
     }
 

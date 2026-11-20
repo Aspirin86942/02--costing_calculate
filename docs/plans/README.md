@@ -13,7 +13,7 @@
 
 ## 当前文件
 
-- [GB / SK 全流程性能优化方案](2026-11-20-cross-platform-performance.md)（Proposed）覆盖 Linux 正确性对照、两种写出路径、读取、内存与成品体积。
+- [GB / SK 全流程性能优化方案](2026-11-20-cross-platform-performance.md)（In Progress）已完成 Windows 写出与 PGO 实测，Linux 正确性和峰值 RSS 待原生复验。
 
 - [`2026-11-11-memory-optimization.md`](2026-11-11-memory-optimization.md)：Completed，完整 SK 验证工具已交付；行容量、读取和主键字符串候选均未采纳。
 

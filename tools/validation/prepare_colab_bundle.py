@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 from pathlib import Path, PurePosixPath
@@ -96,10 +97,14 @@ def safe_relative(name: str) -> PurePosixPath:
 def reviewed_file(root: Path, name: str) -> Path:
     relative = safe_relative(name)
     path = root.joinpath(*relative.parts)
-    if root.is_symlink() or any(
-        (root.joinpath(*relative.parts[:index])).is_symlink() for index in range(1, len(relative.parts) + 1)
-    ):
-        raise BundleError('Reviewed files cannot be indirect files')
+    for index in range(len(relative.parts) + 1):
+        component = root.joinpath(*relative.parts[:index])
+        try:
+            info = component.lstat()
+        except (FileNotFoundError, NotADirectoryError) as error:
+            raise BundleError('Reviewed file is unavailable or outside its directory') from error
+        if stat.S_ISLNK(info.st_mode) or (os.name == 'nt' and info.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT):
+            raise BundleError('Reviewed files cannot be indirect files')
     if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
         raise BundleError('Reviewed file is unavailable or outside its directory')
     return path

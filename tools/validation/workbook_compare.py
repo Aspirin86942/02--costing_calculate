@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import re
+import struct
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, cast
+from typing import Any, BinaryIO, Literal, cast
+from xml.parsers import expat
 from zipfile import ZipFile
 
 from tools.validation.types import PipelineName
@@ -16,6 +19,43 @@ TEXT_STORAGE_TYPES = frozenset(('s', 'inlineStr'))
 
 FORBIDDEN_SHEETS = {'成本分析产品维度'}
 MAX_MISMATCHES = 20
+CELL_REFERENCE = re.compile(r'([A-Z]{1,3})([1-9][0-9]{0,6})')
+
+
+class _InvalidCellPosition(ValueError):
+    pass
+
+
+class _SheetPosition:
+    """Resolve SpreadsheetML row/cell positions independently of the Rust writer."""
+
+    def __init__(self) -> None:
+        self.row = 0
+        self.column: int | None = None
+
+    def start_row(self, reference: str | None) -> None:
+        if reference is not None and not (reference.isascii() and reference.isdecimal() and len(reference) <= 7):
+            raise _InvalidCellPosition('invalid worksheet row')
+        row = self.row + 1 if reference is None else int(reference)
+        if not self.row < row <= 1_048_576:
+            raise _InvalidCellPosition('worksheet rows must increase within Excel limits')
+        self.row, self.column = row, 0
+
+    def cell(self, reference: str | None) -> int:
+        if self.column is None:
+            raise _InvalidCellPosition('cell outside of a worksheet row')
+        column = self.column + 1
+        if reference is not None:
+            match = CELL_REFERENCE.fullmatch(reference)
+            if match is None or int(match[2]) != self.row:
+                raise _InvalidCellPosition('cell reference does not match its row')
+            column = _column_index(match[1])
+        if not self.column < column <= 16_384:
+            raise _InvalidCellPosition('worksheet columns must increase within Excel limits')
+        self.column = column
+        return column
+
+
 # Python/XlsxWriter may preserve IEEE-754 tails that Rust serializes as the same shorter decimal.
 NUMERIC_ABSOLUTE_TOLERANCE = Decimal('1e-9')
 # Whole-column sums accumulate those harmless per-cell tails across large SK sheets.
@@ -127,8 +167,78 @@ class WorkbookComparisonReport:
     mismatches: tuple[WorkbookMismatch, ...]
 
 
-def workbook_payloads_identical(expected_path: Path, actual_path: Path) -> bool:
-    """Compare every ZIP member except the intentionally volatile core properties."""
+def _expanded_coordinates_match(explicit: BinaryIO, compact: BinaryIO) -> bool:
+    """Restore only absent c@r attributes, and compare *every byte* to the explicit sheet."""
+    parser = expat.ParserCreate(namespace_separator='}')
+    worksheet, sheet_data, row_tag, cell_tag = (f'{MAIN_NS}}}{tag}' for tag in ('worksheet', 'sheetData', 'row', 'c'))
+    parents: list[str] = []
+    position = _SheetPosition()
+    pending = bytearray()
+    absolute_offset = 0
+    insertions: list[tuple[int, bytes]] = []
+    row_suffix = b''
+    column_prefixes: dict[int, bytes] = {}
+
+    def start(tag: str, attrs: dict[str, str]) -> None:
+        nonlocal row_suffix
+        if tag == row_tag:
+            if parents != [worksheet, sheet_data]:
+                raise _InvalidCellPosition('unexpected worksheet row')
+            position.start_row(attrs.get('r'))
+            row_suffix = f'{position.row}"'.encode('ascii')
+        elif tag == cell_tag:
+            if not parents or parents[-1] != row_tag:
+                raise _InvalidCellPosition('unexpected worksheet cell')
+            reference = attrs.get('r')
+            col = position.cell(reference)
+            if reference is None:
+                offset = parser.CurrentByteIndex - absolute_offset
+                # Only the literal, unprefixed start tag used by the writer is eligible.
+                if pending[offset : offset + 2] != b'<c' or pending[offset + 2] not in b' \t\r\n/>':
+                    raise _InvalidCellPosition('unsupported cell tag spelling')
+                if col not in column_prefixes:
+                    column_prefixes[col] = b' r="' + _column_letters(col).encode('ascii')
+                insertions.append((offset + 2, column_prefixes[col] + row_suffix))
+        parents.append(tag)
+
+    def end(tag: str) -> None:
+        parents.pop()
+        if tag == row_tag:
+            position.column = None
+
+    def reject_doctype(*_args: object) -> None:
+        raise _InvalidCellPosition('unexpected worksheet doctype')
+
+    parser.StartElementHandler, parser.EndElementHandler = start, end
+    parser.StartDoctypeDeclHandler = reject_doctype
+    try:
+        while True:
+            chunk = compact.read(1024 * 1024)
+            pending.extend(chunk)
+            parser.Parse(chunk, not chunk)
+            consumed = parser.CurrentByteIndex - absolute_offset
+            restored = bytearray()
+            previous = 0
+            for offset, address in insertions:
+                restored.extend(pending[previous:offset])
+                restored.extend(address)
+                previous = offset
+            restored.extend(pending[previous:consumed])
+            if explicit.read(len(restored)) != restored:
+                return False
+            del pending[:consumed]
+            absolute_offset += consumed
+            insertions.clear()
+            if not chunk:
+                return not pending and not explicit.read(1)
+            if len(pending) > 1024 * 1024:
+                return False  # A long incomplete token can use the general semantic comparator.
+    except (expat.ExpatError, _InvalidCellPosition):
+        return False
+
+
+def workbook_payloads_identical(expected_path: Path, actual_path: Path, *, expand_coordinates: bool = False) -> bool:
+    """Compare ZIP members except volatile core properties, optionally restoring implicit detail addresses."""
     with ZipFile(expected_path) as expected, ZipFile(actual_path) as actual:
         expected_members = Counter(expected.namelist())
         actual_members = Counter(actual.namelist())
@@ -138,6 +248,14 @@ def workbook_payloads_identical(expected_path: Path, actual_path: Path) -> bool:
             if member == 'docProps/core.xml':
                 continue
             with expected.open(member) as expected_stream, actual.open(member) as actual_stream:
+                if expand_coordinates and member == 'xl/worksheets/sheet1.xml':
+                    left = expected.getinfo(member).file_size
+                    right = actual.getinfo(member).file_size
+                    if left != right:
+                        streams = (expected_stream, actual_stream) if left > right else (actual_stream, expected_stream)
+                        if not _expanded_coordinates_match(*streams):
+                            return False
+                        continue
                 while True:
                     expected_chunk = expected_stream.read(1024 * 1024)
                     actual_chunk = actual_stream.read(1024 * 1024)
@@ -145,6 +263,37 @@ def workbook_payloads_identical(expected_path: Path, actual_path: Path) -> bool:
                         return False
                     if not expected_chunk:
                         break
+    return True
+
+
+def worksheet_descriptors_valid(path: Path) -> bool:
+    """Check the streaming ZIP records that Excel reads in addition to the central directory."""
+    with ZipFile(path) as archive, path.open('rb') as raw:
+        entries = sorted(archive.infolist(), key=lambda entry: entry.header_offset)
+        for index, entry in enumerate(entries):
+            if not entry.filename.startswith('xl/worksheets/') or not entry.filename.endswith('.xml'):
+                continue
+            raw.seek(entry.header_offset)
+            header = raw.read(30)
+            if len(header) != 30 or header[:4] != b'PK\x03\x04':
+                return False
+            flags = struct.unpack_from('<H', header, 6)[0]
+            if (flags ^ entry.flag_bits) & 8:
+                return False
+            if not flags & 8:
+                continue
+            name_size, extra_size = struct.unpack_from('<HH', header, 26)
+            data_end = raw.tell() + name_size + extra_size + entry.compress_size
+            next_header = entries[index + 1].header_offset if index + 1 < len(entries) else archive.start_dir
+            if next_header < data_end:
+                return False
+            raw.seek(data_end)
+            descriptor = raw.read(min(24, next_header - data_end))
+            records = [struct.pack('<IQQ', entry.CRC, entry.compress_size, entry.file_size)]
+            if max(entry.compress_size, entry.file_size) <= 0xFFFF_FFFF:
+                records.append(struct.pack('<III', entry.CRC, entry.compress_size, entry.file_size))
+            if not any(descriptor.startswith(prefix + record) for prefix in (b'', b'PK\x07\x08') for record in records):
+                return False
     return True
 
 
@@ -288,7 +437,11 @@ class _Package:
                 self._package_mismatch('worksheet_part_not_unique')
                 sheets.append(_empty_sheet_package(name))
                 continue
-            sheets.append(_read_sheet_package(self.archive, name, path, self.style_catalog))
+            try:
+                sheets.append(_read_sheet_package(self.archive, name, path, self.style_catalog))
+            except _InvalidCellPosition:
+                self.package_mismatches.append(WorkbookMismatch(name, None, 'invalid_cell_coordinate'))
+                sheets.append(_empty_sheet_package(name))
         return tuple(sheets)
 
     def _package_mismatch(self, kind: str) -> None:
@@ -436,14 +589,21 @@ def _iter_xml_cells(
 ) -> Iterator[XmlCell]:
     if sheet.path is None:
         return
-    column_styles = dict(sheet.column_styles)
+    position = _SheetPosition()
     with package.archive.open(sheet.path) as stream:
-        for _, node in ET.iterparse(stream, events=('end',)):  # noqa: S314 - controlled local xlsx artifact.
+        for event, node in ET.iterparse(stream, events=('start', 'end')):  # noqa: S314 - controlled local artifact.
+            if event == 'start':
+                if node.tag == f'{{{MAIN_NS}}}row':
+                    position.start_row(node.get('r'))
+                continue
             if node.tag != f'{{{MAIN_NS}}}c':
                 if node.tag == f'{{{MAIN_NS}}}row':
+                    position.column = None
                     node.clear()
                 continue
-            coordinate = node.attrib['r']
+            reference = node.get('r')
+            column = position.cell(reference)
+            coordinate = reference or _coordinate(column, position.row)
             storage_type = _storage_type(node)
             lexical_value = _cell_lexical_value(node, storage_type)
             resolved_text: str | None = None
@@ -463,7 +623,7 @@ def _iter_xml_cells(
                 storage_type=storage_type,
                 lexical_value=lexical_value,
                 resolved_text=resolved_text,
-                style_id=int(node.attrib.get('s', column_styles.get(_column_index(coordinate), 0))),
+                style_id=int(node.attrib.get('s', '0')),
             )
             node.clear()
 
@@ -759,6 +919,7 @@ def _read_sheet_package(
     column_styles: dict[int, int] = {}
     row_two_styles: dict[int, int] = {}
     conditional_format_ranges: list[str] = []
+    position = _SheetPosition()
     with archive.open(path) as stream:
         for event, node in ET.iterparse(  # noqa: S314 - controlled local xlsx artifact.
             stream,
@@ -779,12 +940,15 @@ def _read_sheet_package(
                     for column_index in range(int(node.attrib['min']), int(node.attrib['max']) + 1):
                         column_widths[column_index] = width
                         column_styles[column_index] = style_id
+                elif node.tag == f'{{{MAIN_NS}}}row':
+                    position.start_row(node.get('r'))
                 elif node.tag == f'{{{MAIN_NS}}}c':
-                    coordinate = node.attrib['r']
-                    row_number, column_index = _coordinate_key(coordinate)
-                    if row_number == 2:
-                        row_two_styles[column_index] = int(node.attrib.get('s', column_styles.get(column_index, 0)))
+                    column_index = position.cell(node.get('r'))
+                    if position.row == 2:
+                        row_two_styles[column_index] = int(node.attrib.get('s', '0'))
             else:
+                if node.tag == f'{{{MAIN_NS}}}row':
+                    position.column = None
                 node.clear()
 
     formats = {
@@ -877,13 +1041,17 @@ def _column_index(cell_reference: str) -> int:
     return result
 
 
-def _coordinate(column: int, row: int) -> str:
+def _column_letters(column: int) -> str:
     letters = ''
     remaining = column
     while remaining:
         remaining, remainder = divmod(remaining - 1, 26)
         letters = chr(ord('A') + remainder) + letters
-    return f'{letters}{row}'
+    return letters
+
+
+def _coordinate(column: int, row: int) -> str:
+    return f'{_column_letters(column)}{row}'
 
 
 def _header_coordinate(column: int) -> str:

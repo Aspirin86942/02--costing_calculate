@@ -431,6 +431,7 @@ fn populate_sheet(
         .set_name(&sheet.sheet_name)
         .map_err(CostingXlsxError::Writer)
         .map_err(|error| populate_error(context, path, error))?;
+    worksheet.set_implicit_cell_references(sheet.sheet_name == DEFAULT_SHEET_NAMES[0]);
 
     let header_format = Format::new()
         .set_bold()

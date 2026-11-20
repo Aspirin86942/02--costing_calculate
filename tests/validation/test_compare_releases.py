@@ -1,11 +1,13 @@
 import copy
 import hashlib
+import io
 import json
 import math
+import struct
 import sys
 from pathlib import Path
 from typing import Any
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 import xlsxwriter
@@ -710,6 +712,39 @@ def test_workbook_comparison_worker_is_budgeted(
     assert failure.value.error_code == error_code
     assert failure.value.retryable is retryable
     assert str(tmp_path) not in str(failure.value)
+
+
+@pytest.mark.parametrize('zip64', [False, True])
+def test_missing_worksheet_descriptor_fails_even_when_payloads_match(tmp_path: Path, zip64: bool) -> None:
+    class Stream(io.BytesIO):
+        def seek(self, *_: object) -> int:
+            raise io.UnsupportedOperation
+
+    baseline = tmp_path / 'base.xlsx'
+    candidate = tmp_path / 'candidate.xlsx'
+    _write_workbook(baseline)
+    sink = Stream()
+    with ZipFile(baseline) as source, ZipFile(sink, 'w', compression=ZIP_DEFLATED) as output:
+        for name in source.namelist():
+            with output.open(name, 'w', force_zip64=zip64) as member:
+                member.write(source.read(name))
+    candidate.write_bytes(sink.getvalue())
+    result = release_module._workbook_comparison(baseline, candidate, pipeline='gb')
+    assert result['outputs']['candidate']['worksheet_zip_descriptors_valid']
+    with ZipFile(candidate) as archive:
+        sheet = archive.getinfo('xl/worksheets/sheet1.xml')
+    with candidate.open('r+b') as file:
+        file.seek(sheet.header_offset + 26)
+        name_length, extra_length = struct.unpack('<HH', file.read(4))
+        file.seek(name_length + extra_length + sheet.compress_size, 1)
+        assert file.read(4) == b'PK\x07\x08'
+        file.seek(-4, 1)
+        file.write(bytes(24 if zip64 else 16))
+    result = release_module._workbook_comparison(baseline, candidate, pipeline='gb')
+    assert result['comparison_mode'] == 'package-fast-path'
+    assert {'kind': 'output-validation', 'side': 'candidate', 'field': 'worksheet_zip_descriptors'} in result[
+        'mismatches'
+    ]
 
 
 @linux_only

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -287,7 +288,17 @@ def test_packaging_rejects_unreviewed_payload_before_writing_archive(bundle_inpu
     elif case == 'size':
         payload[0]['size_bytes'] += 1
     elif case == 'parent-symlink':
-        (root / 'indirect').symlink_to(root / 'payload/src', target_is_directory=True)
+        target = root / 'payload/src'
+        alias = root / 'indirect'
+        try:
+            alias.symlink_to(target, target_is_directory=True)
+        except OSError as error:
+            if os.name != 'nt' or error.winerror != 1314:
+                raise
+            # Windows directory junctions can be created without symlink privileges.
+            import _winapi
+
+            _winapi.CreateJunction(str(target), str(alias))
         payload[2]['source'] = 'indirect/new.rs'
     elif case == 'conflict':
         payload.append(dict(payload[0]))

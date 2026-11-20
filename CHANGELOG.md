@@ -2,6 +2,11 @@
 
 All notable changes to Costing Calculate are documented in this file.
 
+## Windows 0.3.1-rc.1 - 2026-11-21
+
+- 修复低内存 SK 工作簿的 ZIP 封装与格式尾行写出，减少成本总表重复坐标。
+- 提供 Windows x86-64 常规版和可选 PGO 版。两种构建的用途、实测与平台范围见[候选版说明](docs/changes/releases/v0.3.1-rc.1.md)。
+
 ## 0.3.1 - 2026-11-20
 
 - 大型单表 XLSX 支持按完整行并行读取。低内存写出支持后台压缩，文本单元格复用已有字符串。

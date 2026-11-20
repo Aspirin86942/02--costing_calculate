@@ -43,6 +43,23 @@ GB 的五次 PWS 为 357.26 至 364.18 MiB，中位数距 358.30 MiB 上限约 0
 
 9 级实验对应的完整 SK 估计体积较原包小 1.58%，达到原门槛需要小 35.44%。这组数值只描述固定 XML 和上述验证后端的压缩空间。Rust 写出速度、其它 XML 表示的体积及 Linux 稳定性均需独立验证。[Linux 同版本验收](releases/v0.3.1.md)
 
+## 单元格坐标与样式的独立对照
+
+用冻结的 Windows 程序重新生成完整 SK 输出。离线实验只处理总表的 `sheet1.xml`。保留每行的显式行号，遇到新行重置前一列的位置。只有当前列恰好等于前一列加一时才省略单元格的 `r` 属性，首个单元格在 A 列时同样可省略。省略与还原分别扫描 XML，每一块在还原后都与原始字节完全一致。[Office 对缺省坐标的解释](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-oe376/b3e61d30-f15f-4712-9252-50883cbf0f8c)
+
+| 度量 | 对照 | 省略可推导坐标 |
+| --- | ---: | ---: |
+| 总表行数（含表头） | 812,589 | 812,589 |
+| 写出的单元格数 | 19,755,638 | 19,755,638 |
+| 省略的显式坐标数 | 0 | 17,503,508 |
+| 首表未压缩 XML 字节 | 800,136,143 | 589,961,599 |
+| 同后端 5 级 raw DEFLATE 压缩后的首表字节 | 72,441,811 | 28,821,326 |
+| 用同一原包的其余成员及 ZIP 开销估计的整包字节 | 75,373,209 | 31,752,724 |
+
+两侧使用 Python 验证环境的 `1.3.1.zlib-ng`，整包估计从 71.88 MiB 降至 30.28 MiB，减少 57.87%。现行上限为 46.40 MiB。实验验证了完整首表的表示与压缩空间，完整 Rust 候选的 XLSX、端到端速度及完整文件的桌面 Excel 回存仍待验证。聚合报告位于本机 `.pytest-tmp/coordinate-size-d5h6jh3p/coordinate-size.json`。
+
+另用合成小表分别测试省略坐标和省略样式。保留样式、仅省略连续坐标时，openpyxl 3.1.5 和桌面 Microsoft Excel 16.0 均读得预期的金额、前导零文本、公式、空列和 AA/AB 列位置。在 Excel 另存再重开后，这些项目也与对照一致。另一变体只省略 A2 的显式样式，列样式与原单元格样式相同，Excel 与 openpyxl 读到的数字格式均从 `#,##0.00` 变成 `General`，Excel 回存后仍为 `General`。比较器目前对缺失的样式号会取列样式，故此处需独立读回验证。合成回存记录位于本机 `.pytest-tmp/excel-xml-compat-dfc6da3310b947719592331cac092686/compatibility.json`。[Microsoft 对列样式的说明](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.spreadsheet.column?view=openxml-3.0.1) · [现有工作簿比较器](../../tools/validation/workbook_compare.py)
+
 ## 本地复测
 
 在 PowerShell 将环境变量 `COSTING_SK_FULL` 指向完整 SK 工作簿，从仓库根目录运行。两个输出目录独立，阶段明细从第一条 CLI 命令的控制台 JSON 读取。

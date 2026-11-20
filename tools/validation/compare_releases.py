@@ -23,7 +23,11 @@ from tools.validation.measure_paired_release import (
     workbook_sheet_names,
 )
 from tools.validation.types import PipelineName
-from tools.validation.workbook_compare import compare_workbooks, workbook_payloads_identical
+from tools.validation.workbook_compare import (
+    compare_workbooks,
+    workbook_payloads_identical,
+    worksheet_descriptors_valid,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RunMode = Literal['normal', 'check-only']
@@ -327,11 +331,19 @@ def _workbook_comparison(baseline: Path, candidate: Path, *, pipeline: PipelineN
         outputs = {}
         for name, path in paths.items():
             # 实际 Sheet 名只读自 ZIP 元数据，不依赖 Manifest 的自我声明。
-            outputs[name] = {**file_identity(path), 'sheet_names': workbook_sheet_names(path)}
+            outputs[name] = {
+                **file_identity(path),
+                'sheet_names': workbook_sheet_names(path),
+                'worksheet_zip_descriptors_valid': worksheet_descriptors_valid(path),
+            }
             if outputs[name]['sheet_names'] != SHEET_NAMES:
                 mismatches.append({'kind': 'output-validation', 'side': name, 'field': 'sheet_names'})
+            if name == 'candidate' and not outputs[name]['worksheet_zip_descriptors_valid']:
+                mismatches.append({'kind': 'output-validation', 'side': name, 'field': 'worksheet_zip_descriptors'})
         if workbook_payloads_identical(baseline, candidate):
             comparison_mode = 'package-fast-path'
+        elif workbook_payloads_identical(baseline, candidate, expand_coordinates=True):
+            comparison_mode = 'implicit-coordinates'
         else:
             comparison_mode = 'semantic'
             comparison = compare_workbooks(baseline, candidate, pipeline=pipeline)

@@ -104,7 +104,9 @@ uv run python -m tools.validation.compare_releases `
 ## 性能与发布
 
 - release profile 固定 `codegen-units = 1`。
+- Windows x64 可通过 `tools.validation.build_windows_pgo` 独立构建 PGO 候选。训练采用固定合成输入，真实输入留作验收，分开记录 Windows PWS 和 Linux RSS。[构建与验收](docs/performance/README.md#windows-pgo-候选构建)
 - 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
+- 总表可按行省略可推导的单元格地址，保留跨空列的地址与显式样式。低内存预压缩成员的本地 ZIP 头或数据描述符须与中央目录一致。相关写出变更用真实完整 SK 做桌面 Excel 打开、另存及回读。[Windows 验收记录](docs/changes/2026-11-20-windows-workbook-export.md)
 - `CellValue::Text` / `DateLike` 使用 `Arc<str>`，但不建立全局或按列文本驻留池。
 - reader 的整数快路径只接受有限、无小数且安全落在 `i64` 范围内的值；其余值必须保留原字符串解析回退。
 - `rust_xlsxwriter` 使用 `rust/vendor/rust_xlsxwriter/` 中的受控源码，精确版本为 0.102.0；上游 revision、发布包校验和、必要补丁与完整文件哈希见 `docs/performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json`。保留来源、许可证、CHANGELOG 编译输入及原始 I/O 错误链。

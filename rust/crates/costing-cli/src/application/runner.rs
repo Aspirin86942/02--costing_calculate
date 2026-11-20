@@ -23,7 +23,20 @@ pub fn execute_and_exit(request: RunRequest, report: fn(RunOutcome) -> i32) -> !
     let outcome = execute_with_publisher(request, &publish_manifest, |rows| {
         rows_until_exit = Some(rows)
     });
-    std::process::exit(report(outcome))
+    let code = report(outcome);
+    #[cfg(all(windows, costing_pgo_training))]
+    {
+        unsafe extern "C" {
+            fn __llvm_profile_write_file() -> i32;
+        }
+        // Windows process::exit bypasses LLVM's CRT exit hook. The training build
+        // links this function via -Cprofile-generate and provides a fresh output path.
+        if unsafe { __llvm_profile_write_file() } != 0 {
+            eprintln!("Unable to write the LLVM training profile");
+            std::process::exit(1);
+        }
+    }
+    std::process::exit(code)
 }
 
 fn execute_with_publisher(

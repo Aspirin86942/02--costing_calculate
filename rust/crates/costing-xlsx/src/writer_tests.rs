@@ -80,12 +80,29 @@ fn row_compression_matches_serial_xml_and_replays_after_metadata_changes() {
             sheet.set_screen_gridlines(false);
         }
         let extract = |bytes: Vec<u8>| {
-            let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut zip = ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            let mut sheet = zip.by_name("xl/worksheets/sheet1.xml").unwrap();
+            // A central-directory reader alone accepts a missing streaming descriptor.
+            // Excel also checks the local header when opening a workbook.
+            let header = sheet.header_start() as usize;
+            let flags = u16::from_le_bytes(bytes[header + 6..header + 8].try_into().unwrap());
+            let fields = if flags & 8 == 0 {
+                header + 14
+            } else {
+                let end = sheet.data_start().unwrap() as usize + sheet.compressed_size() as usize;
+                assert_eq!(&bytes[end..end + 4], b"PK\x07\x08");
+                end + 4
+            };
+            let sizes = [
+                sheet.crc32(),
+                sheet.compressed_size() as u32,
+                sheet.size() as u32,
+            ];
+            for (field, expected) in bytes[fields..fields + 12].chunks_exact(4).zip(sizes) {
+                assert_eq!(u32::from_le_bytes(field.try_into().unwrap()), expected);
+            }
             let mut xml = Vec::new();
-            zip.by_name("xl/worksheets/sheet1.xml")
-                .unwrap()
-                .read_to_end(&mut xml)
-                .unwrap();
+            sheet.read_to_end(&mut xml).unwrap();
             xml
         };
         let first = extract(book.save_to_buffer().unwrap());
@@ -96,6 +113,34 @@ fn row_compression_matches_serial_xml_and_replays_after_metadata_changes() {
     assert_eq!(worksheet_xml(Some(1500), false), expected);
     assert_eq!(worksheet_xml(Some(1501), false), expected);
     assert_eq!(worksheet_xml(Some(1500), true), worksheet_xml(None, true));
+}
+
+#[cfg(feature = "low-memory")]
+#[test]
+fn low_memory_saves_final_data_and_format_only_rows_once() {
+    use std::io::{Cursor, Read};
+    use zip::ZipArchive;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = Workbook::new();
+    book.set_tempdir(dir.path()).unwrap();
+    let sheet = book.add_worksheet_with_low_memory().unwrap();
+    sheet.write_number(0, 0, 1).unwrap();
+    sheet.write_number(1, 0, 2.5).unwrap();
+    sheet.set_row_format(1, &Format::new().set_bold()).unwrap();
+    sheet.set_row_height(3, 23).unwrap();
+    for _ in 0..2 {
+        let mut xml = String::new();
+        let mut package = ZipArchive::new(Cursor::new(book.save_to_buffer().unwrap())).unwrap();
+        package
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert_eq!(xml.matches(r#"<row r="2""#).count(), 1);
+        assert_eq!(xml.matches(r#"<row r="4""#).count(), 1);
+        assert!(xml.contains("<v>2.5</v>"));
+    }
 }
 
 fn sheet(sheet_name: &str) -> SheetModel {
@@ -129,6 +174,77 @@ fn payload(sheet_models: Vec<SheetModel>) -> WorkbookPayload {
         error_log_count: 0,
         error_log: Vec::new(),
         stage_timings: StageTimings::default(),
+    }
+}
+
+#[test]
+fn detail_coordinates_preserve_sparse_cells_in_both_writer_modes() {
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    let mut sheets: Vec<_> = DEFAULT_SHEET_NAMES.iter().map(|name| sheet(name)).collect();
+    let detail = &mut sheets[0];
+    detail.columns = (0..28).map(|col| format!("Col{col}")).collect();
+    detail.number_formats = BTreeMap::from([("Col1".into(), "#,##0.00".into())]);
+    let mut values = vec![CellValue::Blank; 28];
+    values[1] = CellValue::Decimal(Decimal::new(125, 1));
+    values[2] = CellValue::Text("0012".into());
+    values[25] = CellValue::Text("Z".into());
+    values[26] = CellValue::Decimal(Decimal::ONE);
+    values[27] = CellValue::Text("AB".into());
+    detail.rows = vec![values.clone(), vec![CellValue::Blank; 28], values];
+    let payload = payload(sheets);
+
+    for &force_low_memory in if cfg!(feature = "low-memory") {
+        &[false, true][..]
+    } else {
+        &[false][..]
+    } {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("compact.xlsx");
+        let control = WriterTestControl {
+            force_low_memory,
+            ..Default::default()
+        };
+        write_workbook_with_test_control(&writer_context(), &path, &payload, control).unwrap();
+        let mut archive = ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+        let mut xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        for row in [2, 4] {
+            assert!(xml.contains(&format!(r#"<c r="B{row}" s=""#)));
+            assert!(xml.contains(&format!(r#"<c r="Z{row}""#)));
+            for column in ["C", "AA", "AB"] {
+                assert!(!xml.contains(&format!(r#"<c r="{column}{row}""#)));
+            }
+        }
+        xml.clear();
+        archive
+            .by_name("xl/worksheets/sheet2.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains(r#"<c r="A2""#));
+        let mut parsed = open_workbook_auto(&path).unwrap();
+        let detail = parsed.worksheet_range(DEFAULT_SHEET_NAMES[0]).unwrap();
+        for row in [1, 3] {
+            assert_eq!(
+                detail.get_value((row, 1)),
+                Some(&calamine::Data::Float(12.5))
+            );
+            assert_eq!(
+                detail.get_value((row, 2)),
+                Some(&calamine::Data::String("0012".into()))
+            );
+            assert_eq!(
+                detail.get_value((row, 27)),
+                Some(&calamine::Data::String("AB".into()))
+            );
+            assert_eq!(detail.get_value((row, 3)), Some(&calamine::Data::Empty));
+        }
     }
 }
 

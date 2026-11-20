@@ -42,6 +42,63 @@ def test_package_fast_path_ignores_only_volatile_core_properties(tmp_path: Path)
     assert not workbook_payloads_identical(expected, actual)
 
 
+def test_sparse_implicit_coordinates_match_explicit_cells_across_rows(tmp_path: Path) -> None:
+    expected, actual = _matching_workbooks(
+        tmp_path, [['head', 'next', *([None] * 23), 'Z', 'AA'], [2, None, 3], [], [None, 'B', 'C']]
+    )
+
+    def compact(xml: bytes) -> bytes:
+        for address in (b'A1', b'B1', b'AA1', b'A2', b'C4'):
+            xml = xml.replace(b'<c r="' + address + b'"', b'<c')
+        return xml
+
+    _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', compact)
+    assert compare_workbooks(expected, actual, pipeline='sk').passed
+    assert workbook_payloads_identical(expected, actual, expand_coordinates=True)
+    assert workbook_payloads_identical(actual, expected, expand_coordinates=True)
+    _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda xml: xml.replace(b'<c r="C2"', b'<c'))
+    assert not workbook_payloads_identical(expected, actual, expand_coordinates=True)
+    assert not compare_workbooks(expected, actual, pipeline='sk').passed
+
+
+@pytest.mark.parametrize('address', [b'A2', b'B3', b'XFE2', b'B0', b'2B'])
+def test_invalid_coordinate_fails_comparison(tmp_path: Path, address: bytes) -> None:
+    expected, actual = _matching_workbooks(tmp_path, [['a', 'b'], [1, 2]])
+    _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda xml: xml.replace(b'r="B2"', b'r="' + address + b'"'))
+    report = compare_workbooks(expected, actual, pipeline='sk')
+    assert 'invalid_cell_coordinate' in {m.mismatch_kind for m in report.mismatches}
+
+
+def test_coordinate_expansion_at_xml_read_boundary_checks_remaining_bytes(tmp_path: Path) -> None:
+    expected, actual = _matching_workbooks(tmp_path, [['a', 'b'], [1, 2]])
+    sheet = 'xl/worksheets/sheet1.xml'
+
+    def pad(xml: bytes) -> bytes:
+        start = xml.index(b'<c r="A1"')
+        return xml[:start] + b' ' * (1024 * 1024 - 1 - start) + xml[start:]
+
+    for path in (expected, actual):
+        _rewrite_zip_xml(path, sheet, pad)
+    _rewrite_zip_xml(actual, sheet, lambda xml: xml.replace(b'<c r="A1"', b'<c'))
+    assert workbook_payloads_identical(expected, actual, expand_coordinates=True)
+    _rewrite_zip_xml(actual, sheet, lambda xml: xml.replace(b'<v>2</v>', b'<v>3</v>'))
+    assert not workbook_payloads_identical(expected, actual, expand_coordinates=True)
+
+
+def test_allocated_cell_loses_explicit_format_even_with_matching_column_style(tmp_path: Path) -> None:
+    expected = tmp_path / 'expected.xlsx'
+    actual = tmp_path / 'actual.xlsx'
+    with xlsxwriter.Workbook(expected) as workbook:
+        sheet = workbook.add_worksheet('Sheet')
+        amount = workbook.add_format({'num_format': '#,##0.00'})
+        sheet.set_column(0, 0, 15, amount)
+        sheet.write_number('A2', 1234.5, amount)
+    shutil.copyfile(expected, actual)
+    _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda xml: xml.replace(b'<c r="A2" s="1"', b'<c'))
+    mismatches = compare_workbooks(expected, actual, pipeline='gb').mismatches
+    assert _mismatch(mismatches, 'cell_style_mismatch', 'A2')
+
+
 def test_decimal_lexical_float_tail_of_one_e_minus_ten_is_accepted(tmp_path: Path) -> None:
     expected, actual = _matching_workbooks(tmp_path, [['数值'], [1]])
     _rewrite_zip_xml(actual, 'xl/worksheets/sheet1.xml', lambda xml: xml.replace(b'<v>1</v>', b'<v>1.0000000001</v>'))

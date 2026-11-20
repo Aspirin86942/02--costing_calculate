@@ -4,6 +4,10 @@ Costing Calculate 是 GB / SK 成本核算工作簿处理工具。当前版本�
 
 **0.3.1 的 Linux 构建包目前仅供复验。** 两次独立构建的程序在真实完整 SK 验收中均崩溃。生产核算请使用上一份已验证的同平台程序。
 
+当前源码已修复低内存 SK 工作簿在桌面 Excel 中打不开的问题。Windows 完整 SK 实测由 71.88 MiB 缩至 30.52 MiB，8 对交错运行耗时改善 12.93%，峰值工作集约 1.71 GiB。数据来自当前源码的 Windows 候选构建。[实测及 Excel 回存验收](docs/changes/2026-11-20-windows-workbook-export.md)
+
+Windows 还支持用合成工作簿预训练的 PGO 构建。完整 SK 的独立五次中位数为 5.53 秒，相对冻结版八对耗时改善 22.77%。[本地 PGO 构建命令](docs/performance/README.md#windows-pgo-候选构建)
+
 ## 安装
 
 ### 使用 Linux x86-64 本地发行包
@@ -19,6 +23,8 @@ sha256sum -c SHA256SUMS
 ```
 
 ### 使用 Windows 发布包
+
+Windows x86-64 的常规版和 PGO 版使用相同的命令。文件名、选择依据和校验方法见[0.3.1-rc.1 候选版说明](docs/changes/releases/v0.3.1-rc.1.md)。
 
 1. 下载同一版本的 ZIP 和 `.zip.sha256`。
 2. 校验 ZIP：

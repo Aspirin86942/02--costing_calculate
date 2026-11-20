@@ -477,8 +477,9 @@ impl<W: Write + Send> Packager<W> {
                     xmlwriter::reset(&mut worksheet.writer);
                     worksheet.assemble_xml_file_end();
                     builder.write_all(worksheet.writer.get_ref())?;
-                    let mut compressed = builder.finish_into_readable()?;
-                    self.zip.raw_copy_file(compressed.by_index(0)?)?;
+                    // Preserve the completed local header. Raw-copying just the payload
+                    // into a streaming ZipWriter sets bit 3 without a data descriptor.
+                    self.zip.merge_archive(builder.finish_into_readable()?)?;
                     return Ok(());
                 }
             }

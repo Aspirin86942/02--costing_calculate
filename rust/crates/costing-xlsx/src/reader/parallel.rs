@@ -100,9 +100,11 @@ fn read_blocks(
     let (_, left) = first.start()?;
     let (mut last_row, right) = first.end()?;
     let mut result = raw_from_range(name, first).ok()?;
-    let width = (right - left + 1) as usize;
     thread::scope(|scope| {
         let mut pending = VecDeque::new();
+        let mut bounds = (left, right);
+        // Keep the column origin of each group until every block has been read.
+        let mut groups = vec![(result.rows.len(), left)];
         let template = &template;
         loop {
             if pending.len() < workers {
@@ -111,7 +113,7 @@ fn read_blocks(
                         thread::Builder::new()
                             .spawn_scoped(scope, move || {
                                 let (_, range) = read_range(template, prefix, &rows)?;
-                                aligned_rows(range, left, right)
+                                Some(aligned_rows(range, left, right))
                             })
                             .ok()?,
                     );
@@ -121,34 +123,60 @@ fn read_blocks(
             let Some(job) = pending.pop_front() else {
                 break;
             };
-            let (start, rows) = job.join().ok()??;
-            if !rows.is_empty() {
-                if start <= last_row {
+            let block = job.join().ok()??;
+            if !block.rows.is_empty() {
+                if block.start <= last_row {
                     return None;
                 }
+                bounds = (bounds.0.min(block.left), bounds.1.max(block.right));
+                let width = (block.right - block.left + 1) as usize;
                 result
                     .rows
-                    .extend((last_row + 1..start).map(|_| vec![CellValue::Blank; width]));
-                last_row = start.checked_add(u32::try_from(rows.len() - 1).ok()?)?;
-                result.rows.extend(rows);
+                    .extend((last_row + 1..block.start).map(|_| vec![CellValue::Blank; width]));
+                last_row = block
+                    .start
+                    .checked_add(u32::try_from(block.rows.len() - 1).ok()?)?;
+                result.rows.extend(block.rows);
+                groups.push((result.rows.len(), block.left));
+            }
+        }
+        if bounds != (left, right) {
+            let width = (bounds.1 - bounds.0 + 1) as usize;
+            for header in &mut result.header_rows {
+                pad_columns(header, (left - bounds.0) as usize, width, String::new());
+            }
+            let mut start = 0;
+            for (end, origin) in groups {
+                for row in &mut result.rows[start..end] {
+                    if row.len() < width {
+                        pad_columns(row, (origin - bounds.0) as usize, width, CellValue::Blank);
+                    }
+                }
+                start = end;
             }
         }
         Some(result)
     })
 }
 
-fn aligned_rows(
-    mut range: Range<Data>,
+fn pad_columns<T: Clone>(row: &mut Vec<T>, leading: usize, width: usize, blank: T) {
+    // Leave room for the two derived columns, as in aligned_rows.
+    row.reserve_exact(width + 2 - row.len());
+    row.resize(width, blank);
+    row.rotate_right(leading);
+}
+
+struct RowBlock {
+    start: u32,
     left: u32,
     right: u32,
-) -> Option<(u32, Vec<Vec<CellValue>>)> {
-    if range.is_empty() {
-        return Some((0, Vec::new()));
-    }
-    let (start, col) = range.start()?;
-    if col < left || range.end()?.1 > right {
-        return None;
-    }
+    rows: Vec<Vec<CellValue>>,
+}
+
+fn aligned_rows(mut range: Range<Data>, left: u32, right: u32) -> RowBlock {
+    let (start, col) = range.start().unwrap_or((0, left));
+    let left = left.min(col);
+    let right = right.max(range.end().map_or(right, |(_, col)| col));
     let width = (right - left + 1) as usize;
     let mut output = Vec::with_capacity(range.height());
     for i in 0..range.height() {
@@ -163,7 +191,12 @@ fn aligned_rows(
         row.resize(width, CellValue::Blank);
         output.push(row);
     }
-    Some((start, output))
+    RowBlock {
+        start,
+        left,
+        right,
+        rows: output,
+    }
 }
 
 fn read_range(template: &[u8], prefix: &[u8], rows: &[u8]) -> Option<(String, Range<Data>)> {
@@ -212,7 +245,7 @@ mod tests {
     use calamine::open_workbook_auto_from_rs;
     use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
 
-    fn fixture() -> Vec<u8> {
+    fn fixture_with_late_columns(widen: bool) -> Vec<u8> {
         let mut book = Workbook::new();
         let sheet = book.add_worksheet();
         sheet.write_string(2, 2, "年期").unwrap();
@@ -228,7 +261,15 @@ mod tests {
             sheet.write_number(row, 5, 0.125).unwrap();
             sheet.write_formula(row, 4, "=1+2").unwrap();
         }
+        if widen {
+            sheet.write_string(61, 0, "late left").unwrap();
+            sheet.write_number(94, 8, 2.5).unwrap();
+        }
         book.save_to_buffer().unwrap()
+    }
+
+    fn fixture() -> Vec<u8> {
+        fixture_with_late_columns(false)
     }
 
     #[test]
@@ -251,6 +292,17 @@ mod tests {
             b"<row r=\"2\"><c></row>",
         ] {
             assert!(complete_rows(broken).is_none());
+        }
+    }
+
+    #[test]
+    fn later_columns_align_headers_rows_and_empty_gaps_to_the_full_range() {
+        let bytes = fixture_with_late_columns(true);
+        let expected =
+            read_open_workbook(open_workbook_auto_from_rs(Cursor::new(&bytes)).unwrap()).unwrap();
+        for block in [512, 1500, 4096] {
+            let actual = read_blocks(Cursor::new(&bytes), 0, block, 3).unwrap();
+            assert_eq!(actual, expected, "block size {block}");
         }
     }
 

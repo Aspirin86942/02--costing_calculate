@@ -4,8 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-default = ["low-memory"]
+default = ["low-memory", "mimalloc-alloc"]
 low-memory = ["costing-xlsx/low-memory"]
+mimalloc-alloc = ["dep:mimalloc"]
 zlib = ["costing-xlsx/zlib"]
 zmij = ["costing-xlsx/zmij"]
 
@@ -15,7 +16,7 @@ chrono.workspace = true
 clap.workspace = true
 costing-core = { path = "../costing-core" }
 costing-xlsx = { path = "../costing-xlsx" }
-mimalloc = "=0.1.52"
+mimalloc = { version = "=0.1.52", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

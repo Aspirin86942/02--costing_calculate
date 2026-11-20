@@ -13,14 +13,14 @@
     "src/workbook.rs",
     "src/worksheet.rs"
   ],
-  "source_inventory_sha256": "887c6e6a8f498e92d5847556150facff8b77e30bfaf871884db5e5400beef2fd",
+  "source_inventory_sha256": "855b71b07efd84f0d1b89593773853785990ebc55bbf02b7a1d710966cd5555e",
   "source_files": {
     ".cargo_vcs_info.json": "738ac9a25d360250c0f50af144f3b0727d26ac9d6f196da99382f9c44d223c5d",
     "CHANGELOG.md": "7cce1b4261945ad4233a48fec9ed4df704263b3d40256c089dd459a97f48cffb",
     "Cargo.toml": "3348d0bce166a51e0194134b2e58a7fdfed8e67af11d9cb468c76350b2675b1a",
     "LICENSE_Apache2.0": "ee48b3189afd8d84e225382c82097ddd9e99aae1de1edf4df79994a2dd4842ce",
     "LICENSE_MIT": "6719e95f813f9f93e1ae52f9c13b89b3766655d65620399638b3753fc24f4c56",
-    "PATCHES.md": "e3ae9c77ef1d610f8138ae5216d1c9bfd1c579fef519333332083d1db4aa1d18",
+    "PATCHES.md": "409efc1bfa90ad6b50f7eea888da0bfcf26e96c1f19d64278e7f786b53e0adc9",
     "README.md": "a86ff84378d7001dba64520a622b5a03246585d6a39c41eeabc4b18105d0f373",
     "src/app/tests.rs": "9a518a9b4b2e70c53ba76a66936b7bff3e5e55ee1775a180cc101cf4c64a5a1d",
     "src/app.rs": "17996cc28151a44be83e0d2e6e1d5ce50761c86f7ffd4106f13d678f8c5d63ec",
@@ -95,7 +95,7 @@
     "src/workbook/tests.rs": "9f5ba5ec010694b32359189179bce31bea65676ef70484ff1aee39fc2e42e914",
     "src/workbook.rs": "dd84a2806f49ca170db8b065a123f68e5ed4084a9deae78e7bcb06e073630ae7",
     "src/worksheet/tests.rs": "f6a5177b1e1635a307e13d928e1f486164437abc9b6b7d54af4e1de8dc97f8e7",
-    "src/worksheet.rs": "dd07186a0660447341822bee00df7ee92a255abe32e8a38905eb9913ecbe8a12",
+    "src/worksheet.rs": "38d01cefaf00e9c2baa2fbd6a8f105a03f2386e693f34e247b857ea4c3678482",
     "src/xmlwriter/tests.rs": "b736b8d9b6a85260b23b8440e87aaa6430f9a117333b4cc00abe5ed5dac63e73",
     "src/xmlwriter.rs": "6c13d707c9dd68fb8d8beff8d3b55e2a38e81d96cd90ee8fb55cac30e6de072e"
   },

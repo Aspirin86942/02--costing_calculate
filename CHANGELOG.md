@@ -2,6 +2,11 @@
 
 All notable changes to Costing Calculate are documented in this file.
 
+## 未发布
+
+- 大型单表在后续数据块出现更宽的列时，按完整列范围一次读完。低内存写出按需生成列名，显式宽列地址使用四字节缓冲区。
+- 新增系统分配器对照构建，默认使用 mimalloc。[采用依据与实测](docs/decisions/2026-11-20-xlsx-io-defaults.md)
+
 ## Windows 0.3.1-rc.1 - 2026-11-21
 
 - 修复低内存 SK 工作簿的 ZIP 封装与格式尾行写出，减少成本总表重复坐标。

@@ -20,7 +20,7 @@
 ## 当前实现边界
 
 - release profile 固定 `codegen-units = 1`。
-- 满足条件的单表 XLSX 在工作表 XML 达到 16 MiB 且有多个可用核心时按完整行分块，用 Calamine `0.38.0` 并行解析并按顺序合并。无法安全分块的输入回到常规读取。
+- 满足条件的单表 XLSX 在工作表 XML 达到 16 MiB 且有多个可用核心时按完整行分块，用 Calamine `0.38.0` 并行解析。后续块扩展列范围时，将表头和各块对齐后返回。无法安全分块的输入回到常规读取。
 - reader 对有限、无小数且安全落在 `i64` 范围内的浮点值直接构造 `Decimal`；
   其他值保留字符串解析回退。
 - `CellValue::Text` / `DateLike` 使用 `Arc<str>`，clone 时共享文本分配；
@@ -29,12 +29,24 @@
 - low-memory 临时目录位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
 - 写出器直接接收 `Arc<str>` 共享文本，预计算列行为并跳过空白单元格。低内存模式将行发送给后台压缩线程，原始行与压缩临时文件均位于最终输出目录。
 - 总表连续的数值、日期及共享文本按行使用隐式坐标。低内存预压缩表连同其有效本地头合入最终 ZIP。[Windows 实测及 Excel 回存](../changes/2026-11-20-windows-workbook-export.md)
-- 命令行程序使用 `mimalloc 0.1.52`。单次执行结束时由系统回收展示表，库接口 `application::execute` 在每次调用结束时释放展示表。
+- 低内存写出跳过可省略地址的列名转换，需要写出的宽列名使用四字节缓冲区。[Linux 读写改动的采用依据](../decisions/2026-11-20-xlsx-io-defaults.md)
+- 命令行程序默认使用 `mimalloc 0.1.52` 分配内存。单次执行结束时由系统回收展示表，库接口 `application::execute` 在每次调用结束时释放展示表。
 - `rust_xlsxwriter 0.102.0` 使用 `rust/vendor/rust_xlsxwriter/` 受控源码，保留必要 I/O 错误传播；来源与文件哈希见[依赖清单](dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)。
 - 读写共用 ZIP `9.4.2`，配套 quick-xml `0.42.0`、flate2 `1.1.11`、zlib-rs `0.6.8`；以 `rust/Cargo.lock` 为准。
 - 普通工作簿沿用 ZIP 后端默认压缩等级 6；工作簿含 low-memory Sheet 时显式设置等级 5。历史降低等级的实验未满足输出大小门禁。
 
 ## 复测顺序
+
+### Linux 分配器对照
+
+默认构建启用 `low-memory` 和 `mimalloc-alloc`。下面两条命令使用同一份源码和独立的构建目录。第二条保留低内存写出，改用系统分配器。自定义构建使用 `--no-default-features` 时，可显式添加 `--features mimalloc-alloc` 选择 mimalloc。对照时两边使用同一份输入、相同的审计模式，逐次核对三张表的内容。[本机复测记录](../changes/2026-11-20-linux-sk-diagnostics.md)
+
+```sh
+cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate \
+  --target-dir .pytest-tmp/alloc-default
+cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate \
+  --no-default-features --features low-memory --target-dir .pytest-tmp/alloc-system
+```
 
 ### Windows PGO 候选构建
 

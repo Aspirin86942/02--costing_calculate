@@ -104,6 +104,8 @@ uv run python -m tools.validation.compare_releases `
 ## 性能与发布
 
 - release profile 固定 `codegen-units = 1`。
+- CLI 默认启用 `low-memory` 和 `mimalloc-alloc`。隔离分配器时用 `--no-default-features --features low-memory` 保持同一写出模式。[本机对照](docs/performance/README.md#linux-分配器对照)
+- 默认并行读取支持后续块向左、向右扩展列范围。低内存写出按需生成列名，显式宽列使用四字节缓冲区。[采用决策](docs/decisions/2026-11-20-xlsx-io-defaults.md)
 - Windows x64 可通过 `tools.validation.build_windows_pgo` 独立构建 PGO 候选。训练采用固定合成输入，真实输入留作验收，分开记录 Windows PWS 和 Linux RSS。[构建与验收](docs/performance/README.md#windows-pgo-候选构建)
 - 默认启用 `low-memory`；临时目录必须位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
 - 总表可按行省略可推导的单元格地址，保留跨空列的地址与显式样式。低内存预压缩成员的本地 ZIP 头或数据描述符须与中央目录一致。相关写出变更用真实完整 SK 做桌面 Excel 打开、另存及回读。[Windows 验收记录](docs/changes/2026-11-20-windows-workbook-export.md)

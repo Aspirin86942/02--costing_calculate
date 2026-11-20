@@ -143,6 +143,41 @@ fn low_memory_saves_final_data_and_format_only_rows_once() {
     }
 }
 
+#[cfg(feature = "low-memory")]
+#[test]
+fn low_memory_column_letters_cover_excel_boundaries() {
+    use std::io::{Cursor, Read};
+    use zip::ZipArchive;
+
+    let columns = [
+        (25, "Z"),
+        (26, "AA"),
+        (51, "AZ"),
+        (52, "BA"),
+        (701, "ZZ"),
+        (702, "AAA"),
+        (16_383, "XFD"),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let mut book = Workbook::new();
+    book.set_tempdir(dir.path()).unwrap();
+    let sheet = book.add_worksheet_with_low_memory().unwrap();
+    sheet.set_implicit_cell_references(true);
+    for (row, &(column, _)) in columns.iter().enumerate() {
+        sheet.write_number(row as u32, column, 17).unwrap();
+    }
+    let mut archive = ZipArchive::new(Cursor::new(book.save_to_buffer().unwrap())).unwrap();
+    let mut xml = String::new();
+    archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .unwrap()
+        .read_to_string(&mut xml)
+        .unwrap();
+    for (row, (_, name)) in columns.iter().enumerate() {
+        assert!(xml.contains(&format!(r#"<c r="{name}{}""#, row + 1)));
+    }
+}
+
 fn sheet(sheet_name: &str) -> SheetModel {
     SheetModel {
         sheet_name: sheet_name.to_string(),

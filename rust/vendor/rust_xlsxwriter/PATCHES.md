@@ -67,3 +67,5 @@
 普通及低内存写出均可按表启用 `set_implicit_cell_references`。同一行连续的数值、日期和共享文本使用可推导的列坐标，跨空列后保留显式地址，格式和类型照常写出。默认关闭该选项，项目仅在成本计算单总表启用。
 
 低内存写出将后台生成的单成员 ZIP 用 `merge_archive` 合入外层流式 ZIP，使本地头中的 CRC 和大小与压缩数据匹配。格式专用尾行的处理移植自[上游 #219 修复](https://github.com/jmcnamara/rust_xlsxwriter/commit/e6476c5d56a6515e42ee9c016c8eeb67cdfd403c)，保留本地 I/O 错误传播。
+
+低内存写出仅在单元格需要显式地址时生成列名。A 至 Z 直接使用固定字符，更宽的列使用四字节缓冲区生成字母，覆盖 Excel 的 XFD 末列。

@@ -2,7 +2,7 @@
 
 Costing Calculate 是 GB / SK 成本核算工作簿处理工具。当前版本为 **0.3.1**，正式实现为 Rust 命令行程序。Linux 可以从源码构建，Windows 使用自包含 ZIP。运行时无需安装 Rust 或 Python。各平台验收状态见[版本说明](docs/changes/releases/v0.3.1.md)。
 
-**0.3.1 的 Linux 构建包目前仅供复验。** 两次独立构建的程序在真实完整 SK 验收中均崩溃。生产核算请使用上一份已验证的同平台程序。
+**0.3.1 的 Linux 发布包目前仅供复验。** 两次独立构建的程序曾在真实完整 SK 验收中崩溃。旧发布包在后续本机复测中五次写出均成功，但五份文件的 ZIP 结构检查均失败。生产核算请使用上一份已验证的同平台程序。[旧包与当前源码的复测记录](docs/changes/2026-11-20-linux-sk-diagnostics.md)
 
 当前源码已修复低内存 SK 工作簿在桌面 Excel 中打不开的问题。Windows 完整 SK 实测由 71.88 MiB 缩至 30.52 MiB，8 对交错运行耗时改善 12.93%，峰值工作集约 1.71 GiB。数据来自当前源码的 Windows 候选构建。[实测及 Excel 回存验收](docs/changes/2026-11-20-windows-workbook-export.md)
 
@@ -57,6 +57,8 @@ cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calcul
 - Windows：`rust/target/release/costing-calculate.exe`
 
 Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在实际运行的 Linux 环境构建，或确认目标环境的 glibc（系统运行库）与构建环境兼容。
+
+排查 Linux 内存问题时，可用相同源码分别构建默认版和系统分配器对照版。[构建命令](docs/performance/README.md#linux-分配器对照)
 
 ## 运行
 
@@ -168,6 +170,8 @@ Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在�
 [`docs/performance/README.md`](docs/performance/README.md)。
 
 0.3.1 对符合条件的大型单表 XLSX 并行读取，低内存写出时同步压缩，写入文本时复用已有字符串。命令行程序使用 `mimalloc` 分配内存，进程退出时由系统回收展示表。完整 SK 的观测耗时和复测限制见[五项优化实测](docs/changes/2026-11-20-sk-speed.md)。
+
+当前源码可一次读完后面才出现新列的大型工作表。低内存写出时，可推导的单元格地址直接省略，需要写出的宽列名通过固定缓冲区生成。[采用依据](docs/decisions/2026-11-20-xlsx-io-defaults.md) · [Linux 实测](docs/changes/2026-11-20-linux-sk-diagnostics.md)
 
 Excel 读取使用 calamine `0.38.0`，写出使用 rust_xlsxwriter `0.102.0` 受控源码；ZIP/压缩依赖同步更新并由锁文件固定。
 上游来源、必要错误处理修补和新旧输出验证见[依赖更新记录](docs/changes/2026-11-08-upstream-refresh.md)。

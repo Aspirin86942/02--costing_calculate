@@ -99,7 +99,7 @@ normalize -> split -> fact -> presentation
 
 负责：
 
-- 读取第一个可识别的工作表；
+- 读取第一个可识别的工作表，大型单表按实际列范围对齐各数据块；
 - 标准 writer 和 low-memory writer；
 - 样式、列宽、冻结窗格、筛选和条件格式；
 - 同目录临时文件、flush/sync、禁止覆盖和原子发布；

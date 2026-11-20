@@ -8,6 +8,7 @@ use costing_calculate::{
 };
 use costing_core::{model::ErrorSummary, ErrorCode};
 
+#[cfg(feature = "mimalloc-alloc")]
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

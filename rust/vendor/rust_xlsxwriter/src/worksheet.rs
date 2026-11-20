@@ -19226,6 +19226,25 @@ impl Worksheet {
         }
     }
 
+    // Four ASCII bytes suffice for every ColNum (u16), including Excel's XFD.
+    #[cfg(feature = "constant_memory")]
+    fn column_letters(column: ColNum, buffer: &mut [u8; 4]) -> &str {
+        if column < 26 {
+            let i = usize::from(column);
+            return &COLUMN_LETTERS[i..=i];
+        }
+
+        let mut n = u32::from(column) + 1;
+        let mut start = buffer.len();
+        while n > 0 {
+            n -= 1;
+            start -= 1;
+            buffer[start] = b'A' + (n % 26) as u8;
+            n /= 26;
+        }
+        std::str::from_utf8(&buffer[start..]).expect("Excel column letters are ASCII")
+    }
+
     // Write out all the row and cell data in the worksheet data table.
     #[allow(clippy::too_many_lines)]
     fn write_data_table(&mut self) {
@@ -19530,11 +19549,7 @@ impl Worksheet {
         for (&col_num, cell) in columns {
             let omit_reference = self.implicit_cell_references
                 && Self::omit_value_reference(&mut next_column, col_num, cell);
-            let col_name = if col_num < 26 {
-                &COLUMN_LETTERS[col_num as usize..(col_num + 1) as usize]
-            } else {
-                &utility::column_number_to_name(col_num)
-            };
+            let mut letters = [0; 4];
 
             match cell {
                 CellType::Number { number, xf_index } | CellType::DateTime { number, xf_index } => {
@@ -19542,7 +19557,7 @@ impl Worksheet {
                     Self::write_number_cell(
                         self.file_writer(),
                         current_row + 1,
-                        (!omit_reference).then_some(col_name),
+                        (!omit_reference).then(|| Self::column_letters(col_num, &mut letters)),
                         *number,
                         xf_index,
                     );
@@ -19558,7 +19573,7 @@ impl Worksheet {
                         Self::write_string_cell(
                             self.file_writer(),
                             current_row + 1,
-                            (!omit_reference).then_some(col_name),
+                            (!omit_reference).then(|| Self::column_letters(col_num, &mut letters)),
                             *string_id,
                             xf_index,
                         );
@@ -19572,7 +19587,7 @@ impl Worksheet {
                     Self::write_inline_rich_string_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         string,
                         xf_index,
                     );
@@ -19585,7 +19600,7 @@ impl Worksheet {
                     Self::write_inline_string_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         string,
                         xf_index,
                     );
@@ -19600,7 +19615,7 @@ impl Worksheet {
                     Self::write_formula_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         formula,
                         xf_index,
                         result,
@@ -19618,7 +19633,7 @@ impl Worksheet {
                     Self::write_array_formula_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         formula,
                         xf_index,
                         result,
@@ -19629,7 +19644,12 @@ impl Worksheet {
 
                 CellType::Blank { xf_index } => {
                     let xf_index = self.get_cell_xf_index(*xf_index, row_options, col_num);
-                    Self::write_blank_cell(self.file_writer(), current_row + 1, col_name, xf_index);
+                    Self::write_blank_cell(
+                        self.file_writer(),
+                        current_row + 1,
+                        Self::column_letters(col_num, &mut letters),
+                        xf_index,
+                    );
                 }
 
                 CellType::Boolean { boolean, xf_index } => {
@@ -19638,7 +19658,7 @@ impl Worksheet {
                     Self::write_boolean_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         *boolean,
                         xf_index,
                     );
@@ -19650,7 +19670,7 @@ impl Worksheet {
                     Self::write_error_cell(
                         self.file_writer(),
                         current_row + 1,
-                        col_name,
+                        Self::column_letters(col_num, &mut letters),
                         image_id,
                         xf_index,
                     );

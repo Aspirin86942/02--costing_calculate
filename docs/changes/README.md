@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [Linux 完整 SK 本机诊断与读写优化实测](2026-11-20-linux-sk-diagnostics.md)
+
 - [Windows SK 端到端耗时复测](2026-11-21-windows-sk-end-to-end.md)记录当前两个 Windows ZIP 处理完整 SK 和常规 SK 的独立耗时及相对冻结版的配对降幅。
 
 - [Windows 写出优化与桌面 Excel 验收](2026-11-20-windows-workbook-export.md)记录三份真实输入的配对、独立 N=5 及完整 SK 回存结果。

@@ -2,6 +2,8 @@
 
 Costing Calculate 是 GB / SK 成本核算工作簿处理工具。当前版本为 **0.3.1**，正式实现为 Rust 命令行程序。Linux 可以从源码构建，Windows 使用自包含 ZIP。运行时无需安装 Rust 或 Python。各平台验收状态见[版本说明](docs/changes/releases/v0.3.1.md)。
 
+**0.3.1 的 Linux 构建包目前仅供复验。** 两次独立构建的程序在真实完整 SK 验收中均崩溃。生产核算请使用上一份已验证的同平台程序。
+
 ## 安装
 
 ### 使用 Linux x86-64 本地发行包

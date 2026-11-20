@@ -2,11 +2,14 @@ use std::process::ExitCode;
 
 use clap::{error::ErrorKind, Parser};
 use costing_calculate::{
-    application::{execute, RunOutcome, RunRequest},
+    application::{execute_and_exit, RunOutcome, RunRequest},
     args::CliArgs,
     build_info::BuildInfo,
 };
 use costing_core::{model::ErrorSummary, ErrorCode};
+
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
     if standalone_version_json_requested() {
@@ -37,12 +40,15 @@ fn main() -> ExitCode {
     if args.version_json {
         return emit_json(&BuildInfo::current());
     }
-    match execute(RunRequest::from(args)) {
-        RunOutcome::Succeeded(summary) => emit_json(&summary),
-        RunOutcome::ConfigValidated(record) => emit_json(&record),
-        RunOutcome::EffectiveConfig(config) => emit_json(&config),
-        RunOutcome::Failed(failure) => emit_error(failure),
-    }
+    execute_and_exit(RunRequest::from(args), |outcome| {
+        let code = match outcome {
+            RunOutcome::Succeeded(summary) => emit_json(&summary),
+            RunOutcome::ConfigValidated(record) => emit_json(&record),
+            RunOutcome::EffectiveConfig(config) => emit_json(&config),
+            RunOutcome::Failed(failure) => emit_error(failure),
+        };
+        i32::from(code != ExitCode::SUCCESS)
+    })
 }
 
 fn standalone_version_json_requested() -> bool {

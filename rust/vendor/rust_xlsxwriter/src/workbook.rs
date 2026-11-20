@@ -2574,7 +2574,7 @@ impl Workbook {
         let tempdir = self.tempdir.clone().unwrap_or_else(std::env::temp_dir);
         let file = Self::create_tempfile(&tempdir)?;
 
-        Ok(TempFileWriter::new(file))
+        Ok(TempFileWriter::new(file, tempdir))
     }
 
     // Create a temporary file in a directory and map any IO error to a

@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [0.3.1 版本说明](releases/v0.3.1.md)和[完整 SK 五项优化实测](2026-11-20-sk-speed.md)
+
 - [`2026-11-12-streaming-reader.md`](2026-11-12-streaming-reader.md)：XLSX 逐单元格读取 V2/V3 正式筛选与阶段内存诊断；两批均因阶段回退拒绝，生产读取器未变。
 
 - [`2026-11-12-physical-address-capture.md`](2026-11-12-physical-address-capture.md)：物理地址采集链路验证、两批 64 次检测与原始程序交叉检查；本批未捕获真实失配地址。

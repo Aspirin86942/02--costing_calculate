@@ -4,6 +4,7 @@
 
 ## 当前事实
 
+- [0.3.1 版本说明](changes/releases/v0.3.1.md)和[五项优化的采用依据](decisions/2026-11-20-v0.3.1-performance.md)
 - [`../README.md`](../README.md)：Windows / Linux 安装与运行、输入输出、常见错误和 Windows 发布包。
 - [`architecture.md`](architecture.md)：四个 Rust crate、稳定接口、调用顺序和依赖规则。
 - [`contracts/workbook.md`](contracts/workbook.md)：三张 Sheet、业务规则、error log、CLI 错误和 `RunManifestV1`。
@@ -65,6 +66,7 @@
 
 ## Excel 读写与压缩优化
 
+- [完整 SK 五项优化与真实工作簿验证](changes/2026-11-20-sk-speed.md)
 - 完整方案：[`plans/2026-11-08-xlsx-io-optimization.md`](plans/2026-11-08-xlsx-io-optimization.md)
 - 开销定位、候选与验收：[`changes/2026-11-08-xlsx-io-optimization.md`](changes/2026-11-08-xlsx-io-optimization.md)
 - 当前测量、审计模式及采纳门槛：[`performance/README.md`](performance/README.md)
@@ -101,4 +103,4 @@
 4. 实际变更记录。
 5. 计划和只读历史。
 
-历史 v0.2.0 证据继续保留，但不会覆盖 v0.3.0 当前事实。
+历史版本的验收数据按对应版本查阅。

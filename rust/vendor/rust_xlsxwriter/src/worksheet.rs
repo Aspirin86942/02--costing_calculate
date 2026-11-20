@@ -1403,15 +1403,50 @@ use crate::{
 
 #[cfg(feature = "constant_memory")]
 pub(crate) struct TempFileWriter {
-    writer: BufWriter<File>,
+    writer: BufWriter<RowFile>,
+    tempdir: std::path::PathBuf,
+    compression: Option<RowCompression>,
     first_write_error: Option<std::io::Error>,
 }
 
 #[cfg(feature = "constant_memory")]
+struct RowFile {
+    file: File,
+    blocks: Option<std::sync::mpsc::SyncSender<Box<[u8]>>>,
+}
+
+#[cfg(feature = "constant_memory")]
+impl Write for RowFile {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let n = self.file.write(bytes)?;
+        if let Some(sender) = &self.blocks {
+            if sender.send(bytes[..n].into()).is_err() {
+                self.blocks = None;
+            }
+        }
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+#[cfg(feature = "constant_memory")]
+struct RowCompression {
+    name: String,
+    prefix: Vec<u8>,
+    options: zip::write::SimpleFileOptions,
+    worker: std::thread::JoinHandle<Option<zip::ZipWriter<File>>>,
+}
+
+#[cfg(feature = "constant_memory")]
 impl TempFileWriter {
-    pub(crate) fn new(file: File) -> Self {
+    pub(crate) fn new(file: File, tempdir: std::path::PathBuf) -> Self {
         Self {
-            writer: BufWriter::new(file),
+            writer: BufWriter::with_capacity(128 * 1024, RowFile { file, blocks: None }),
+            tempdir,
+            compression: None,
             first_write_error: None,
         }
     }
@@ -1425,11 +1460,75 @@ impl TempFileWriter {
 
     pub(crate) fn rewind(&mut self) -> std::io::Result<()> {
         self.flush()?;
-        self.writer.rewind()
+        self.writer.get_mut().file.rewind()
     }
 
     pub(crate) fn get_ref(&self) -> &File {
-        self.writer.get_ref()
+        &self.writer.get_ref().file
+    }
+
+    fn start_compression(&mut self, name: String, prefix: Vec<u8>, level: i64) {
+        if self.compression.is_some()
+            || !self.writer.buffer().is_empty()
+            || !self.get_ref().metadata().is_ok_and(|m| m.len() == 0)
+        {
+            return;
+        }
+        let options = crate::packager::worksheet_zip_options(false, Some(level));
+        let Ok(file) = tempfile::tempfile_in(&self.tempdir) else {
+            return;
+        };
+        let mut builder = zip::ZipWriter::new(file);
+        if builder.start_file(&name, options).is_err() || builder.write_all(&prefix).is_err() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<[u8]>>(2);
+        if let Ok(worker) = std::thread::Builder::new().spawn(move || {
+            for block in receiver {
+                builder.write_all(&block).ok()?;
+            }
+            Some(builder)
+        }) {
+            self.writer.get_mut().blocks = Some(sender);
+            self.compression = Some(RowCompression {
+                name,
+                prefix,
+                options,
+                worker,
+            });
+        }
+    }
+
+    pub(crate) fn finish_compression(
+        &mut self,
+        name: &str,
+        prefix: &[u8],
+        options: zip::write::SimpleFileOptions,
+    ) -> std::io::Result<Option<zip::ZipWriter<File>>> {
+        if self.compression.is_none() {
+            return Ok(None);
+        }
+        self.flush()?;
+        self.writer.get_mut().blocks = None;
+        let job = self.compression.take().unwrap();
+        let builder = job.worker.join().ok().flatten();
+        Ok(
+            if job.name == name && job.prefix == prefix && job.options == options {
+                builder
+            } else {
+                None
+            },
+        )
+    }
+}
+
+#[cfg(feature = "constant_memory")]
+impl Drop for TempFileWriter {
+    fn drop(&mut self) {
+        self.writer.get_mut().blocks = None;
+        if let Some(job) = self.compression.take() {
+            let _ = job.worker.join();
+        }
     }
 }
 
@@ -15546,6 +15645,17 @@ impl Worksheet {
         string: String,
         format: Option<&Format>,
     ) -> Result<&mut Worksheet, XlsxError> {
+        self.write_shared_string(row, col, string.into(), format)
+    }
+
+    /// Write text already held in a shared allocation, with optional formatting.
+    pub fn write_shared_string(
+        &mut self,
+        row: RowNum,
+        col: ColNum,
+        string: Arc<str>,
+        format: Option<&Format>,
+    ) -> Result<&mut Worksheet, XlsxError> {
         // Empty strings are ignored by Excel unless they have a format in which
         // case they are treated as a blank cell.
         if string.is_empty() {
@@ -15573,13 +15683,9 @@ impl Worksheet {
 
         // Create the appropriate cell type to hold the data.
         let cell = if self.use_inline_strings {
-            CellType::InlineString {
-                string: Arc::from(string),
-                xf_index,
-            }
+            CellType::InlineString { string, xf_index }
         } else {
             let mut string_id = None;
-            let string = Arc::from(string);
 
             if self.has_workbook_global_sst {
                 let mut string_table = self.string_table.lock().unwrap();
@@ -19257,6 +19363,33 @@ impl Worksheet {
         self.file_writer
             .as_mut()
             .expect("constant memory worksheets required a temp file")
+    }
+
+    /// Compress sequential row data while it is populated. The save path checks
+    /// the final header and ZIP options and can replay the original row file.
+    #[cfg(feature = "constant_memory")]
+    pub fn start_row_compression(&mut self, sheet_index: usize, last_row: RowNum, level: i64) {
+        if !self.use_constant_memory
+            || self.current_row != 0
+            || !std::thread::available_parallelism().is_ok_and(|n| n.get() > 1)
+        {
+            return;
+        }
+        let original_writer = std::mem::take(&mut self.writer);
+        let original_row = std::mem::replace(&mut self.dimensions.last_row, last_row);
+        let original_selected = self.selected;
+        let original_has_data = self.has_sheet_data;
+        self.selected |= sheet_index == 1;
+        self.assemble_xml_file_start();
+        let prefix = std::mem::replace(&mut self.writer, original_writer).into_inner();
+        self.dimensions.last_row = original_row;
+        self.selected = original_selected;
+        self.has_sheet_data = original_has_data;
+        self.file_writer().start_compression(
+            format!("xl/worksheets/sheet{sheet_index}.xml"),
+            prefix,
+            level,
+        );
     }
 
     // Flush the last row of constant memory data, the write-ahead cache and any

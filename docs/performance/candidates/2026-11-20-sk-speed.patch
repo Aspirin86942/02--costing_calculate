@@ -1,0 +1,1034 @@
+--- a/docs/performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json
++++ b/docs/performance/dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json
+@@ -13,14 +13,14 @@
+     "src/workbook.rs",
+     "src/worksheet.rs"
+   ],
+-  "source_inventory_sha256": "cdd96207f8b100fbc0e0eecaf7ce832fc82a94e7158a11fba53489bc38ab9d2a",
++  "source_inventory_sha256": "62d840a635c21bf98528d739a54ee3c670e831a4587e98fce3c0ad0dbf9e37a5",
+   "source_files": {
+     ".cargo_vcs_info.json": "738ac9a25d360250c0f50af144f3b0727d26ac9d6f196da99382f9c44d223c5d",
+     "CHANGELOG.md": "7cce1b4261945ad4233a48fec9ed4df704263b3d40256c089dd459a97f48cffb",
+     "Cargo.toml": "3348d0bce166a51e0194134b2e58a7fdfed8e67af11d9cb468c76350b2675b1a",
+     "LICENSE_Apache2.0": "ee48b3189afd8d84e225382c82097ddd9e99aae1de1edf4df79994a2dd4842ce",
+     "LICENSE_MIT": "6719e95f813f9f93e1ae52f9c13b89b3766655d65620399638b3753fc24f4c56",
+-    "PATCHES.md": "ce0889fe37089d6a2d2fc257e40e821e9df510bb5e11a14e9c64a199eabb9bc3",
++    "PATCHES.md": "17c15104dd552da20df0a97b5601d777b1ecabb976993b3ca405fb8128535179",
+     "README.md": "a86ff84378d7001dba64520a622b5a03246585d6a39c41eeabc4b18105d0f373",
+     "src/app/tests.rs": "9a518a9b4b2e70c53ba76a66936b7bff3e5e55ee1775a180cc101cf4c64a5a1d",
+     "src/app.rs": "17996cc28151a44be83e0d2e6e1d5ce50761c86f7ffd4106f13d678f8c5d63ec",
+@@ -60,7 +60,7 @@
+     "src/macros.rs": "8339c0182277c6ffb40d3bf3bdd81a827e8915205c3181581e3a31925698e5e3",
+     "src/metadata.rs": "dad338178e859c2e29980be26d84654f9573ac7bc92e2fa7af7807e540471f0e",
+     "src/note.rs": "53c3253e8a254bf5ea971419552965a24bd5dd3e7cd10afffd4a2856c31f9ce5",
+-    "src/packager.rs": "3bd1cd659cac183de6f7409cc5d2cfae4bcc38ebd7746e3fde0c59547f4d28d1",
++    "src/packager.rs": "5b45ff97a443f716b9de3924ce60c2566b84ce812cb318e32e16b5901a6347fc",
+     "src/performance.rs": "413402af2f829b709ff60bc4e421e40cbacd7372d363f94e64a58c47258291e7",
+     "src/properties.rs": "9be8c89908729bf252c1cdaec9067a6066364b93ad8de48aaf9896d0652ad4a2",
+     "src/protection.rs": "685b581463cd0a6ef61060683542ef1e7422a200168d7960ccd34f6ecb192860",
+@@ -93,9 +93,9 @@
+     "src/vml/tests.rs": "324aced063331e19cd77276a4eba0840071a20d97f1ddcf340c4601e6b78dca0",
+     "src/vml.rs": "b97166351455ce755c7f424558607ad85ae36e3688a75b400f88442fefab85a5",
+     "src/workbook/tests.rs": "9f5ba5ec010694b32359189179bce31bea65676ef70484ff1aee39fc2e42e914",
+-    "src/workbook.rs": "8e2981acac2fbdbe35dae817e26462f1ed414246ae4df7b93a8e2a820647c271",
++    "src/workbook.rs": "dd84a2806f49ca170db8b065a123f68e5ed4084a9deae78e7bcb06e073630ae7",
+     "src/worksheet/tests.rs": "f6a5177b1e1635a307e13d928e1f486164437abc9b6b7d54af4e1de8dc97f8e7",
+-    "src/worksheet.rs": "66735fda11639a9f2090c2311dbb42a5298c424d37348afe5942d9968a53a549",
++    "src/worksheet.rs": "150eaf7c89641282062efe597da6fdbf6191ba9bc55148f3ed670630043dd29e",
+     "src/xmlwriter/tests.rs": "b736b8d9b6a85260b23b8440e87aaa6430f9a117333b4cc00abe5ed5dac63e73",
+     "src/xmlwriter.rs": "6c13d707c9dd68fb8d8beff8d3b55e2a38e81d96cd90ee8fb55cac30e6de072e"
+   },
+--- a/rust/Cargo.lock
++++ b/rust/Cargo.lock
+@@ -321,6 +321,7 @@
+  "clap",
+  "costing-core",
+  "costing-xlsx",
++ "mimalloc",
+  "rust_xlsxwriter",
+  "serde",
+  "serde_json",
+@@ -352,6 +353,7 @@
+ dependencies = [
+  "calamine",
+  "costing-core",
++ "quick-xml",
+  "rust_decimal",
+  "rust_xlsxwriter",
+  "tempfile",
+@@ -605,6 +607,15 @@
+ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+ 
+ [[package]]
++name = "libmimalloc-sys"
++version = "0.1.49"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
++dependencies = [
++ "cc",
++]
++
++[[package]]
+ name = "libz-sys"
+ version = "1.1.29"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+@@ -632,6 +643,15 @@
+ version = "2.8.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
++
++[[package]]
++name = "mimalloc"
++version = "0.1.52"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
++dependencies = [
++ "libmimalloc-sys",
++]
+ 
+ [[package]]
+ name = "nix"
+--- a/rust/crates/costing-cli/Cargo.toml
++++ b/rust/crates/costing-cli/Cargo.toml
+@@ -15,6 +15,7 @@
+ clap.workspace = true
+ costing-core = { path = "../costing-core" }
+ costing-xlsx = { path = "../costing-xlsx" }
++mimalloc = "=0.1.52"
+ serde.workspace = true
+ serde_json.workspace = true
+ sha2.workspace = true
+--- a/rust/crates/costing-cli/src/application/mod.rs
++++ b/rust/crates/costing-cli/src/application/mod.rs
+@@ -11,4 +11,4 @@
+ };
+ pub use outcome::{FailureRecord, RunOutcome, RunRecord};
+ pub use request::{RunOperation, RunRequest};
+-pub use runner::execute;
++pub use runner::{execute, execute_and_exit};
+--- a/rust/crates/costing-cli/src/application/runner.rs
++++ b/rust/crates/costing-cli/src/application/runner.rs
+@@ -2,7 +2,7 @@
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ use costing_core::error::{ErrorContext, ErrorStage};
+-use costing_core::model::ErrorSummary;
++use costing_core::model::{ErrorSummary, SheetModel};
+ use costing_core::{CostingError, ErrorCode};
+ 
+ use super::manifest::{
+@@ -13,12 +13,23 @@
+ 
+ #[must_use]
+ pub fn execute(request: RunRequest) -> RunOutcome {
+-    execute_with_publisher(request, &publish_manifest)
++    execute_with_publisher(request, &publish_manifest, drop)
++}
++
++/// Complete one CLI invocation, report its outcome and terminate the process.
++/// The OS reclaims the in-memory sheet rows after the output files are closed.
++pub fn execute_and_exit(request: RunRequest, report: fn(RunOutcome) -> i32) -> ! {
++    let mut rows_until_exit = None;
++    let outcome = execute_with_publisher(request, &publish_manifest, |rows| {
++        rows_until_exit = Some(rows)
++    });
++    std::process::exit(report(outcome))
+ }
+ 
+ fn execute_with_publisher(
+     request: RunRequest,
+     publisher: &impl Fn(&Path, &str, &RunManifestV1) -> Result<(), CostingError>,
++    release_sheets: impl FnOnce(Vec<SheetModel>),
+ ) -> RunOutcome {
+     let request_id = new_request_id();
+     let summary_output = request.summary_output.clone();
+@@ -93,6 +104,7 @@
+                 effective.input_pattern,
+                 request_id.clone(),
+                 &mut audit,
++                release_sheets,
+             ) {
+                 Ok(mut summary) => {
+                     if let Some(path) = summary_output.as_deref() {
+@@ -237,7 +249,7 @@
+             )))
+         };
+ 
+-        let outcome = execute_with_publisher(request, &failing_publisher);
++        let outcome = execute_with_publisher(request, &failing_publisher, drop);
+ 
+         let RunOutcome::Failed(failure) = outcome else {
+             panic!("expected manifest publication failure");
+--- a/rust/crates/costing-cli/src/main.rs
++++ b/rust/crates/costing-cli/src/main.rs
+@@ -2,11 +2,14 @@
+ 
+ use clap::{error::ErrorKind, Parser};
+ use costing_calculate::{
+-    application::{execute, RunOutcome, RunRequest},
++    application::{execute_and_exit, RunOutcome, RunRequest},
+     args::CliArgs,
+     build_info::BuildInfo,
+ };
+ use costing_core::{model::ErrorSummary, ErrorCode};
++
++#[global_allocator]
++static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+ 
+ fn main() -> ExitCode {
+     if standalone_version_json_requested() {
+@@ -37,12 +40,15 @@
+     if args.version_json {
+         return emit_json(&BuildInfo::current());
+     }
+-    match execute(RunRequest::from(args)) {
+-        RunOutcome::Succeeded(summary) => emit_json(&summary),
+-        RunOutcome::ConfigValidated(record) => emit_json(&record),
+-        RunOutcome::EffectiveConfig(config) => emit_json(&config),
+-        RunOutcome::Failed(failure) => emit_error(failure),
+-    }
++    execute_and_exit(RunRequest::from(args), |outcome| {
++        let code = match outcome {
++            RunOutcome::Succeeded(summary) => emit_json(&summary),
++            RunOutcome::ConfigValidated(record) => emit_json(&record),
++            RunOutcome::EffectiveConfig(config) => emit_json(&config),
++            RunOutcome::Failed(failure) => emit_error(failure),
++        };
++        i32::from(code != ExitCode::SUCCESS)
++    })
+ }
+ 
+ fn standalone_version_json_requested() -> bool {
+--- a/rust/crates/costing-cli/src/run.rs
++++ b/rust/crates/costing-cli/src/run.rs
+@@ -42,7 +42,7 @@
+         ))
+     })?;
+     let mut audit = RunAudit::new(&args, false, cwd);
+-    run_with_audit(args, pipeline, input_pattern, request_id, &mut audit)
++    run_with_audit(args, pipeline, input_pattern, request_id, &mut audit, drop)
+ }
+ 
+ pub(crate) fn run_with_audit(
+@@ -51,6 +51,7 @@
+     input_pattern: String,
+     request_id: String,
+     audit: &mut RunAudit,
++    release_sheets: impl FnOnce(Vec<costing_core::model::SheetModel>),
+ ) -> anyhow::Result<RunSummary> {
+     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
+         .map_err(|error| {
+@@ -251,6 +252,8 @@
+             .entry(issue.issue_type.clone())
+             .or_default() += 1;
+     }
++    let sheet_count = payload.sheet_models.len();
++    release_sheets(payload.sheet_models);
+     Ok(RunSummary {
+         status: "succeeded".to_string(),
+         request_id,
+@@ -258,7 +261,7 @@
+         output_written: !args.check_only,
+         output_size_bytes,
+         workbook_path,
+-        sheet_count: payload.sheet_models.len(),
++        sheet_count,
+         error_log_count: payload.error_log_count,
+         issue_type_counts,
+         quality_metrics: payload.quality_metrics,
+--- a/rust/crates/costing-xlsx/Cargo.toml
++++ b/rust/crates/costing-xlsx/Cargo.toml
+@@ -12,6 +12,7 @@
+ [dependencies]
+ calamine.workspace = true
+ costing-core = { path = "../costing-core" }
++quick-xml = "=0.42.0"
+ rust_decimal.workspace = true
+ rust_xlsxwriter.workspace = true
+ tempfile.workspace = true
+--- a/rust/crates/costing-xlsx/src/reader.rs
++++ b/rust/crates/costing-xlsx/src/reader.rs
+@@ -5,6 +5,8 @@
+ use costing_core::model::{CellValue, RawWorkbook};
+ use rust_decimal::Decimal;
+ pub use rust_xlsxwriter::XlsxError;
++
++mod parallel;
+ 
+ const HEADER_ANCHOR: &str = "年期";
+ const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编号", "成本项目名称"];
+@@ -20,6 +22,16 @@
+ }
+ 
+ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
++    if path
++        .extension()
++        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
++    {
++        if let Ok(file) = std::fs::File::open(path) {
++            if let Some(raw) = parallel::read(std::io::BufReader::new(file)) {
++                return Ok(raw);
++            }
++        }
++    }
+     read_open_workbook(open_workbook_auto(path)?)
+ }
+ 
+@@ -28,6 +40,9 @@
+ /// This seam lets audit-enabled callers hash exactly the same immutable byte
+ /// slice that Calamine parses, even if the source path is replaced concurrently.
+ pub fn read_raw_workbook_from_bytes(bytes: &[u8]) -> Result<RawWorkbook, CostingXlsxError> {
++    if let Some(raw) = parallel::read(Cursor::new(bytes)) {
++        return Ok(raw);
++    }
+     read_open_workbook(open_workbook_auto_from_rs(Cursor::new(bytes))?)
+ }
+ 
+@@ -40,7 +55,14 @@
+         .first()
+         .cloned()
+         .ok_or_else(|| CostingXlsxError::Message("workbook has no sheets".to_string()))?;
+-    let mut range = workbook.worksheet_range(&sheet_name)?;
++    let range = workbook.worksheet_range(&sheet_name)?;
++    raw_from_range(sheet_name, range)
++}
++
++fn raw_from_range(
++    sheet_name: String,
++    mut range: Range<Data>,
++) -> Result<RawWorkbook, CostingXlsxError> {
+     if range.height() < 2 {
+         return Err(CostingXlsxError::Message(
+             "workbook must contain two header rows".to_string(),
+--- /dev/null
++++ b/rust/crates/costing-xlsx/src/reader/parallel.rs
+@@ -0,0 +1,286 @@
++use std::collections::VecDeque;
++use std::io::{Cursor, Read, Seek, Write};
++use std::thread;
++
++use calamine::{Data, Range, Reader, Xlsx};
++use costing_core::model::{CellValue, RawWorkbook};
++use quick_xml::events::Event;
++use quick_xml::Reader as XmlReader;
++use zip::write::SimpleFileOptions;
++use zip::{CompressionMethod, ZipArchive, ZipWriter};
++
++use super::{normalize_data_cell, raw_from_range};
++
++const SHEET: &str = "xl/worksheets/sheet1.xml";
++const BLOCK: usize = 1024 * 1024;
++
++pub(super) fn read(source: impl Read + Seek) -> Option<RawWorkbook> {
++    let workers = thread::available_parallelism().ok()?.get().min(12);
++    if workers < 2 {
++        return None;
++    }
++    read_blocks(source, 16 * BLOCK, BLOCK, workers)
++}
++
++// Keep a small ZIP containing the original styles, strings and relationships.
++// Each worker adds one block of complete rows and uses the same Calamine reader.
++fn read_blocks(
++    source: impl Read + Seek,
++    minimum: usize,
++    block: usize,
++    workers: usize,
++) -> Option<RawWorkbook> {
++    let mut archive = ZipArchive::new(source).ok()?;
++    let size = archive.by_name(SHEET).ok()?.size();
++    if archive.len() > 32 || size < minimum as u64 {
++        return None;
++    }
++    // Small sheets need fewer live Calamine ranges and allocator arenas.
++    let workers = workers.min(size.div_ceil(32 * 1024 * 1024).clamp(2, 12) as usize);
++    let mut template = ZipWriter::new(Cursor::new(Vec::new()));
++    let mut metadata_size = 0u64;
++    for i in 0..archive.len() {
++        let file = archive.by_index(i).ok()?;
++        let name = file.name().ok()?;
++        if name == SHEET {
++            continue;
++        }
++        metadata_size = metadata_size.checked_add(file.size())?;
++        if name.starts_with("xl/worksheets/") || metadata_size > 1024 * 1024 {
++            return None;
++        }
++        template.raw_copy_file(file).ok()?;
++    }
++    let template = template.finish().ok()?.into_inner();
++    let mut sheet = archive.by_name(SHEET).ok()?;
++    let mut header = Vec::new();
++    (&mut sheet).take(64 * 1024).read_to_end(&mut header).ok()?;
++    let mut xml = XmlReader::from_reader(header.as_slice());
++    loop {
++        match xml.read_event().ok()? {
++            Event::Start(tag) if tag.name().as_ref() == "sheetData" => break,
++            Event::Eof | Event::DocType(_) => return None,
++            _ => {}
++        }
++    }
++    if xml.encoding().name() != "UTF-8" {
++        return None;
++    }
++    let offset = header.len() - xml.into_inner().len();
++    let (prefix, buffered_rows) = header.split_at(offset);
++    let mut input = buffered_rows.chain(sheet);
++    let mut carry = Vec::new();
++    let mut eof = false;
++    let mut next = || -> Option<Option<Vec<u8>>> {
++        if eof {
++            return Some(None);
++        }
++        let count = (&mut input)
++            .take(block as u64)
++            .read_to_end(&mut carry)
++            .ok()?;
++        eof = count < block;
++        let end = carry
++            .windows(6)
++            .rposition(|s| s == b"</row>")
++            .map_or(0, |p| p + 6);
++        let tail = carry.split_off(end);
++        if eof {
++            if !tail.trim_ascii_start().starts_with(b"</sheetData>") {
++                return None;
++            }
++        } else if end == 0 {
++            return None;
++        }
++        let rows = std::mem::replace(&mut carry, tail);
++        Some((!rows.is_empty()).then_some(rows))
++    };
++
++    let (name, first) = read_range(&template, prefix, &next()??)?;
++    let (_, left) = first.start()?;
++    let (mut last_row, right) = first.end()?;
++    let mut result = raw_from_range(name, first).ok()?;
++    let width = (right - left + 1) as usize;
++    thread::scope(|scope| {
++        let mut pending = VecDeque::new();
++        let template = &template;
++        loop {
++            if pending.len() < workers {
++                if let Some(rows) = next()? {
++                    pending.push_back(
++                        thread::Builder::new()
++                            .spawn_scoped(scope, move || {
++                                let (_, range) = read_range(template, prefix, &rows)?;
++                                aligned_rows(range, left, right)
++                            })
++                            .ok()?,
++                    );
++                    continue;
++                }
++            }
++            let Some(job) = pending.pop_front() else {
++                break;
++            };
++            let (start, rows) = job.join().ok()??;
++            if !rows.is_empty() {
++                if start <= last_row {
++                    return None;
++                }
++                result
++                    .rows
++                    .extend((last_row + 1..start).map(|_| vec![CellValue::Blank; width]));
++                last_row = start.checked_add(u32::try_from(rows.len() - 1).ok()?)?;
++                result.rows.extend(rows);
++            }
++        }
++        Some(result)
++    })
++}
++
++fn aligned_rows(
++    mut range: Range<Data>,
++    left: u32,
++    right: u32,
++) -> Option<(u32, Vec<Vec<CellValue>>)> {
++    if range.is_empty() {
++        return Some((0, Vec::new()));
++    }
++    let (start, col) = range.start()?;
++    if col < left || range.end()?.1 > right {
++        return None;
++    }
++    let width = (right - left + 1) as usize;
++    let mut output = Vec::with_capacity(range.height());
++    for i in 0..range.height() {
++        // Normalization appends two derived values to each input row.
++        let mut row = Vec::with_capacity(width + 2);
++        row.resize((col - left) as usize, CellValue::Blank);
++        row.extend(
++            range[i]
++                .iter_mut()
++                .map(|cell| normalize_data_cell(std::mem::take(cell))),
++        );
++        row.resize(width, CellValue::Blank);
++        output.push(row);
++    }
++    Some((start, output))
++}
++
++fn read_range(template: &[u8], prefix: &[u8], rows: &[u8]) -> Option<(String, Range<Data>)> {
++    complete_rows(rows)?;
++    let mut zip = ZipWriter::new_append(Cursor::new(template.to_vec())).ok()?;
++    zip.start_file(
++        SHEET,
++        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
++    )
++    .ok()?;
++    zip.write_all(prefix).ok()?;
++    zip.write_all(rows).ok()?;
++    zip.write_all(b"</sheetData></worksheet>").ok()?;
++    let mut workbook = Xlsx::new(zip.finish().ok()?).ok()?;
++    let [name] = workbook.sheet_names().try_into().ok()?;
++    let range = workbook.worksheet_range(&name).ok()?;
++    Some((name, range))
++}
++
++fn complete_rows(rows: &[u8]) -> Option<()> {
++    // A literal </row> can occur in a comment or CDATA. Only independently
++    // well-formed row elements with explicit positions may cross a block boundary.
++    let mut xml = XmlReader::from_reader(rows);
++    loop {
++        match xml.read_event().ok()? {
++            Event::Start(tag) if tag.name().as_ref() == "row" => {
++                let pos = tag.try_get_attribute("r").ok()??;
++                pos.value
++                    .as_ref()
++                    .parse::<u32>()
++                    .ok()
++                    .filter(|n| (1..=1_048_576).contains(n))?;
++                xml.read_to_end(tag.name()).ok()?;
++            }
++            Event::Text(t) if t.as_ref().trim().is_empty() => {}
++            Event::Eof => return Some(()),
++            _ => return None,
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::reader::read_open_workbook;
++    use calamine::open_workbook_auto_from_rs;
++    use rust_xlsxwriter::{ExcelDateTime, Format, Workbook};
++
++    fn fixture() -> Vec<u8> {
++        let mut book = Workbook::new();
++        let sheet = book.add_worksheet();
++        sheet.write_string(2, 2, "年期").unwrap();
++        sheet.write_string(2, 4, "产品编码").unwrap();
++        sheet.write_string(3, 5, "金额").unwrap();
++        let date = ExcelDateTime::from_ymd(2025, 7, 1).unwrap();
++        let format = Format::new().set_num_format("yyyy-mm-dd");
++        for row in (4..80).filter(|r| r % 5 != 0) {
++            sheet.write_string(row, 2, " 共享 & 文本 ").unwrap();
++            sheet
++                .write_datetime_with_format(row, 3, &date, &format)
++                .unwrap();
++            sheet.write_number(row, 5, 0.125).unwrap();
++            sheet.write_formula(row, 4, "=1+2").unwrap();
++        }
++        book.save_to_buffer().unwrap()
++    }
++
++    #[test]
++    fn parallel_blocks_preserve_global_bounds_gaps_types_and_order() {
++        let bytes = fixture();
++        let expected =
++            read_open_workbook(open_workbook_auto_from_rs(Cursor::new(&bytes)).unwrap()).unwrap();
++        for block in [512, 1500, 4096] {
++            let actual = read_blocks(Cursor::new(&bytes), 0, block, 3).unwrap();
++            assert_eq!(actual, expected, "block size {block}");
++        }
++    }
++
++    #[test]
++    fn fragments_require_absolute_rows_and_complete_xml() {
++        assert!(complete_rows(b"<row r=\"2\"><c/></row>").is_some());
++        for broken in [
++            b"<row><c/></row>".as_slice(),
++            b"<row r=\"2\"><!-- </row>",
++            b"<row r=\"2\"><c></row>",
++        ] {
++            assert!(complete_rows(broken).is_none());
++        }
++    }
++
++    #[test]
++    fn malformed_sheet_dimension_keeps_the_original_read_error() {
++        let mut archive = ZipArchive::new(Cursor::new(fixture())).unwrap();
++        let mut changed = ZipWriter::new(Cursor::new(Vec::new()));
++        for i in 0..archive.len() {
++            let mut file = archive.by_index(i).unwrap();
++            if file.name().unwrap() == SHEET {
++                let mut xml = String::new();
++                file.read_to_string(&mut xml).unwrap();
++                assert!(xml.contains("<dimension ref="));
++                changed
++                    .start_file(SHEET, SimpleFileOptions::default())
++                    .unwrap();
++                changed
++                    .write_all(
++                        xml.replace("<dimension ref=", "<dimension invalid=")
++                            .as_bytes(),
++                    )
++                    .unwrap();
++            } else {
++                changed.raw_copy_file(file).unwrap();
++            }
++        }
++        let bytes = changed.finish().unwrap().into_inner();
++        assert!(read_blocks(Cursor::new(&bytes), 0, 512, 3).is_none());
++        assert!(
++            read_open_workbook(open_workbook_auto_from_rs(Cursor::new(bytes)).unwrap()).is_err()
++        );
++    }
++}
+--- a/rust/crates/costing-xlsx/src/writer.rs
++++ b/rust/crates/costing-xlsx/src/writer.rs
+@@ -233,8 +233,17 @@
+ 
+     let primary_result = (|| -> Result<WorkbookWriteReport, WriterError> {
+         let writer_populate_started = Instant::now();
+-        for (sheet, use_low_memory) in payload.sheet_models.iter().zip(&sheet_modes) {
+-            populate_sheet(context, path, &mut workbook, sheet, *use_low_memory)?;
++        for (index, (sheet, use_low_memory)) in
++            payload.sheet_models.iter().zip(&sheet_modes).enumerate()
++        {
++            populate_sheet(
++                context,
++                path,
++                &mut workbook,
++                sheet,
++                *use_low_memory,
++                index + 1,
++            )?;
+         }
+         let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
+ 
+@@ -404,6 +413,7 @@
+     workbook: &mut Workbook,
+     sheet: &SheetModel,
+     use_low_memory: bool,
++    _sheet_index: usize,
+ ) -> Result<(), WriterError> {
+     let worksheet = add_worksheet_for_mode(workbook, use_low_memory).map_err(|error| {
+         let error_path = match &error {
+@@ -457,6 +467,12 @@
+         &text_format,
+     )
+     .map_err(|error| populate_error(context, path, error))?;
++    #[cfg(feature = "low-memory")]
++    if use_low_memory {
++        if let Ok(last_row) = u32::try_from(sheet.rows.len()) {
++            worksheet.start_row_compression(_sheet_index, last_row, 5);
++        }
++    }
+     write_data_rows(worksheet, &sheet.rows, &column_behaviors, &text_format)
+         .map_err(|error| populate_error(context, path, error))?;
+     if !use_low_memory {
+@@ -682,19 +698,13 @@
+                         .map_err(CostingXlsxError::Writer)?;
+                 }
+                 CellValue::Text(value) | CellValue::DateLike(value) => {
+-                    match behavior {
+-                        ColumnBehavior::Text => worksheet
+-                            .write_string(excel_row, excel_col, value.as_ref())
+-                            .map_err(CostingXlsxError::Writer)?,
+-                        ColumnBehavior::Numeric(_) => worksheet
+-                            .write_string_with_format(
+-                                excel_row,
+-                                excel_col,
+-                                value.as_ref(),
+-                                text_format,
+-                            )
+-                            .map_err(CostingXlsxError::Writer)?,
++                    let format = match behavior {
++                        ColumnBehavior::Text => None,
++                        ColumnBehavior::Numeric(_) => Some(text_format),
+                     };
++                    worksheet
++                        .write_shared_string(excel_row, excel_col, value.clone(), format)
++                        .map_err(CostingXlsxError::Writer)?;
+                 }
+             }
+         }
+--- a/rust/crates/costing-xlsx/src/writer_tests.rs
++++ b/rust/crates/costing-xlsx/src/writer_tests.rs
+@@ -55,6 +55,47 @@
+         .filter(|name| name.starts_with(".costing-publish-") || name.starts_with(".costing-tmp-"))
+         .collect::<Vec<_>>();
+     assert_eq!(artifacts, Vec::<String>::new());
++}
++
++#[cfg(feature = "low-memory")]
++#[test]
++fn row_compression_matches_serial_xml_and_replays_after_metadata_changes() {
++    use std::io::{Cursor, Read};
++    use zip::ZipArchive;
++
++    fn worksheet_xml(expected_last_row: Option<u32>, change_view: bool) -> Vec<u8> {
++        let dir = tempfile::tempdir().unwrap();
++        let mut book = Workbook::new();
++        book.set_tempdir(dir.path()).unwrap();
++        book.set_zip_compression_level(5);
++        let sheet = book.add_worksheet_with_low_memory().unwrap();
++        sheet.write_string(0, 0, "标题").unwrap();
++        if let Some(last) = expected_last_row {
++            sheet.start_row_compression(1, last, 5);
++        }
++        for row in 1..=1500 {
++            sheet.write_number(row, 0, row).unwrap();
++        }
++        if change_view {
++            sheet.set_screen_gridlines(false);
++        }
++        let extract = |bytes: Vec<u8>| {
++            let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
++            let mut xml = Vec::new();
++            zip.by_name("xl/worksheets/sheet1.xml")
++                .unwrap()
++                .read_to_end(&mut xml)
++                .unwrap();
++            xml
++        };
++        let first = extract(book.save_to_buffer().unwrap());
++        assert_eq!(first, extract(book.save_to_buffer().unwrap()));
++        first
++    }
++    let expected = worksheet_xml(None, false);
++    assert_eq!(worksheet_xml(Some(1500), false), expected);
++    assert_eq!(worksheet_xml(Some(1501), false), expected);
++    assert_eq!(worksheet_xml(Some(1500), true), worksheet_xml(None, true));
+ }
+ 
+ fn sheet(sheet_name: &str) -> SheetModel {
+@@ -439,6 +480,7 @@
+         &mut workbook,
+         &sheet("成本计算单总表"),
+         true,
++        1,
+     )
+     .unwrap_err();
+ 
+--- a/rust/vendor/rust_xlsxwriter/PATCHES.md
++++ b/rust/vendor/rust_xlsxwriter/PATCHES.md
+@@ -59,3 +59,7 @@
+ - 通过：使用 Rust 1.96.0 和最终源码中的 `TempFileWriter`、`XlsxError` 实现，以及本机 `zip 9.4.2` 的原始 `result.rs`，运行十项隔离断言：立即写入失败、缓冲 flush 失败、rewind 前 flush 失败、非可定位文件的 rewind 失败、copy 期间读取失败、原字节往返及再次保存后追加，以及直接 I/O、临时文件、ZIP 包装、ZIP 转换为 I/O 后的四种错误来源链。
+ - 上述失败路径使用 Linux 实际文件错误 `EBADF`、`ESPIPE`，来源链检查同时确认 `ENOSPC` 对应的原始操作系统错误码和 `StorageFull`。隔离验证只生成目录内临时产物，结束后已清理。
+ - 主项目完整构建、workbook 契约、原子发布、故障回归和平台验证以[集成记录](../../../docs/changes/2026-11-08-upstream-refresh.md)为准；本最小分发不自动运行上游完整测试套件。
++
++## 2026-11-20 完整 SK 提速候选
++
++文本写入接口接受已有的 `Arc<str>`，沿用字符长度、单元格格式和共享字符串索引检查。低内存模式使用有界队列把行传给压缩线程，原始行文件及压缩暂存文件均位于工作簿的输出目录内。保存时核对预生成的表头、压缩选项和成员名称。发生变化时重新读取原始行文件。两条路径都沿用相同的 ZIP 压缩等级和最终工作簿发布流程。
+--- a/rust/vendor/rust_xlsxwriter/src/packager.rs
++++ b/rust/vendor/rust_xlsxwriter/src/packager.rs
+@@ -81,6 +81,15 @@
+     zip_options_for_binary_files: SimpleFileOptions,
+ }
+ 
++pub(crate) fn worksheet_zip_options(use_large_file: bool, level: Option<i64>) -> SimpleFileOptions {
++    SimpleFileOptions::default()
++        .compression_method(zip::CompressionMethod::Deflated)
++        .compression_level(level)
++        .unix_permissions(0o600)
++        .last_modified_time(DateTime::default())
++        .large_file(use_large_file)
++}
++
+ impl<W: Write + Send> Packager<W> {
+     // -----------------------------------------------------------------------
+     // Crate public methods.
+@@ -94,12 +103,7 @@
+     ) -> Packager<W> {
+         let zip = zip::ZipWriter::new_stream(writer);
+ 
+-        let zip_options = SimpleFileOptions::default()
+-            .compression_method(zip::CompressionMethod::Deflated)
+-            .compression_level(compression_level)
+-            .unix_permissions(0o600)
+-            .last_modified_time(DateTime::default())
+-            .large_file(use_large_file);
++        let zip_options = worksheet_zip_options(use_large_file, compression_level);
+ 
+         // Binary files, such as images, are stored uncompressed. These options
+         // are copied from the deflate options above, so clear the compression
+@@ -451,21 +455,37 @@
+         index: usize,
+     ) -> Result<(), XlsxError> {
+         let filename = format!("xl/worksheets/sheet{index}.xml");
+-        self.zip.start_file(filename, self.zip_options)?;
+-
+         if worksheet.use_constant_memory {
+             // Write the constant memory style worksheet in 3 sections.
+ 
+             // Section 1. In memory metadata at start of the file.
+             worksheet.assemble_xml_file_start();
+-            self.zip.write_all(worksheet.writer.get_ref())?;
+-
+             #[cfg(feature = "constant_memory")]
+             {
+                 // Section 2. On disk cell data.
+                 // We also need to flush the last remaining row.
+                 worksheet.flush_last_row()?;
+ 
++                let prefix = worksheet.writer.get_ref();
++                let file = worksheet
++                    .file_writer
++                    .as_mut()
++                    .expect("constant memory row file");
++                if let Some(mut builder) =
++                    file.finish_compression(&filename, prefix, self.zip_options)?
++                {
++                    xmlwriter::reset(&mut worksheet.writer);
++                    worksheet.assemble_xml_file_end();
++                    builder.write_all(worksheet.writer.get_ref())?;
++                    let mut compressed = builder.finish_into_readable()?;
++                    self.zip.raw_copy_file(compressed.by_index(0)?)?;
++                    return Ok(());
++                }
++            }
++            self.zip.start_file(filename, self.zip_options)?;
++            self.zip.write_all(worksheet.writer.get_ref())?;
++            #[cfg(feature = "constant_memory")]
++            {
+                 let file_writer = worksheet.file_writer();
+                 file_writer.rewind()?;
+                 let mut reader = BufReader::new(file_writer.get_ref());
+@@ -478,6 +498,7 @@
+             self.zip.write_all(worksheet.writer.get_ref())?;
+         } else {
+             // Non "constant memory" mode is all in memory.
++            self.zip.start_file(filename, self.zip_options)?;
+             self.zip.write_all(worksheet.writer.get_ref())?;
+         }
+ 
+--- a/rust/vendor/rust_xlsxwriter/src/workbook.rs
++++ b/rust/vendor/rust_xlsxwriter/src/workbook.rs
+@@ -2574,7 +2574,7 @@
+         let tempdir = self.tempdir.clone().unwrap_or_else(std::env::temp_dir);
+         let file = Self::create_tempfile(&tempdir)?;
+ 
+-        Ok(TempFileWriter::new(file))
++        Ok(TempFileWriter::new(file, tempdir))
+     }
+ 
+     // Create a temporary file in a directory and map any IO error to a
+--- a/rust/vendor/rust_xlsxwriter/src/worksheet.rs
++++ b/rust/vendor/rust_xlsxwriter/src/worksheet.rs
+@@ -1403,15 +1403,50 @@
+ 
+ #[cfg(feature = "constant_memory")]
+ pub(crate) struct TempFileWriter {
+-    writer: BufWriter<File>,
++    writer: BufWriter<RowFile>,
++    tempdir: std::path::PathBuf,
++    compression: Option<RowCompression>,
+     first_write_error: Option<std::io::Error>,
+ }
+ 
+ #[cfg(feature = "constant_memory")]
++struct RowFile {
++    file: File,
++    blocks: Option<std::sync::mpsc::SyncSender<Box<[u8]>>>,
++}
++
++#[cfg(feature = "constant_memory")]
++impl Write for RowFile {
++    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
++        let n = self.file.write(bytes)?;
++        if let Some(sender) = &self.blocks {
++            if sender.send(bytes[..n].into()).is_err() {
++                self.blocks = None;
++            }
++        }
++        Ok(n)
++    }
++
++    fn flush(&mut self) -> std::io::Result<()> {
++        self.file.flush()
++    }
++}
++
++#[cfg(feature = "constant_memory")]
++struct RowCompression {
++    name: String,
++    prefix: Vec<u8>,
++    options: zip::write::SimpleFileOptions,
++    worker: std::thread::JoinHandle<Option<zip::ZipWriter<File>>>,
++}
++
++#[cfg(feature = "constant_memory")]
+ impl TempFileWriter {
+-    pub(crate) fn new(file: File) -> Self {
++    pub(crate) fn new(file: File, tempdir: std::path::PathBuf) -> Self {
+         Self {
+-            writer: BufWriter::new(file),
++            writer: BufWriter::with_capacity(128 * 1024, RowFile { file, blocks: None }),
++            tempdir,
++            compression: None,
+             first_write_error: None,
+         }
+     }
+@@ -1425,11 +1460,75 @@
+ 
+     pub(crate) fn rewind(&mut self) -> std::io::Result<()> {
+         self.flush()?;
+-        self.writer.rewind()
++        self.writer.get_mut().file.rewind()
+     }
+ 
+     pub(crate) fn get_ref(&self) -> &File {
+-        self.writer.get_ref()
++        &self.writer.get_ref().file
++    }
++
++    fn start_compression(&mut self, name: String, prefix: Vec<u8>, level: i64) {
++        if self.compression.is_some()
++            || !self.writer.buffer().is_empty()
++            || !self.get_ref().metadata().is_ok_and(|m| m.len() == 0)
++        {
++            return;
++        }
++        let options = crate::packager::worksheet_zip_options(false, Some(level));
++        let Ok(file) = tempfile::tempfile_in(&self.tempdir) else {
++            return;
++        };
++        let mut builder = zip::ZipWriter::new(file);
++        if builder.start_file(&name, options).is_err() || builder.write_all(&prefix).is_err() {
++            return;
++        }
++        let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<[u8]>>(2);
++        if let Ok(worker) = std::thread::Builder::new().spawn(move || {
++            for block in receiver {
++                builder.write_all(&block).ok()?;
++            }
++            Some(builder)
++        }) {
++            self.writer.get_mut().blocks = Some(sender);
++            self.compression = Some(RowCompression {
++                name,
++                prefix,
++                options,
++                worker,
++            });
++        }
++    }
++
++    pub(crate) fn finish_compression(
++        &mut self,
++        name: &str,
++        prefix: &[u8],
++        options: zip::write::SimpleFileOptions,
++    ) -> std::io::Result<Option<zip::ZipWriter<File>>> {
++        if self.compression.is_none() {
++            return Ok(None);
++        }
++        self.flush()?;
++        self.writer.get_mut().blocks = None;
++        let job = self.compression.take().unwrap();
++        let builder = job.worker.join().ok().flatten();
++        Ok(
++            if job.name == name && job.prefix == prefix && job.options == options {
++                builder
++            } else {
++                None
++            },
++        )
++    }
++}
++
++#[cfg(feature = "constant_memory")]
++impl Drop for TempFileWriter {
++    fn drop(&mut self) {
++        self.writer.get_mut().blocks = None;
++        if let Some(job) = self.compression.take() {
++            let _ = job.worker.join();
++        }
+     }
+ }
+ 
+@@ -15546,6 +15645,17 @@
+         string: String,
+         format: Option<&Format>,
+     ) -> Result<&mut Worksheet, XlsxError> {
++        self.write_shared_string(row, col, string.into(), format)
++    }
++
++    /// Write text already held in a shared allocation, with optional formatting.
++    pub fn write_shared_string(
++        &mut self,
++        row: RowNum,
++        col: ColNum,
++        string: Arc<str>,
++        format: Option<&Format>,
++    ) -> Result<&mut Worksheet, XlsxError> {
+         // Empty strings are ignored by Excel unless they have a format in which
+         // case they are treated as a blank cell.
+         if string.is_empty() {
+@@ -15573,13 +15683,9 @@
+ 
+         // Create the appropriate cell type to hold the data.
+         let cell = if self.use_inline_strings {
+-            CellType::InlineString {
+-                string: Arc::from(string),
+-                xf_index,
+-            }
++            CellType::InlineString { string, xf_index }
+         } else {
+             let mut string_id = None;
+-            let string = Arc::from(string);
+ 
+             if self.has_workbook_global_sst {
+                 let mut string_table = self.string_table.lock().unwrap();
+@@ -19257,6 +19363,33 @@
+         self.file_writer
+             .as_mut()
+             .expect("constant memory worksheets required a temp file")
++    }
++
++    /// Compress sequential row data while it is populated. The save path checks
++    /// the final header and ZIP options and can replay the original row file.
++    #[cfg(feature = "constant_memory")]
++    pub fn start_row_compression(&mut self, sheet_index: usize, last_row: RowNum, level: i64) {
++        if !self.use_constant_memory
++            || self.current_row != 0
++            || !std::thread::available_parallelism().is_ok_and(|n| n.get() > 1)
++        {
++            return;
++        }
++        let original_writer = std::mem::take(&mut self.writer);
++        let original_row = std::mem::replace(&mut self.dimensions.last_row, last_row);
++        let original_selected = self.selected;
++        let original_has_data = self.has_sheet_data;
++        self.selected |= sheet_index == 1;
++        self.assemble_xml_file_start();
++        let prefix = std::mem::replace(&mut self.writer, original_writer).into_inner();
++        self.dimensions.last_row = original_row;
++        self.selected = original_selected;
++        self.has_sheet_data = original_has_data;
++        self.file_writer().start_compression(
++            format!("xl/worksheets/sheet{sheet_index}.xml"),
++            prefix,
++            level,
++        );
+     }
+ 
+     // Flush the last row of constant memory data, the write-ahead cache and any
+--- a/tests/architecture/test_rust_application_boundary.py
++++ b/tests/architecture/test_rust_application_boundary.py
+@@ -11,7 +11,8 @@
+ def test_cli_main_only_parses_renders_and_maps_exit_status() -> None:
+     main = (CLI_SRC / 'main.rs').read_text(encoding='utf-8')
+ 
+-    assert 'application::{execute, RunOutcome, RunRequest}' in main
++    assert 'application::{execute_and_exit, RunOutcome, RunRequest}' in main
++    assert 'execute_and_exit(RunRequest::from(args)' in main
+     for forbidden in (
+         'read_raw_workbook',
+         'normalize_workbook',

@@ -57,6 +57,47 @@ fn assert_no_temporary_artifacts(parent: &Path) {
     assert_eq!(artifacts, Vec::<String>::new());
 }
 
+#[cfg(feature = "low-memory")]
+#[test]
+fn row_compression_matches_serial_xml_and_replays_after_metadata_changes() {
+    use std::io::{Cursor, Read};
+    use zip::ZipArchive;
+
+    fn worksheet_xml(expected_last_row: Option<u32>, change_view: bool) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut book = Workbook::new();
+        book.set_tempdir(dir.path()).unwrap();
+        book.set_zip_compression_level(5);
+        let sheet = book.add_worksheet_with_low_memory().unwrap();
+        sheet.write_string(0, 0, "标题").unwrap();
+        if let Some(last) = expected_last_row {
+            sheet.start_row_compression(1, last, 5);
+        }
+        for row in 1..=1500 {
+            sheet.write_number(row, 0, row).unwrap();
+        }
+        if change_view {
+            sheet.set_screen_gridlines(false);
+        }
+        let extract = |bytes: Vec<u8>| {
+            let mut zip = ZipArchive::new(Cursor::new(bytes)).unwrap();
+            let mut xml = Vec::new();
+            zip.by_name("xl/worksheets/sheet1.xml")
+                .unwrap()
+                .read_to_end(&mut xml)
+                .unwrap();
+            xml
+        };
+        let first = extract(book.save_to_buffer().unwrap());
+        assert_eq!(first, extract(book.save_to_buffer().unwrap()));
+        first
+    }
+    let expected = worksheet_xml(None, false);
+    assert_eq!(worksheet_xml(Some(1500), false), expected);
+    assert_eq!(worksheet_xml(Some(1501), false), expected);
+    assert_eq!(worksheet_xml(Some(1500), true), worksheet_xml(None, true));
+}
+
 fn sheet(sheet_name: &str) -> SheetModel {
     SheetModel {
         sheet_name: sheet_name.to_string(),
@@ -439,6 +480,7 @@ fn low_memory_factory_failure_keeps_initialization_stage_and_directory() {
         &mut workbook,
         &sheet("成本计算单总表"),
         true,
+        1,
     )
     .unwrap_err();
 

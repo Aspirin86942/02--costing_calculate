@@ -81,6 +81,15 @@ pub struct Packager<W: Write> {
     zip_options_for_binary_files: SimpleFileOptions,
 }
 
+pub(crate) fn worksheet_zip_options(use_large_file: bool, level: Option<i64>) -> SimpleFileOptions {
+    SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .compression_level(level)
+        .unix_permissions(0o600)
+        .last_modified_time(DateTime::default())
+        .large_file(use_large_file)
+}
+
 impl<W: Write + Send> Packager<W> {
     // -----------------------------------------------------------------------
     // Crate public methods.
@@ -94,12 +103,7 @@ impl<W: Write + Send> Packager<W> {
     ) -> Packager<W> {
         let zip = zip::ZipWriter::new_stream(writer);
 
-        let zip_options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .compression_level(compression_level)
-            .unix_permissions(0o600)
-            .last_modified_time(DateTime::default())
-            .large_file(use_large_file);
+        let zip_options = worksheet_zip_options(use_large_file, compression_level);
 
         // Binary files, such as images, are stored uncompressed. These options
         // are copied from the deflate options above, so clear the compression
@@ -451,21 +455,37 @@ impl<W: Write + Send> Packager<W> {
         index: usize,
     ) -> Result<(), XlsxError> {
         let filename = format!("xl/worksheets/sheet{index}.xml");
-        self.zip.start_file(filename, self.zip_options)?;
-
         if worksheet.use_constant_memory {
             // Write the constant memory style worksheet in 3 sections.
 
             // Section 1. In memory metadata at start of the file.
             worksheet.assemble_xml_file_start();
-            self.zip.write_all(worksheet.writer.get_ref())?;
-
             #[cfg(feature = "constant_memory")]
             {
                 // Section 2. On disk cell data.
                 // We also need to flush the last remaining row.
                 worksheet.flush_last_row()?;
 
+                let prefix = worksheet.writer.get_ref();
+                let file = worksheet
+                    .file_writer
+                    .as_mut()
+                    .expect("constant memory row file");
+                if let Some(mut builder) =
+                    file.finish_compression(&filename, prefix, self.zip_options)?
+                {
+                    xmlwriter::reset(&mut worksheet.writer);
+                    worksheet.assemble_xml_file_end();
+                    builder.write_all(worksheet.writer.get_ref())?;
+                    let mut compressed = builder.finish_into_readable()?;
+                    self.zip.raw_copy_file(compressed.by_index(0)?)?;
+                    return Ok(());
+                }
+            }
+            self.zip.start_file(filename, self.zip_options)?;
+            self.zip.write_all(worksheet.writer.get_ref())?;
+            #[cfg(feature = "constant_memory")]
+            {
                 let file_writer = worksheet.file_writer();
                 file_writer.rewind()?;
                 let mut reader = BufReader::new(file_writer.get_ref());
@@ -478,6 +498,7 @@ impl<W: Write + Send> Packager<W> {
             self.zip.write_all(worksheet.writer.get_ref())?;
         } else {
             // Non "constant memory" mode is all in memory.
+            self.zip.start_file(filename, self.zip_options)?;
             self.zip.write_all(worksheet.writer.get_ref())?;
         }
 

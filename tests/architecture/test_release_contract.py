@@ -16,6 +16,7 @@ RELEASE_ASSETS = (
 RELEASE_NOTES = (
     PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.3.0-rc.1.md',
     PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.3.0.md',
+    PROJECT_ROOT / 'docs' / 'changes' / 'releases' / 'v0.3.1.md',
 )
 
 

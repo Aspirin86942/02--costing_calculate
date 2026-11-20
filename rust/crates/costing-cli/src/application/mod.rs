@@ -11,4 +11,4 @@ pub use manifest::{
 };
 pub use outcome::{FailureRecord, RunOutcome, RunRecord};
 pub use request::{RunOperation, RunRequest};
-pub use runner::execute;
+pub use runner::{execute, execute_and_exit};

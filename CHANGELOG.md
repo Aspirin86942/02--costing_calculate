@@ -2,7 +2,13 @@
 
 All notable changes to Costing Calculate are documented in this file.
 
-## Unreleased
+## 0.3.1 - 2026-11-20
+
+- 大型单表 XLSX 支持按完整行并行读取。低内存写出支持后台压缩，文本单元格复用已有字符串。
+- 命令行程序采用 `mimalloc` 分配内存，由操作系统在进程退出时回收展示表。审计记录继续使用 V1。
+- 本次实际工作簿比对、性能复测限制及平台状态见[0.3.1 版本说明](docs/changes/releases/v0.3.1.md)。
+
+## 0.3.0 开发期间 - 2026-07-29
 
 ### Changed
 

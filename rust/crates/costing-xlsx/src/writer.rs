@@ -233,8 +233,17 @@ fn write_workbook_controlled(
 
     let primary_result = (|| -> Result<WorkbookWriteReport, WriterError> {
         let writer_populate_started = Instant::now();
-        for (sheet, use_low_memory) in payload.sheet_models.iter().zip(&sheet_modes) {
-            populate_sheet(context, path, &mut workbook, sheet, *use_low_memory)?;
+        for (index, (sheet, use_low_memory)) in
+            payload.sheet_models.iter().zip(&sheet_modes).enumerate()
+        {
+            populate_sheet(
+                context,
+                path,
+                &mut workbook,
+                sheet,
+                *use_low_memory,
+                index + 1,
+            )?;
         }
         let writer_populate_seconds = writer_populate_started.elapsed().as_secs_f64();
 
@@ -404,6 +413,7 @@ fn populate_sheet(
     workbook: &mut Workbook,
     sheet: &SheetModel,
     use_low_memory: bool,
+    _sheet_index: usize,
 ) -> Result<(), WriterError> {
     let worksheet = add_worksheet_for_mode(workbook, use_low_memory).map_err(|error| {
         let error_path = match &error {
@@ -457,6 +467,12 @@ fn populate_sheet(
         &text_format,
     )
     .map_err(|error| populate_error(context, path, error))?;
+    #[cfg(feature = "low-memory")]
+    if use_low_memory {
+        if let Ok(last_row) = u32::try_from(sheet.rows.len()) {
+            worksheet.start_row_compression(_sheet_index, last_row, 5);
+        }
+    }
     write_data_rows(worksheet, &sheet.rows, &column_behaviors, &text_format)
         .map_err(|error| populate_error(context, path, error))?;
     if !use_low_memory {
@@ -682,19 +698,13 @@ fn write_data_rows(
                         .map_err(CostingXlsxError::Writer)?;
                 }
                 CellValue::Text(value) | CellValue::DateLike(value) => {
-                    match behavior {
-                        ColumnBehavior::Text => worksheet
-                            .write_string(excel_row, excel_col, value.as_ref())
-                            .map_err(CostingXlsxError::Writer)?,
-                        ColumnBehavior::Numeric(_) => worksheet
-                            .write_string_with_format(
-                                excel_row,
-                                excel_col,
-                                value.as_ref(),
-                                text_format,
-                            )
-                            .map_err(CostingXlsxError::Writer)?,
+                    let format = match behavior {
+                        ColumnBehavior::Text => None,
+                        ColumnBehavior::Numeric(_) => Some(text_format),
                     };
+                    worksheet
+                        .write_shared_string(excel_row, excel_col, value.clone(), format)
+                        .map_err(CostingXlsxError::Writer)?;
                 }
             }
         }

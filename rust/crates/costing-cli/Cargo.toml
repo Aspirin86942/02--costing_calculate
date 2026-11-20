@@ -15,6 +15,7 @@ chrono.workspace = true
 clap.workspace = true
 costing-core = { path = "../costing-core" }
 costing-xlsx = { path = "../costing-xlsx" }
+mimalloc = "=0.1.52"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

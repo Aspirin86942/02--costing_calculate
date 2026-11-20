@@ -6,6 +6,8 @@ use costing_core::model::{CellValue, RawWorkbook};
 use rust_decimal::Decimal;
 pub use rust_xlsxwriter::XlsxError;
 
+mod parallel;
+
 const HEADER_ANCHOR: &str = "年期";
 const HEADER_HINTS: &[&str] = &["成本中心名称", "产品编码", "工单编号", "成本项目名称"];
 
@@ -20,6 +22,16 @@ pub enum CostingXlsxError {
 }
 
 pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xlsx"))
+    {
+        if let Ok(file) = std::fs::File::open(path) {
+            if let Some(raw) = parallel::read(std::io::BufReader::new(file)) {
+                return Ok(raw);
+            }
+        }
+    }
     read_open_workbook(open_workbook_auto(path)?)
 }
 
@@ -28,6 +40,9 @@ pub fn read_raw_workbook(path: &Path) -> Result<RawWorkbook, CostingXlsxError> {
 /// This seam lets audit-enabled callers hash exactly the same immutable byte
 /// slice that Calamine parses, even if the source path is replaced concurrently.
 pub fn read_raw_workbook_from_bytes(bytes: &[u8]) -> Result<RawWorkbook, CostingXlsxError> {
+    if let Some(raw) = parallel::read(Cursor::new(bytes)) {
+        return Ok(raw);
+    }
     read_open_workbook(open_workbook_auto_from_rs(Cursor::new(bytes))?)
 }
 
@@ -40,7 +55,14 @@ where
         .first()
         .cloned()
         .ok_or_else(|| CostingXlsxError::Message("workbook has no sheets".to_string()))?;
-    let mut range = workbook.worksheet_range(&sheet_name)?;
+    let range = workbook.worksheet_range(&sheet_name)?;
+    raw_from_range(sheet_name, range)
+}
+
+fn raw_from_range(
+    sheet_name: String,
+    mut range: Range<Data>,
+) -> Result<RawWorkbook, CostingXlsxError> {
     if range.height() < 2 {
         return Err(CostingXlsxError::Message(
             "workbook must contain two header rows".to_string(),

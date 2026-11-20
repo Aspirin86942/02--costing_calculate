@@ -20,19 +20,22 @@
 ## 当前实现边界
 
 - release profile 固定 `codegen-units = 1`。
-- Calamine `0.38.0` 读取 workbook。
+- 满足条件的单表 XLSX 在工作表 XML 达到 16 MiB 且有多个可用核心时按完整行分块，用 Calamine `0.38.0` 并行解析并按顺序合并。无法安全分块的输入回到常规读取。
 - reader 对有限、无小数且安全落在 `i64` 范围内的浮点值直接构造 `Decimal`；
   其他值保留字符串解析回退。
 - `CellValue::Text` / `DateLike` 使用 `Arc<str>`，clone 时共享文本分配；
   不启用全局或按列文本驻留池。
 - 默认启用 `low-memory`；单张 Sheet 达到 `5,000,000` cell slots 时切换。
 - low-memory 临时目录位于最终输出目录，禁止回退系统临时目录（如 Windows `%TEMP%` 或 Linux `/tmp`）。
-- writer 预计算列行为并跳过空白单元格。
+- 写出器直接接收 `Arc<str>` 共享文本，预计算列行为并跳过空白单元格。低内存模式将行发送给后台压缩线程，原始行与压缩临时文件均位于最终输出目录。
+- 命令行程序使用 `mimalloc 0.1.52`。单次执行结束时由系统回收展示表，库接口 `application::execute` 在每次调用结束时释放展示表。
 - `rust_xlsxwriter 0.102.0` 使用 `rust/vendor/rust_xlsxwriter/` 受控源码，保留必要 I/O 错误传播；来源与文件哈希见[依赖清单](dependencies/2026-11-08-rust-xlsxwriter-0.102.0.json)。
 - 读写共用 ZIP `9.4.2`，配套 quick-xml `0.42.0`、flate2 `1.1.11`、zlib-rs `0.6.8`；以 `rust/Cargo.lock` 为准。
 - 普通工作簿沿用 ZIP 后端默认压缩等级 6；工作簿含 low-memory Sheet 时显式设置等级 5。历史降低等级的实验未满足输出大小门禁。
 
 ## 复测顺序
+
+0.3.1 已采用五项实现。完整 SK 的重复性能验收受原版输出不稳定影响，Windows 原生性能仍待测量。[实验记录](../changes/2026-11-20-sk-speed.md)和[采用决策](../decisions/2026-11-20-v0.3.1-performance.md)
 
 先通过正确性：
 

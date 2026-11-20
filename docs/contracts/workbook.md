@@ -160,7 +160,7 @@ warnings
 
 ## RunManifestV1
 
-应用版本是 `0.3.0`，Manifest schema 仍是 V1。
+应用版本为 `0.3.1`，审计记录使用 `RunManifestV1`。
 
 成功 Manifest 固定包含：
 

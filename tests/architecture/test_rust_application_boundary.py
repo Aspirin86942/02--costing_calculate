@@ -11,7 +11,8 @@ CORE_ROOT = RUST_ROOT / 'crates' / 'costing-core'
 def test_cli_main_only_parses_renders_and_maps_exit_status() -> None:
     main = (CLI_SRC / 'main.rs').read_text(encoding='utf-8')
 
-    assert 'application::{execute, RunOutcome, RunRequest}' in main
+    assert 'application::{execute_and_exit, RunOutcome, RunRequest}' in main
+    assert 'execute_and_exit(RunRequest::from(args)' in main
     for forbidden in (
         'read_raw_workbook',
         'normalize_workbook',

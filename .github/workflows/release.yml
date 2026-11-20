@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_label:
-        description: Existing tag to package, for example v0.3.0-rc.1
+        description: Existing release or release candidate tag to package
         required: true
         type: string
       publish:

@@ -45,6 +45,8 @@ process_workbook(
 4. xlsx writer 根据 cell slots 选择标准或 low-memory 写法，并原子发布。
 5. CLI 生成控制台 JSON；显式请求时再生成 `RunManifestV1`。
 
+单次命令行调用经 `application::execute_and_exit` 运行。程序报告结果后退出，操作系统回收展示表。供其他程序重复调用的 `application::execute` 使用同一编排，并在每次调用结束时释放展示表。
+
 core 内部顺序固定为：
 
 ```text

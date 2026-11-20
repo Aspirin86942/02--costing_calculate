@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use costing_core::error::{ErrorContext, ErrorStage};
-use costing_core::model::ErrorSummary;
+use costing_core::model::{ErrorSummary, SheetModel};
 use costing_core::{CostingError, ErrorCode};
 
 use super::manifest::{
@@ -13,12 +13,23 @@ use super::{RunOperation, RunOutcome, RunRequest};
 
 #[must_use]
 pub fn execute(request: RunRequest) -> RunOutcome {
-    execute_with_publisher(request, &publish_manifest)
+    execute_with_publisher(request, &publish_manifest, drop)
+}
+
+/// Complete one CLI invocation, report its outcome and terminate the process.
+/// The OS reclaims the in-memory sheet rows after the output files are closed.
+pub fn execute_and_exit(request: RunRequest, report: fn(RunOutcome) -> i32) -> ! {
+    let mut rows_until_exit = None;
+    let outcome = execute_with_publisher(request, &publish_manifest, |rows| {
+        rows_until_exit = Some(rows)
+    });
+    std::process::exit(report(outcome))
 }
 
 fn execute_with_publisher(
     request: RunRequest,
     publisher: &impl Fn(&Path, &str, &RunManifestV1) -> Result<(), CostingError>,
+    release_sheets: impl FnOnce(Vec<SheetModel>),
 ) -> RunOutcome {
     let request_id = new_request_id();
     let summary_output = request.summary_output.clone();
@@ -93,6 +104,7 @@ fn execute_with_publisher(
                 effective.input_pattern,
                 request_id.clone(),
                 &mut audit,
+                release_sheets,
             ) {
                 Ok(mut summary) => {
                     if let Some(path) = summary_output.as_deref() {
@@ -237,7 +249,7 @@ mod tests {
             )))
         };
 
-        let outcome = execute_with_publisher(request, &failing_publisher);
+        let outcome = execute_with_publisher(request, &failing_publisher, drop);
 
         let RunOutcome::Failed(failure) = outcome else {
             panic!("expected manifest publication failure");

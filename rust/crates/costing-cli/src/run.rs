@@ -42,7 +42,7 @@ pub(crate) fn run(
         ))
     })?;
     let mut audit = RunAudit::new(&args, false, cwd);
-    run_with_audit(args, pipeline, input_pattern, request_id, &mut audit)
+    run_with_audit(args, pipeline, input_pattern, request_id, &mut audit, drop)
 }
 
 pub(crate) fn run_with_audit(
@@ -51,6 +51,7 @@ pub(crate) fn run_with_audit(
     input_pattern: String,
     request_id: String,
     audit: &mut RunAudit,
+    release_sheets: impl FnOnce(Vec<costing_core::model::SheetModel>),
 ) -> anyhow::Result<RunSummary> {
     let month_range = build_month_range(args.month_start.as_deref(), args.month_end.as_deref())
         .map_err(|error| {
@@ -251,6 +252,8 @@ pub(crate) fn run_with_audit(
             .entry(issue.issue_type.clone())
             .or_default() += 1;
     }
+    let sheet_count = payload.sheet_models.len();
+    release_sheets(payload.sheet_models);
     Ok(RunSummary {
         status: "succeeded".to_string(),
         request_id,
@@ -258,7 +261,7 @@ pub(crate) fn run_with_audit(
         output_written: !args.check_only,
         output_size_bytes,
         workbook_path,
-        sheet_count: payload.sheet_models.len(),
+        sheet_count,
         error_log_count: payload.error_log_count,
         issue_type_counts,
         quality_metrics: payload.quality_metrics,

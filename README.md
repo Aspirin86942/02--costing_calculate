@@ -1,8 +1,20 @@
 # Costing Calculate
 
-Costing Calculate 是 GB / SK 成本核算工作簿处理工具。正式实现是 Rust CLI，支持 Windows 和 Linux。Windows 提供自包含 ZIP；Linux 可从源码构建，生成的程序运行时不需要 Rust 或 Python。
+Costing Calculate 是 GB / SK 成本核算工作簿处理工具。当前版本为 **0.3.1**，正式实现为 Rust 命令行程序。Linux 可以从源码构建，Windows 使用自包含 ZIP。运行时无需安装 Rust 或 Python。各平台验收状态见[版本说明](docs/changes/releases/v0.3.1.md)。
 
 ## 安装
+
+### 使用 Linux x86-64 本地发行包
+
+将 `.tar.gz` 和同名的 `.sha256` 文件放在同一目录，执行以下命令验证和解压。
+
+```sh
+sha256sum -c costing-calculate-v0.3.1-linux-x86_64.tar.gz.sha256
+tar -xzf costing-calculate-v0.3.1-linux-x86_64.tar.gz
+cd costing-calculate-v0.3.1-linux-x86_64
+sha256sum -c SHA256SUMS
+./costing-calculate --version-json
+```
 
 ### 使用 Windows 发布包
 
@@ -10,8 +22,8 @@ Costing Calculate 是 GB / SK 成本核算工作簿处理工具。正式实现�
 2. 校验 ZIP：
 
 ```powershell
-$expected = (Get-Content .\costing-calculate-v0.3.0-windows-x86_64.zip.sha256).Split()[0]
-$actual = (Get-FileHash .\costing-calculate-v0.3.0-windows-x86_64.zip -Algorithm SHA256).Hash
+$expected = (Get-Content .\costing-calculate-v0.3.1-windows-x86_64.zip.sha256).Split()[0]
+$actual = (Get-FileHash .\costing-calculate-v0.3.1-windows-x86_64.zip -Algorithm SHA256).Hash
 $expected -eq $actual
 ```
 
@@ -25,7 +37,7 @@ $expected -eq $actual
 
 ### 从源码构建
 
-仓库根目录的 `rust-toolchain.toml` 固定 Rust `1.96.0`。Linux 构建环境需要 Rust 工具链和 C 链接器（用于生成可执行文件）；在仓库根目录执行：
+仓库根目录的 `rust-toolchain.toml` 固定 Rust `1.96.0`。Linux 构建需要 C 编译器和链接器。Windows MSVC 构建需要支持 C++17 的 Visual Studio C++ 构建工具和 Windows SDK。在仓库根目录运行以下命令。
 
 ```sh
 cargo build --release --locked --manifest-path rust/Cargo.toml -p costing-calculate
@@ -147,6 +159,8 @@ Linux 当前验证环境为 Debian 13、`x86_64-unknown-linux-gnu`。建议在�
 这些优化不改变 workbook、CLI 或 Manifest 契约。当前门禁、复测命令和实测结果见
 [`docs/performance/README.md`](docs/performance/README.md)。
 
+0.3.1 对符合条件的大型单表 XLSX 并行读取，低内存写出时同步压缩，写入文本时复用已有字符串。命令行程序使用 `mimalloc` 分配内存，进程退出时由系统回收展示表。完整 SK 的观测耗时和复测限制见[五项优化实测](docs/changes/2026-11-20-sk-speed.md)。
+
 Excel 读取使用 calamine `0.38.0`，写出使用 rust_xlsxwriter `0.102.0` 受控源码；ZIP/压缩依赖同步更新并由锁文件固定。
 上游来源、必要错误处理修补和新旧输出验证见[依赖更新记录](docs/changes/2026-11-08-upstream-refresh.md)。
 
@@ -176,18 +190,18 @@ Excel 读取使用 calamine `0.38.0`，写出使用 rust_xlsxwriter `0.102.0` �
 维护者从干净提交构建 Windows ZIP：
 
 ```powershell
-.\tools\release\package_windows.ps1 -ReleaseLabel v0.3.0-rc.1 -OutputDirectory dist
+.\tools\release\package_windows.ps1 -ReleaseLabel v0.3.1 -OutputDirectory dist
 ```
 
 验收包：
 
 ```powershell
 .\tools\release\smoke_package_windows.ps1 `
-  -ArchivePath .\dist\costing-calculate-v0.3.0-rc.1-windows-x86_64.zip `
-  -ChecksumPath .\dist\costing-calculate-v0.3.0-rc.1-windows-x86_64.zip.sha256 `
+  -ArchivePath .\dist\costing-calculate-v0.3.1-windows-x86_64.zip `
+  -ChecksumPath .\dist\costing-calculate-v0.3.1-windows-x86_64.zip.sha256 `
   -GbInput <gb-synthetic.xlsx> `
   -SkInput <sk-synthetic.xlsx> `
-  -ExpectedReleaseLabel v0.3.0-rc.1 `
+  -ExpectedReleaseLabel v0.3.1 `
   -ExpectedCommit <full-git-sha>
 ```
 

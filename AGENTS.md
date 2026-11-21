@@ -119,6 +119,7 @@ uv run python -m tools.validation.compare_releases `
 - 候选的源码、Cargo 构建/测试产物和可执行文件均按候选独立目录；不得跨源码副本复用业务编译产物。SK 可显式选择 `full-sk-medium` 主场景，完整格式保护覆盖 58 列、材料汇总及错误 A1 范围声明。
 - Linux 真实完整 SK 的独立 N=5 可显式使用 `resource_scenario='full-sk'`，内存上限 6 GiB、磁盘上限 4 GiB；普通验收和 Colab 合成实验维持 2 GiB。具体预算冻结到报告，性能采纳门槛沿用原规则。
 - Windows ZIP 必须从干净提交构建，并通过无 Rust/Python child `PATH` 的完整 smoke。
+- GitHub Release 复验先确认远端标签，再从 `main` 手动运行 `release.yml` 并设置 `publish=false`。已发布的 Windows ZIP 直接下载验收。[复验记录](docs/changes/2026-11-21-github-release-checks.md)
 - `RunManifestV1` schema 仍是 V1；应用版本升级不得顺带改 schema。
 - 推送正式标签、GitHub Release 或其他外部资产前必须获得明确确认。
 

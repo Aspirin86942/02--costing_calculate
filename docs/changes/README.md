@@ -11,6 +11,8 @@
 
 ## 当前记录
 
+- [GitHub Release 标签与已发布附件复验](2026-11-21-github-release-checks.md)记录 RC2 的 Actions 报错及发布流程修复。
+
 - [Windows 完整 SK 复测（1b0cdfa）](2026-11-21-windows-full-sk-1b0cdfa.md)记录常规版和 PGO 版的耗时与峰值工作集，以及同机重跑上次程序的八对结果。下载包说明见 [v0.3.1-rc.2 发布说明](releases/v0.3.1-rc.2.md)。
 
 - [Linux 完整 SK 本机诊断与读写优化实测](2026-11-20-linux-sk-diagnostics.md)

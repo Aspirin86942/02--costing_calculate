@@ -19,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.release_label }}
+  cancel-in-progress: false
+
 jobs:
   quality:
     name: Reuse public quality gates
@@ -34,11 +38,33 @@ jobs:
       RELEASE_LABEL: ${{ github.event_name == 'push' && github.ref_name || inputs.release_label }}
 
     steps:
+      - name: Wait for the requested Git tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:RELEASE_LABEL -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[1-9][0-9]*)?$') {
+            throw "Unsupported release label: $env:RELEASE_LABEL"
+          }
+          $ref = "refs/tags/$env:RELEASE_LABEL"
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_LABEL"
+          foreach ($attempt in 1..7) {
+            $response = Invoke-WebRequest -Uri $uri -Headers @{Authorization = "Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
+            if ($response.StatusCode -eq 200 -and ($response.Content | ConvertFrom-Json).ref -ceq $ref) {
+              return
+            }
+            if ($response.StatusCode -ne 404 -or $attempt -eq 7) {
+              throw "Cannot resolve $ref (HTTP $($response.StatusCode)). Verify that the tag exists on GitHub."
+            }
+            Start-Sleep -Seconds 10
+          }
+
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'push' && github.ref || inputs.release_label }}
+          ref: ${{ github.event_name == 'push' && github.sha || format('refs/tags/{0}', inputs.release_label) }}
 
       - name: Install exact Rust toolchain
         shell: pwsh
@@ -65,7 +91,7 @@ jobs:
             throw "Unsupported release label: $env:RELEASE_LABEL"
           }
           $commit = (& git rev-parse HEAD).Trim().ToLowerInvariant()
-          $tagCommit = (& git rev-parse "$env:RELEASE_LABEL^{commit}").Trim().ToLowerInvariant()
+          $tagCommit = (& git rev-parse --verify "refs/tags/$env:RELEASE_LABEL^{commit}").Trim().ToLowerInvariant()
           if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $commit) {
             throw "Release tag $env:RELEASE_LABEL does not identify checked-out commit $commit."
           }
@@ -113,8 +139,42 @@ jobs:
             -ExpectedReleaseLabel $env:RELEASE_LABEL `
             -ExpectedCommit '${{ steps.identity.outputs.source_commit }}'
 
+      - name: Verify existing GitHub Release assets
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish }}
+        run: |
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_LABEL"
+          $response = Invoke-WebRequest -Uri $uri -Headers @{Authorization = "Bearer $env:GH_TOKEN"} -SkipHttpErrorCheck
+          if ($response.StatusCode -eq 404) { return }
+          if ($response.StatusCode -ne 200) { throw "GitHub Release lookup failed (HTTP $($response.StatusCode))." }
+          $release = $response.Content | ConvertFrom-Json
+          if ($release.tag_name -cne $env:RELEASE_LABEL) { throw 'GitHub returned a different release tag.' }
+          'exists=true' >> $env:GITHUB_OUTPUT
+          if ($release.draft) {
+            if ($env:REQUESTED_PUBLISH -eq 'true') { throw "Complete and publish the existing $env:RELEASE_LABEL draft." }
+            Write-Host "Release $env:RELEASE_LABEL has a draft. Its publisher controls the staged assets."
+            return
+          }
+          $packageName = '${{ steps.identity.outputs.package_name }}'
+          $archives = @("$packageName.zip")
+          $pgo = "$packageName-pgo.zip"
+          if ($pgo -in $release.assets.name -or "$pgo.sha256" -in $release.assets.name) { $archives += $pgo }
+          $download = Join-Path $env:RUNNER_TEMP 'published-windows-assets'
+          New-Item -ItemType Directory -Path $download -Force | Out-Null
+          foreach ($archive in $archives) {
+            gh release download $env:RELEASE_LABEL --dir $download --pattern $archive --pattern "$archive.sha256"
+            if ($LASTEXITCODE -ne 0) { throw "Unable to download published $archive and its checksum." }
+            ./tools/release/smoke_package_windows.ps1 `
+              -ArchivePath (Join-Path $download $archive) -ChecksumPath (Join-Path $download "$archive.sha256") `
+              -GbInput '.pytest-tmp/release-inputs/gb-synthetic.xlsx' -SkInput '.pytest-tmp/release-inputs/sk-synthetic.xlsx' `
+              -ExpectedReleaseLabel $env:RELEASE_LABEL -ExpectedCommit '${{ steps.identity.outputs.source_commit }}'
+          }
+
       - name: Publish verified GitHub Release
-        if: github.event_name == 'push' || inputs.publish
+        if: (github.event_name == 'push' || inputs.publish) && steps.existing.outputs.exists != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

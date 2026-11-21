@@ -24,14 +24,15 @@ sha256sum -c SHA256SUMS
 
 ### 使用 Windows 发布包
 
-Windows x86-64 的常规版和 PGO 版使用相同的命令。文件名、选择依据和校验方法见[0.3.1-rc.1 候选版说明](docs/changes/releases/v0.3.1-rc.1.md)。
+Windows x86-64 的常规版和 PGO 版使用相同的命令。文件名、实测耗时和校验方法见 [0.3.1-rc.2 候选版说明](docs/changes/releases/v0.3.1-rc.2.md)。
 
 1. 下载同一版本的 ZIP 和 `.zip.sha256`。
 2. 校验 ZIP：
 
 ```powershell
-$expected = (Get-Content .\costing-calculate-v0.3.1-windows-x86_64.zip.sha256).Split()[0]
-$actual = (Get-FileHash .\costing-calculate-v0.3.1-windows-x86_64.zip -Algorithm SHA256).Hash
+$archive = 'costing-calculate-v0.3.1-rc.2-windows-x86_64.zip'
+$expected = (Get-Content -LiteralPath "$archive.sha256").Split()[0]
+$actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
 $expected -eq $actual
 ```
 
@@ -218,5 +219,7 @@ Excel 读取使用 calamine `0.38.0`，写出使用 rust_xlsxwriter `0.102.0` �
 ```
 
 该 smoke 会在 child `PATH` 中移除 Rust 和 Python，再验证哈希、固定目录、help、version、配置、GB/SK check-only、正式 workbook 和 Manifest。
+
+在 GitHub 上复验已发布版本时，先确认远端标签指向实测源码，再从 `main` 手动运行 Release，填写该标签并将 `publish` 设为 `false`。流程会下载已发布的 Windows ZIP 和校验文件，用包内程序再次运行 GB/SK。[发布复验记录](docs/changes/2026-11-21-github-release-checks.md)
 
 开发、架构、验证与文档导航见 [`docs/README.md`](docs/README.md)。

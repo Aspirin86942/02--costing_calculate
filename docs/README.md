@@ -6,7 +6,7 @@
 
 - [Linux 完整 SK 稳定性、分配器与读写优化复测](changes/2026-11-20-linux-sk-diagnostics.md)和[默认读写实现的采用依据](decisions/2026-11-20-xlsx-io-defaults.md)
 
-- [Windows 0.3.1-rc.1 常规版与 PGO 版](changes/releases/v0.3.1-rc.1.md)
+- [Windows 0.3.1-rc.2 常规版与 PGO 版](changes/releases/v0.3.1-rc.2.md)及 [GitHub Release 复验](changes/2026-11-21-github-release-checks.md)
 
 - [当前源码的 Windows 性能和桌面 Excel 验收](changes/2026-11-20-windows-workbook-export.md)
 

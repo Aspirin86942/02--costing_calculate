@@ -43,10 +43,12 @@ def test_release_workflow_is_pinned_and_calls_ci_before_packaging() -> None:
     assert 'workflow_dispatch:' in workflow
     assert 'uses: ./.github/workflows/ci.yml' in workflow
     assert 'needs: quality' in workflow
-    assert "ref: ${{ github.event_name == 'push' && github.ref || inputs.release_label }}" in workflow
+    assert "ref: ${{ github.event_name == 'push' && github.sha || format('refs/tags/{0}', inputs.release_label) }}" in (
+        workflow
+    )
     assert 'cargo metadata --format-version 1 --no-deps --manifest-path rust/Cargo.toml' in workflow
     assert '$releasePattern = "^v$([regex]::Escape($workspaceVersion))' in workflow
-    assert 'git rev-parse "$env:RELEASE_LABEL^{commit}"' in workflow
+    assert 'git rev-parse --verify "refs/tags/$env:RELEASE_LABEL^{commit}"' in workflow
     assert '$tagCommit -ne $commit' in workflow
     assert 'tools/release/package_windows.ps1' in workflow
     assert 'tools/release/smoke_package_windows.ps1' in workflow
@@ -60,6 +62,19 @@ def test_release_workflow_is_pinned_and_calls_ci_before_packaging() -> None:
     action_refs = re.findall(r'uses:\s+[^@\s]+@([^\s#]+)', workflow)
     assert action_refs
     assert all(re.fullmatch(r'[0-9a-f]{40}', ref) for ref in action_refs)
+
+
+def test_repeated_release_checks_serialize_and_verify_the_published_archives() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding='utf-8')
+
+    assert "group: release-${{ github.event_name == 'push' && github.ref_name || inputs.release_label }}" in workflow
+    assert 'cancel-in-progress: false' in workflow
+    verify = workflow.split('name: Verify existing GitHub Release assets', 1)[1]
+    verify, publish = verify.split('name: Publish verified GitHub Release', 1)
+    assert '$response.StatusCode -eq 404' in verify and '$response.StatusCode -ne 200' in verify
+    assert 'gh release download' in verify and '"$packageName-pgo.zip"' in verify
+    assert 'tools/release/smoke_package_windows.ps1' in verify
+    assert "steps.existing.outputs.exists != 'true'" in publish
 
 
 def test_packaging_scripts_and_release_assets_cover_the_frozen_layout() -> None:
